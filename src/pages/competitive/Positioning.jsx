@@ -3,7 +3,7 @@ import MatchupList from "../../components/matchupList/MatchupList";
 import MatchupDossier from "../../components/matchupDossier/MatchupDossier";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { advantageText } from "../../lib/specs";
+import { specValueWithUnit } from "../../lib/specs";
 import { buildProductIndex, compareProducts } from "../../lib/compareProducts";
 
 /* The right pane for a FREE comparison: any two products the user picked. Same frame as
@@ -11,7 +11,6 @@ import { buildProductIndex, compareProducts } from "../../lib/compareProducts";
 function CompareView({ a, b, onClose }) {
   const r = compareProducts(a, b);
   const sameCat = a.cat === b.cat;
-  const lead = r.aWins > r.bWins ? a : r.bWins > r.aWins ? b : null;
   return (
     <div className="mu-dossier">
       <div className="mu-dossier-scroll">
@@ -33,12 +32,8 @@ function CompareView({ a, b, onClose }) {
           </div>
         </div>
         <div className="fc-body">
-          <div className={`fc-summary${lead ? "" : " level"}`}>
-            {r.measured
-              ? lead
-                ? <><b>{lead.name}</b> leads on {Math.max(r.aWins, r.bWins)} of {r.measured} measured spec{r.measured === 1 ? "" : "s"}{r.ties ? ` (${r.ties} level)` : ""}.</>
-                : <>Level: each leads on {r.aWins} of {r.measured} measured spec{r.measured === 1 ? "" : "s"}{r.ties ? ` (${r.ties} level)` : ""}.</>
-              : <>No spec is measured on both sides with a clear better direction, so neither is scored ahead. The published figures are below.</>}
+          <div className="fc-summary level">
+            The published figures for the two products are side by side. No winner is scored for a free comparison.
           </div>
           {!sameCat ? (
             <div className="fc-warn">These products are in different categories, so their specs may not be like-for-like.</div>
@@ -50,20 +45,16 @@ function CompareView({ a, b, onClose }) {
             <tbody>
               {r.rows.map((row) => (
                 <tr key={row.l}>
-                  <td className="fc-l">
-                    {row.l}
-                    {row.hi != null ? <span className="fc-dir">{row.hi ? "higher is better" : "lower is better"}</span> : null}
-                    {row.note ? <span className="fc-note">{row.note}</span> : null}
-                  </td>
-                  <td className={row.win === "a" ? "win" : ""}>{row.av == null ? <span className="fc-na">not published</span> : <>{row.win === "a" ? "▲ " : ""}{row.av}</>}</td>
-                  <td className={row.win === "b" ? "win" : ""}>{row.bv == null ? <span className="fc-na">not published</span> : <>{row.win === "b" ? "▲ " : ""}{row.bv}</>}</td>
+                  <td className="fc-l">{row.l}</td>
+                  <td>{row.av == null ? <span className="fc-na">not published</span> : specValueWithUnit(row.av, row.u)}</td>
+                  <td>{row.bv == null ? <span className="fc-na">not published</span> : specValueWithUnit(row.bv, row.u)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
           <div className="fc-foot">
-            Figures are the published specs held for each product. A row is scored only when both have a number
-            and the field has a better direction; gaps under 3% count as level.
+            Figures are the specifications held for each product, matched by name. The stored better-side and gap
+            are shown on a matched pair, not here.
           </div>
         </div>
       </div>
@@ -80,8 +71,8 @@ import * as viewState from "../../lib/viewState";
 /* Positioning: every rating-matched KSSL-vs-rival pair, and the dossier for the one
    selected. Gap Analysis jumps in here with a matchup id, which arrives as `pending`. */
 export default function Positioning() {
-  const { data, gapModel } = useData();
-  const { setScope, takePending, jumpTo } = useAppState();
+  const { data } = useData();
+  const { setScope, takePending } = useAppState();
   const [selected, setSelectedState] = useState(() => {
     try {
       return viewState.getItem("kssl_pos_selected") || null;
@@ -135,8 +126,8 @@ export default function Positioning() {
   const m = selected ? data.matchups[selected] : null;
   /* Free comparison of any two products (keys into the product index), or null. Opening
      a matched pair closes it; a comparison closes the matched pair. */
-  const clientShortName = (data.client && data.client.short) || "";
-  const products = useMemo(() => buildProductIndex(data.matchups, clientShortName), [data.matchups, clientShortName]);
+  const clientShortName = (data.client && data.client.short) || "KSSL";
+  const products = useMemo(() => buildProductIndex(data, clientShortName), [data, clientShortName]);
   const [compare, setCompare] = useState(null);
   const byKey = useMemo(() => new Map(products.map((p) => [p.key, p])), [products]);
   const cmpA = compare && byKey.get(compare.a);
@@ -145,26 +136,21 @@ export default function Positioning() {
   /* What the header's Copy / Export / Print act on: the open matchup -- its verdict,
      every spec row as served, both advantage lists -- or, with nothing selected, the
      list of pairs that survived the comparability gate. */
-  const clientShort = (data.client && data.client.short) || "";
+  const clientShort = (data.client && data.client.short) || "KSSL";
   const report = useMemo(() => {
     if (m) {
       const val = (v) => (v == null || v === "" ? "—" : String(v));
       return {
         title: `${m.comp} vs ${m.bf}`,
-        subtitle: `${m.cat || ""} · edge index ${m.edge == null ? "not measured" : `${m.edge}/100`}`,
+        subtitle: `${m.cat || ""} · edge index ${m.edge == null ? "not stored" : `${m.edge}/100`}`,
         sections: [
-          { h: "Verdict", rows: [m.verdict || "No verdict on file."] },
+          { h: m.verdictH || "Verdict", rows: [m.verdict || "No verdict on file."] },
           {
             h: `Specifications (${m.compBy || "rival"} vs ${clientShort})`,
             rows: (m.specs || []).map((s) => [s.l, `${val(s.cv)} vs ${val(s.kv)}${s.u ? ` ${s.u}` : ""}`]),
           },
-          /* Copy Summary is DISPLAY, so it follows the panel: the pipeline appends an
-             inline <a class="adv-src"> to every advantage line and the Positioning tab
-             no longer shows it. `payload` below is deliberately left raw -- that is the
-             JSON export, and stripping provenance out of exported DATA would be a
-             different decision from taking it off the screen. */
-          { h: `${clientShort} analytics`, rows: (m.advBf || []).map(advantageText) },
-          { h: "Competitor analytics", rows: (m.advComp || []).map(advantageText) },
+          { h: `${clientShort} analytics`, rows: m.advBf || [] },
+          { h: "Competitor analytics", rows: m.advComp || [] },
         ],
         payload: {
           id: selected,
@@ -174,20 +160,15 @@ export default function Positioning() {
           client: m.bf || null,
           country: m.country || null,
           edge: m.edge == null ? null : m.edge,
+          decision: m.decision == null ? null : m.decision,
           specs: m.specs || [],
           advantagesClient: m.advBf || [],
           advantagesCompetitor: m.advComp || [],
+          verdictHeadline: m.verdictH || null,
           verdict: m.verdict || null,
         },
       };
     }
-    /* "N COMPARABLE PAIRS" COUNTED EVERY MATCHUP, and "Class-matched pairs" headed the
-       same list -- both over rows the comparability gate rejects. A pair is comparable
-       when at least one independent dimension is measured on BOTH sides (specDims,
-       stored by wireDataset from computeSpecEdge); most rows here have none, and their
-       client column reads "no published figure" from top to bottom. The two counts are
-       stated separately now, and a row with no shared measurable says so rather than
-       being filed under a heading that claims it has one. */
     const all = Object.entries(data.matchups || {});
     return {
       title: "Product Evaluation",
@@ -209,7 +190,7 @@ export default function Positioning() {
           competitor: x.comp || null,
           client: x.bf || null,
           edge: x.edge == null ? null : x.edge,
-          comparableDimensions: x.specDims == null ? null : x.specDims,
+          comparableSpecs: x.comparable == null ? null : x.comparable,
         })),
       },
     };
@@ -231,10 +212,8 @@ export default function Positioning() {
       ) : m ? (
         <MatchupDossier
           data={data}
-          gapModel={gapModel}
           m={m}
           onClose={() => setSelected(null)}
-          onJumpToTender={(title) => jumpTo("market", "tender", { tenderTitle: title })}
           /* The competitor product name is a plain label now (operator's ask), so the
              dossier no longer navigates to the rival's own product page from here. */
         />
@@ -250,7 +229,7 @@ export default function Positioning() {
               </div>
               <span className="vsbadge">VS</span>
               <div className="side bf">
-                <div className="pn">{data.client?.short || ""} · —</div>
+                <div className="pn">{data.client?.short || "KSSL"} · —</div>
               </div>
             </div>
           </div>

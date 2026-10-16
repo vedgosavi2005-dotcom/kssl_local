@@ -24,6 +24,27 @@ all table and column metadata under `databaseSchema`, then builds the UI
 contract from those rows. `GET /api/manifest` exposes the same metadata for
 verification. With empty tables, the UI shows zero counts and empty states.
 
+## Two databases and the review copy
+
+Everything is written to **kssl_staging** (schemas `staging`, `staging_ui`): Excel loaders, prompt
+loaders, the news job, hand inserts (`db/test_inserts_staging.sql`). The live UI reads
+**kssl_serving** (`serving`, `ui`), which only Approve / Unpublish in the review copy can write.
+
+    bash db/make_databases.sh                       # create both DBs (idempotent, never drops)
+    # live API (:8600) + live UI (:5178)
+    KSSL_SERVING_DSN="host=127.0.0.1 port=55432 dbname=kssl_serving user=kssl password=kssl"       python -m uvicorn backend.app:app --host 127.0.0.1 --port 8600
+    npm run dev
+    # review API (:8601) + review copy (:5180, localhost only)
+    KSSL_VIEW=review KSSL_STAGING_DSN="...dbname=kssl_staging..." KSSL_SERVING_DSN="...dbname=kssl_serving..."       python -m uvicorn backend.app:app --host 127.0.0.1 --port 8601
+    npm run dev:review
+
+News: `python -m backend.news --competitor all --products --from 2026-09-01 --to 2026-09-30`
+(or `--date 2026-09-03`; API `POST /api/news/refresh?...`) writes candidates to `staging.news_candidate`
+(holding table, never shown). `python -m prompts.run news` groups the publishers that report the same story and
+writes one row per story with its `category` to the news tables (other publishers become extra sources in
+`staging.fact_source`); those rows are what the review copy approves.
+Audits, rules, plan and answers: `docs/audit_v2/`.
+
 ## Build
 
     npm run build        # emits dist/

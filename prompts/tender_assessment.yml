@@ -1,0 +1,166 @@
+id: tender_assessment
+title: Tender assessment (client fit, matched products, competitor fit)
+version: 1
+fills: [market_tender_fit_assessment, market_tender_product_match, market_tender_product_match_line, market_tender_competitor_fit]
+shows_on: Tenders page (fit bar, "Bid assessment", "Matched products", "Competitor fit"), Top opportunity
+cadence: weekly                  # every open tender in a client category; a changed tender (corrigendum) or catalogue is picked up on the next run
+# No web search: the tender rows, the client catalogue and the competitor catalogue are the only facts.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: tender_id
+  query: |
+    SELECT t.tender_id, t.title, t.notice_reference, t.buyer_name, t.country_name, t.category_text,
+           t.closing_date, t.value_text, t.local_presence_requirement, t.registration_requirement
+    FROM staging.market_tender t
+    WHERE t.status = 'open' AND t.category_id IS NOT NULL
+      AND (t.closing_date IS NULL OR t.closing_date >= current_date)
+    ORDER BY t.closing_date NULLS LAST, t.tender_id
+  documents:
+    - from: sql
+      query: |
+        SELECT 'TENDER REQUIREMENT' AS doc, r.display_order, r.requirement_type, r.description, r.quantity, r.quantity_unit,
+               r.equipment_scope, r.use_case, r.source_text
+        FROM staging.market_tender_requirement r
+        WHERE r.tender_id = {{subject.tender_id}}
+        ORDER BY r.display_order
+    - from: sql
+      query: |
+        SELECT 'CLIENT PRODUCT SPEC' AS doc, p.product_name, p.category, s.spec_name, s.value_text, s.value_numeric, s.unit, src.source_url
+        FROM staging.client_product p
+        LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
+        LEFT JOIN staging.client_product_source src ON src.source_id = s.source_id AND src.client_product_id = s.client_product_id
+        WHERE lower(trim(p.category)) = lower(trim('{{subject.category_text}}'))
+        ORDER BY p.product_name, s.display_order
+    - from: sql
+      query: |
+        SELECT 'COMPETITOR PRODUCT SPEC' AS doc, c.display_name AS competitor, p.product_name, s.spec_label, s.spec_value, s.unit, s.source_url
+        FROM staging.competitive_product p
+        JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+        LEFT JOIN staging.competitive_product_specification s ON s.product_id = p.product_id
+        WHERE lower(trim(p.category)) = lower(trim('{{subject.category_text}}'))
+        ORDER BY c.display_name, p.product_name, s.spec_label
+
+context: [client, client_products, competitors, competitor_products]
+
+task: |
+  TASK tender_assessment — assess how well {{client.name}}'s products fit the tender
+  "{{subject.title}}" ({{subject.buyer_name}}, {{subject.country_name}}, category
+  {{subject.category_text}}; closing {{subject.closing_date}}), and which competitors could meet it.
+  Use ONLY the TENDER REQUIREMENT, CLIENT PRODUCT SPEC and COMPETITOR PRODUCT SPEC rows and the
+  tender facts above. WEB SEARCH is off. Never assume a spec from general knowledge.
+  For rule 4 a source is an input row: url = its source_url (null if none), quote = the field and
+  value exactly as given.
+
+  STEP 1 — CHECKS. For each client product in CLIENT PRODUCT SPEC, and each TENDER REQUIREMENT row
+  that has a stated value and is a technical or product requirement, give one check:
+   met = a sourced client spec states a value that satisfies the requirement;
+   not_met = a sourced client spec states a value that does not;
+   unknown = the client rows have no spec for it.
+  Checks are the "check" field of the product-match lines below. Do not output percentages or counts.
+
+  STEP 2 — one record, table market_tender_fit_assessment:
+   - fit_grade: JUDGEMENT. strong = no not_met check on a requirement that defines the item
+     (calibre, type, platform) and at least half the checks of the best product are met;
+     partial = a product qualifies but with not_met or unknown checks, or a tender-level eligibility
+     rule (local content, domestic supplier, past performance, turnover, registration) is not met or
+     cannot be checked; weak = no client product qualifies. Allowed: strong | partial | weak
+   - ref_client_product: the best-fitting CLIENT PRODUCT SPEC product name; null when weak
+   - match_summary: JUDGEMENT. 1-2 sentences: which client products match on which requirements
+   - assessment_rationale: JUDGEMENT. 2-4 sentences, the bid assessment: what the buyer wants, what
+     fits, what is missing or unknown. Only input facts; no market-size claim, no revenue estimate
+   children:
+   market_tender_product_match (0-5 rows: each client product with fit_grade strong or partial):
+   - ref_client_product: the product name exactly as in CLIENT PRODUCT SPEC
+   - fit_grade: JUDGEMENT. strong or partial, by the rule above applied to this product
+   children of each match: market_tender_product_match_line (2-12 rows: one per check, in
+   requirement order):
+   - line_label: the requirement_type exactly as in TENDER REQUIREMENT
+   - line_value: one short text "<what the client spec states> | required: <what the tender
+     requires>"; for unknown: "no spec on file | required: ..."
+   - check: met | not_met | unknown (not stored; the loader uses it to compute fit_percent)
+   market_tender_competitor_fit (0-5 rows: tracked competitors having a product in this category,
+   best fit first):
+   - ref_competitor: exactly as in COMPETITORS; ref_product: the competitor's best-fitting product
+     in COMPETITOR PRODUCT SPEC
+   - fit_label: JUDGEMENT. strong, partial or weak, judged against the same requirements from that
+     competitor's COMPETITOR PRODUCT SPEC rows (unknown specs cap it at partial)
+   - fit_rationale: JUDGEMENT. 1-2 sentences citing the spec values
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+  COMPETITORS:
+  {{context.competitors}}
+  COMPETITOR PRODUCTS:
+  {{context.competitor_products}}
+
+  DOCUMENTS (tender requirement rows, then client and competitor product specs):
+  {{documents}}
+
+output:
+  market_tender_fit_assessment:
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      fit_grade: {required: true, judgement: true, enum: [strong, partial, weak]}
+      client_product_id: {from_ref: ref_client_product, judgement: true}
+      match_summary: {judgement: true}
+      assessment_rationale: {judgement: true}
+    loader:
+      assessment_id: new_id
+      tender_id: subject.tender_id
+      assessed_at: run_time
+      kssl_fit: copy_of_fit_grade
+      kssl_model: name_of_client_product_id
+      match_status: matched_when_a_product_match_exists_else_no_match
+      fit_score: derive.tender_fit
+      fit_rank: derive.tender_fit
+      kssl_fit_rank: derive.tender_fit
+      # revenue_* columns are NOT filled: no source states the client's revenue (see questions).
+    children:
+      market_tender_product_match:
+        columns: [fit_grade]
+        refs: {ref_client_product: client_product}
+        required: [fit_grade]
+        judgement: [fit_grade]
+        enum: {fit_grade: [strong, partial]}
+        loader:
+          tender_match_id: new_id
+          tender_id: subject.tender_id
+          match_label: resolved_ref_client_product_name
+          display_order: index
+          fit_percent: derive.tender_fit
+        children:
+          market_tender_product_match_line:
+            columns: [line_label, line_value]
+            transient: {check: {required: true, enum: [met, not_met, unknown]}}
+            required: [line_label]
+            loader: {match_line_id: new_id, tender_match_id: parent_id, display_order: index}
+      market_tender_competitor_fit:
+        columns: [fit_label, fit_rationale]
+        refs: {ref_competitor: competitive_competitor, ref_product: competitive_product}
+        required: [fit_label]
+        judgement: [fit_label, fit_rationale]
+        enum: {fit_label: [strong, partial, weak]}
+        loader:
+          competitor_fit_id: new_id
+          tender_id: subject.tender_id
+          competitor_name: resolved_ref_competitor_display_name
+          competitor_product_id: resolved_ref_product_id
+          competitor_product_display: resolved_ref_product_name
+          competitor_products_text: names_of_that_competitors_products_in_the_category
+          rank_position: sort_by_fit_label_strong_partial_weak_then_output_order
+
+derive:
+  - tender_fit
+# tender_fit (loader, after the card is stored; the prompt never outputs these):
+#   fit_percent (per product match) = round(100 * met lines / all lines); NULL when the product has fewer than 3 lines
+#     (1 of 2 would read as a meaningful 50%). Lines marked unknown count in the denominator, not_met too.
+#   fit_score (assessment) = the fit_percent of the best product (the one in ref_client_product); NULL if none.
+#   fit_rank = rank of this tender among all OPEN tenders, by fit_score descending (NULLs last), then closing_date
+#     ascending, then tender_id; kssl_fit_rank = the same rank, same value.
+#   copied onto the market_tender row: kssl_fit = fit_grade; kssl_model = name of the best product; rank_position = fit_rank;
+#     lean_text = assessment_rationale; lean_code = go (strong) | maybe (partial) | pass (weak).
+#   If fit_grade is strong but fit_percent < 50, or weak but a product has fit_percent >= 50, the loader logs the card as
+#     "grade and percent disagree" for the reviewer (no automatic change).

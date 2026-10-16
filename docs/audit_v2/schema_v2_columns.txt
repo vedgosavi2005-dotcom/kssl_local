@@ -1,0 +1,152 @@
+serving.client_account|account_status, brand_name, client_id*, client_name*, country, created_at*, headquarters, industry_sector, legal_name, strategic_positioning, updated_at*
+serving.client_partner|client_id*, client_partner_id*, country, created_at*, legal_name, partner_name*, partner_type, region, relationship_confidence, relationship_scope, relationship_start_date, relationship_status, source_id, strategic_role, updated_at*
+serving.client_partner_product|activity_type, client_partner_id*, client_product_id, market, partner_product_id*, scope, source_id, status
+serving.client_partner_relationship|category, client_partner_id*, competitor_overlap, description, end_date, kssl_read, relationship_id*, relationship_type*, source_id, start_date, status, territory
+serving.client_partner_source|as_of_date, client_partner_id*, confidence, relationship_id, source_id*, source_label*, source_note, source_type, source_url*
+serving.client_product|category, client_id*, client_product_id*, created_at*, frequency_hz, fuel_type, image_url, market_availability, model_code, prime_rating, product_family, product_name*, rated_power_unit, rated_power_value, source_id, standby_rating, status, subcategory, technology, updated_at*
+serving.client_product_program|client_product_id*, description, end_date, owner, program_id*, program_name*, program_type, start_date, status
+serving.client_product_source|client_product_id*, published_date, source_id*, source_label*, source_type, source_url*
+serving.client_product_specification|client_product_id*, display_order*, source_id, spec_group, spec_name*, specification_id*, unit, value_numeric, value_text
+serving.competitive_competitor|annual_revenue, competitor_id*, display_name*, employee_count, global_locations, headquarters, industry_sector, legal_name, origin_country, parallax_read, revenue_currency, revenue_tier, short_name, starting_year, strategic_positioning, threat_level
+serving.competitive_competitor_location|competitor_id*, country, location_id*, location_name*, location_type*, source_url
+serving.competitive_competitor_moment|card_summary, category, company_display, competitor_id, countries, country_name, description, display_order, grade, image_url, kssl_analysis, moment_id*, movement_date, program_name, region, source_domain, source_label, source_url, title, what_happened
+serving.competitive_competitor_moment_analysis|analysis_id*, analysis_text, display_order, moment_id, view_name
+serving.competitive_competitor_moment_source|moment_id, publisher, source_domain, source_id*, source_type, source_url
+serving.competitive_competitor_swot|competitor_id*, empty_message, record_count*, statement, swot_id*, swot_type*
+serving.competitive_geo_company_presence|activity_type, client_id, company_name, company_role*, competitor_id, display_order, location_id, matched_ranges, overlap_status, presence_id*, presence_status, product_count, products_summary, relationship_text
+serving.competitive_geo_location|country_name, kssl_presence_summary, latitude, location_id*, longitude, map_label, presence_types, region_name
+serving.competitive_geo_product|activity_type, display_order, frequency_hz, fuel_type, geo_product_id*, presence_id, product_name, product_range, quantity, rated_power_unit, rated_power_value, record_note, reported_value, since_date
+serving.competitive_geo_product_match|comparison_title, competitor_score, decision_level, evaluation_label, geo_product_id, kssl_counter_label, kssl_product_id, kssl_score, match_basis, match_id*, match_status, qualitative_summary, rating_delta
+serving.competitive_geo_product_news|article_url, display_order*, geo_product_id*, headline*, news_id*, published_date, publisher, source_id
+serving.competitive_geo_product_specification|better_side, comparison_spec_id*, competitor_value, display_order, gap_value, kssl_value, match_id, spec_group, spec_name, unit
+serving.competitive_geo_source|geo_product_id, location_id, match_id, source_id*, source_label, source_type, source_url
+serving.competitive_leader|avatar_initials, competitor_id*, detail_route, full_name*, leader_id*, organization, role_source_url, role_title
+serving.competitive_leader_record|empty_message, end_date, headline, institution_or_employer, leader_id*, record_id*, record_type*, role_or_degree, source_url, start_date
+serving.competitive_matchup|category_code*, client_product_id, client_product_name*, comparable_spec_count, competitor_country, competitor_id, competitor_name*, competitor_product_id, competitor_product_name*, created_at*, decision_level, edge_score, match_basis, matchup_id*, sourced_spec_count, updated_at*, verdict, verdict_headline
+serving.competitive_matchup_advantage|advantage_id*, advantage_text*, display_order*, matchup_id*, side*, source_id
+serving.competitive_matchup_source|matchup_id*, published_date, source_id*, source_label*, source_note, source_type, source_url*
+serving.competitive_matchup_specification|better_side, client_value_numeric, client_value_text, comparability_state, comparison_specification_id*, competitor_value_numeric, competitor_value_text, display_order*, gap_value, matchup_id*, spec_group, spec_label*, unit
+serving.competitive_news_article|article_id*, article_url, category, competitor_id, headline*, image_url, published_date, publisher
+serving.competitive_partnership|as_of_date, competitor_id*, description, mapped_partner_count, partner_id*, partner_name*, partner_type, region, relationship_confidence, relationship_id*, relationship_scope, source_count, source_note, view_relationship_action*
+serving.competitive_partnership_evidence|as_of_date, basis_for_type, card_number*, confidence, evidence_card_id*, evidence_text, evidence_type, relationship_id*, relationship_label, scope, source_article_title, source_article_url, source_note, source_publisher, source_type, source_url
+serving.competitive_partnership_relationship_detail|back_action*, basis_for_type, confidence, detail_id*, detail_label, image_state, relationship_id*, relationship_title*, scope, selected_card_id*, source_article_url, source_note, source_publisher_label, stated_as_of, type
+serving.competitive_patent_classification|category_label*, classification_id*, filing_count, lens*, portfolio_id*
+serving.competitive_patent_filing|classification_code, classification_text, filed_date, filing_id*, jurisdiction, patent_url, portfolio_id*, publication_number, status, title*
+serving.competitive_patent_portfolio|competitor_id*, competitor_search_query, data_source_note, empty_message, filing_count*, grant_status_state*, granted_count, lens*, pending_count, portfolio_id*, status_note
+serving.competitive_product|category*, category_count, category_filter*, competitor_id*, country, image_source_url, image_url, is_collapsed*, product_id*, product_name*, product_search_query
+serving.competitive_product_evaluation|analytics_tab*, category*, comparable_value_count, compare_action_enabled*, competitor_analytics, competitor_country, competitor_name, competitor_product_id*, competitor_product_name*, evaluation_id*, kssl_analytics, kssl_product_id*, kssl_product_name*, sourced_value_count, verdict
+serving.competitive_product_evaluation_spec|comparability_state*, comparison_spec_id*, competitor_value, evaluation_id*, kssl_value, source_urls, spec_label*, unit
+serving.competitive_product_news|article_url, category, comparison_reason, headline*, matchup_id, product_id*, product_news_id*, published_date, publisher, side_a_product_id, side_b_product_id
+serving.competitive_product_program|authority, description, product_id*, program_date, program_id*, program_title*, status, status_color
+serving.competitive_product_specification|product_id*, source_count, source_url, spec_id*, spec_label*, spec_value, unit
+serving.competitive_project|assessment_read, assessment_stance, card_summary, company_display, competitor_id, customer, display_order, estimated_value, grade, kind, kssl_advantage, kssl_platform, latest_milestone, latest_milestone_date, location, project_id*, project_title, region, researched_as_of, stage, stage_note, strategic_assessment, what_the_project_is
+serving.competitive_project_source|project_id, source_domain, source_id*, source_label, source_type, source_url
+serving.competitive_project_specification|display_order, project_id, project_spec_id*, spec_label, spec_value, unit
+serving.competitive_project_stage|is_current, project_id, project_stage_id*, stage_name, stage_order
+serving.competitive_project_timeline|display_order, event_date, event_description, event_title, is_expected, project_id, timeline_id*
+serving.competitive_signal|category, classification*, company_id, event_date, sequence_no*, signal_id*, summary, thumbnail_url, title*
+serving.competitive_signal_detail|ask_box_query, drawer_title*, impact_eyebrow, provenance, signal_id*, source_name, source_url, what_article_says, why_it_matters
+serving.competitive_signal_evidence|display_order*, evidence_group*, evidence_id*, label*, quote, signal_id*, source_url, value
+serving.competitive_stock_quote|availability_state*, competitor_id*, currency, empty_message, exchange, latest_price, quote_timestamp, stock_id*, ticker
+serving.competitive_stock_series|close_price, move_direction, move_news_article_id, move_percent, period_end, period_start, range_key*, range_label, range_value, series_id*, stock_id*, volume
+serving.fact_source|fact_source_id*, table_name*, row_id*, column_name*, source_url*, source_tier, publisher, quote, document_id, retrieved_at, created_at*
+serving.market_category_summary|active_tenders_count, as_of_date, category_id, country_code, perceived_opportunity_count, source_portals_count, strong_fit_count, summary_id*, value_disclosed_count
+serving.market_filter_option|filter_type*, is_active*, option_code, option_id*, option_label*, record_count, sort_order
+serving.market_global_requirement|buyer_name, category, country_name, days_remaining, deadline, description, empty_state_message*, kssl_fit, kssl_model, region, requirement_id*, status, strategic_assessment, title, value_text
+serving.market_global_requirement_source|display_order*, requirement_id*, requirement_source_id*, source_label*, source_type, source_url
+serving.market_global_requirement_specification|display_order*, requirement_id*, requirement_spec_id*, spec_label*, spec_value
+serving.market_next_move|action_text*, days_remaining, due_date, due_text, next_move_id*, opportunity_id, priority, sequence, status, tender_id, tender_title
+serving.market_opportunity|as_of_date, buyer_name, category_id, contractor_name, country_code, created_at*, current_status, description, latest_milestone, location_text, opportunity_id*, opportunity_kind*, scope_text, stage, title*, updated_at*
+serving.market_opportunity_fit_assessment|assessed_at, assessment_id*, client_model_display, client_product_id, fit_grade, fit_score, opportunity_id*, rationale, revenue_currency, revenue_display, revenue_estimate_amount, rival_name, rival_product_display
+serving.market_opportunity_source|confidence, opportunity_id*, publisher, source_date, source_id*, source_title, source_type, source_url
+serving.market_opportunity_update|confidence, headline, narrative, opportunity_id*, source_id, update_date, update_id*, update_type*
+serving.market_tender|buyer_name, buyer_organization_id, category_id, category_text, closing_date, country_code, country_name, created_at*, days_remaining, deadline_text, description, expected_revenue_text, frequency, is_live, issuer_display, kssl_fit, kssl_model, latest_milestone, lean_code, lean_text, local_presence_requirement, notice_reference, published_date, quantity, quantity_unit, rank_position, registration_requirement, source_url, status*, submission_method, tender_id*, tender_number, title*, title_localized, updated_at*, url_kind, value_amount, value_currency, value_text
+serving.market_tender_closing_window|as_of_date*, closing_date, closing_window_id*, days_remaining, extension_checked_at, is_extension_confirmed, milestone_text, published_date, status*, tender_id*
+serving.market_tender_competitor_fit|competitor_fit_id*, competitor_name*, competitor_product_display, competitor_product_id, competitor_products_text, fit_label, fit_rationale, rank_position, source_id, tender_id*
+serving.market_tender_fit_assessment|assessed_at, assessment_id*, assessment_rationale, client_product_id, fit_grade, fit_rank, fit_score, kssl_fit, kssl_fit_rank, kssl_fit_rationale, kssl_model, kssl_revenue_estimate, match_status, match_summary, revenue_currency, revenue_estimate_max, revenue_estimate_min, revenue_estimate_text, revenue_tier, tender_id*
+serving.market_tender_portal|access_status, country_code, portal_id*, portal_name*, portal_url, registration_required, submission_method
+serving.market_tender_product_match|display_order*, fit_grade, fit_percent, match_label*, tender_id*, tender_match_id*
+serving.market_tender_product_match_line|display_order*, line_label*, line_value, match_line_id*, tender_match_id*
+serving.market_tender_requirement|category_text, description, display_order, equipment_scope, quantity, quantity_unit, rating_band, requirement_id*, requirement_note, requirement_type*, scope_bullet_label, scope_bullet_value, scope_text, source_text, tender_id*, use_case
+serving.market_tender_source|access_note, is_primary*, portal_name, publisher, retrieved_at, source_id*, source_type, source_url, status_check_url, tender_id*
+serving.market_top_opportunity_metric|amount_value, as_of_date, currency_code, formatted_value, metric_id*, metric_key*, metric_label*, note, numeric_value
+serving.market_top_opportunity_project|buyer_name, country_name, kssl_fit, kssl_model, opportunity_id*, rank_position*, revenue_text, rival_to_beat, top_opportunity_project_id*, where_it_stands
+serving.market_top_opportunity_tender|decides, kssl_fit, kssl_model, rank_position*, revenue_text, rival_to_beat, status, tender_id*, top_opportunity_tender_id*
+serving.technology_category|canonical_name*, category_code*, category_description, category_id*, category_name*, category_number*, display_order*, innovation_count, is_active*, tab_number*
+serving.technology_category_ui_label|category_id*, category_label_id*, database_category_id*, label_text*, locale*, short_label, sort_order*, tab_number*, ui_name*
+serving.technology_company|company_id*, company_type, country_code, display_name*, is_client*
+serving.technology_innovation|action_note, assessment_outcome, background_what_it_is, category_id*, client_position, competitive_note, created_at*, external_id, horizon_year, innovation_id*, list_description, list_secondary_value, list_status_label, maturity, pillar_id*, sequence_no, status*, summary, title*, updated_at*, whats_new, why_matters_to_kssl
+serving.technology_innovation_analysis|analysis_id*, display_order*, innovation_id*, is_client_assessment*, narrative*, section_code*, section_label*
+serving.technology_innovation_company|company_id*, display_name, display_order*, innovation_company_id*, innovation_id*, relationship*, relationship_type*
+serving.technology_innovation_source|innovation_id*, innovation_source_id*, is_primary*, provenance_status, source_id*
+serving.technology_innovation_status|assessment_badge, effective_date, horizon_text, innovation_id*, maturity_label, position_label, status_id*
+serving.technology_metric|as_of_date, display_order*, metric_action, metric_id*, metric_key*, metric_label*, metric_unit, metric_value*, pillar_id*
+serving.technology_overview_article|article_date, article_id*, article_says, card_summary, category_id, category_text, classification, client_narrative, country_code, created_at*, direction, external_id, image_url, lens*, overview_article_id*, pillar_id*, primary_company_id, published_label, published_on, sequence_no*, status*, summary, title*, updated_at*
+serving.technology_overview_company|article_id*, company_id*, display_label, display_order*, overview_article_id*, overview_company_id*, relationship*, relationship_type
+serving.technology_overview_fact|article_id*, display_order*, fact_id*, fact_key*, fact_label*, fact_value*, overview_article_id*, overview_fact_id*, proof_text, ui_label*
+serving.technology_overview_key_point|article_id*, display_order*, evidence_text, key_point_id*, overview_article_id*, point_no*, point_text*, point_type
+serving.technology_overview_source|article_id*, display_order*, is_primary*, overview_article_id*, overview_source_id*, provenance_status, source_id*, source_role*
+serving.technology_pillar|client_name, created_at*, is_active*, pillar_code*, pillar_id*, pillar_name*, updated_at*
+serving.technology_source|access_status, label*, publisher, retrieved_at, source_id*, source_kind, source_type, source_url*, url*
+ui.competitive_competitor_moment_level|display_order*, level_code*, level_label*, tag_class*
+ui.competitive_competitor_moment_time_window|day_count, display_order*, is_default*, time_window_code*, time_window_id*, time_window_label*
+ui.competitive_geo_filter|display_order*, filter_id*, filter_label*, filter_type*, is_active*, option_label, record_count, selected_value
+ui.competitive_metric|as_of_date, display_order*, metric_id*, metric_label*, metric_value
+ui.competitive_navigation|is_active*, record_count, view_key*, view_label*, view_sequence*
+ui.competitive_news_view|category_filter*, competitor_id*, custom_end_date, custom_start_date, date_filter*, news_view_id*, page_no*, page_size*, published_range*, search_query
+ui.competitive_overview_feed|empty_message, feed_id*, local_search_query, sequence_mode*, threat_filter*, visible_signal_count
+ui.competitive_partnership_graph|competitor_id*, graph_state_id*, group_by*, legend_type*, partner_card_count, partner_node_click*, relationship_detail_action*, reset_action*, selected_partner_id, zoom_in_action*, zoom_level*, zoom_out_action*
+ui.competitive_patent_view_state|active_lens*, category_filter, competitor_search_text, panel_open*, selected_competitor_id, selected_technology_area, technology_search_text, view_state_id*
+ui.competitive_pillar|account_label, active_pillar*, brand_name*, global_search_query, pillar_id*, print_report_action*
+ui.competitive_positioning_tab|display_order*, is_enabled*, tab_code*, tab_id*, tab_label*
+ui.competitive_positioning_view_state|active_tab, compare_product_id, panel_open*, search_text, selected_category, selected_competitor_id, selected_matchup_id, view_state_id*
+ui.competitive_product_view_state|category_filter, company_search_text, country_filter, panel_open*, product_search_text, revenue_filter, selected_company_id, selected_news_category, selected_product_id, view_state_id*
+ui.competitive_profile_view_state|active_section, news_category, news_range, news_search_text, panel_open*, search_text, selected_competitor_id, selected_leader_id, view_state_id*
+ui.competitive_ui_state|active_view*, drawer_open*, empty_state_code, is_loading*, last_refreshed_at, render_error_code, render_error_message, retry_action, selected_record_id, state_id*
+ui.market_filter|filter_id*, filter_label*, filter_value, option_count, option_label, search_query, sort_key
+ui.market_global_requirement_card|buyer_display, card_id*, category_display, country_display, deadline_display, fit_display, is_selected*, requirement_id*, status_display, title_display*, value_display
+ui.market_global_requirement_detail|assessment_label*, buyer_label*, close_label*, detail_view_id*, fit_label*, panel_title*, requirement_id*, scope_label*, source_label*, specs_label*
+ui.market_global_requirement_filter|display_order*, filter_id*, filter_label*, filter_type*, option_count, search_placeholder, selected_value
+ui.market_global_requirement_view|assessment_section_label*, category_filter_label*, country_filter_label*, empty_state_text, filter_label*, fit_section_label*, page_heading*, panel_subtitle, panel_title*, scope_section_label*, sort_label*, source_section_label*, specs_section_label*, view_id*
+ui.market_global_requirement_view_state|category_filter, country_filter, menu_search_text, panel_open*, selected_requirement_id, view_state_id*
+ui.market_intelligence_tab|category_filter, country_filter, is_selected*, record_count*, tab_id*, tab_label*, tab_order*
+ui.market_metric|metric_action, metric_id*, metric_label*, metric_subtext, metric_unit, metric_value*
+ui.market_next_move_view|action_display*, due_display, move_view_id*, row_id*, row_order*, sort_label, tender_display, tender_id, view_id*
+ui.market_pillar|client_name*, display_name*, global_search_placeholder*, market_pillar_id*, print_report_label*
+ui.market_tender_assessment_view|assessment_view_id*, closing_summary, competitor_fit_section_label*, details_section_label*, fit_grade_display, fit_rank_display, matched_products_section_label*, notice_ref_display, open_notice_label, panel_subtitle, panel_title*, requirements_section_label*, source_section_label*, tender_id*
+ui.market_tender_card|buyer_display, card_id*, card_order*, category_display, countdown_display, country_display, deadline_display, fit_grade_display, is_selected*, status_display, tender_id*, title_display*, value_display, view_id*
+ui.market_tender_filter|filter_id*, filter_label*, filter_type*, is_open*, option_count, search_placeholder, selected_value, view_id*
+ui.market_tenders_view|active_tenders_count, category_filter_label*, category_filter_value, country_filter_label*, country_filter_value, markets_count, page_heading*, selected_tender_id, sort_label, source_portals_count, value_disclosed_display, view_code*, view_id*
+ui.market_top_opportunity_project_row|buyer_location_display, client_model_display, fit_grade_display, opportunity_id, project_title_display*, rank_position*, revenue_display, rival_display, row_id*, row_order*, view_id*, where_it_stands_display
+ui.market_top_opportunity_tender_row|buyer_location_display, client_model_display, decides_display, fit_grade_display, rank_position*, revenue_display, rival_display, row_id*, row_order*, tender_id, tender_title_display*, view_id*
+ui.market_top_opportunity_view|latest_tenders_metric_label*, next_moves_description, next_moves_section_label*, page_heading*, perceived_opportunities_metric_label*, projects_description, projects_section_label*, sort_logic_label, strong_fits_metric_label*, tender_value_metric_label*, tender_value_metric_note, top_tenders_description, top_tenders_section_label*, view_code*, view_id*
+ui.market_ui_navigation|account_label, captured_at*, global_search_placeholder, navigation_id*, pillar_code*, print_report_enabled*, view_code*, view_label*
+ui.market_view|empty_state_text, is_selected*, rail_count, rail_label*, rail_order*, view_id*, view_title*
+ui.technology_category|category_description, category_id*, category_name*, display_order*, innovation_count, tab_number*
+ui.technology_category_ui_label|database_category_id*, tab_number*, ui_name*
+ui.technology_innovation_card|card_id*, card_order*, client_position_display, company_display, horizon_display, innovation_id*, is_selected*, maturity_display, summary_display, title_display*, view_state_id*
+ui.technology_innovation_category_tab|category_id*, innovation_count, is_selected*, tab_id*, tab_label*, tab_number*, tab_order*, view_state_id*
+ui.technology_innovation_detail_panel|assessment_badge, background_text, client_position_display, close_label*, horizon_display, innovation_id*, maturity_display, panel_id*, panel_title*, source_section_label*, whats_new_text, why_matters_text, why_position_text
+ui.technology_innovation_view|empty_state_text, list_heading, page_heading*, selected_category_id, selected_innovation_id, total_innovations, view_id*, view_state_id*
+ui.technology_metric|display_order*, metric_action, metric_id*, metric_key*, metric_label*, metric_value*, pillar_id*
+ui.technology_overview_detail_panel|article_id*, at_a_glance_label*, close_label*, key_points_label, panel_id*, panel_title*, provenance_label, source_label*, what_article_says_label*
+ui.technology_overview_detail_section|panel_id*, section_code*, section_id*, section_label*, section_order*, source_id, value_text
+ui.technology_overview_filter|filter_label, filter_state_id*, filter_type*, is_active*, option_values, selected_value, view_state_id*
+ui.technology_overview_metric_card|is_clickable*, metric_card_id*, metric_key*, metric_label*, metric_order*, metric_unit, metric_value, view_state_id*
+ui.technology_overview_signal_card|article_id*, card_id*, classification_display, is_selected*, narrative_display, published_date_display, rank_position*, title_display*, view_state_id*
+ui.technology_overview_view|page_heading*, search_placeholder, selected_article_id, sequence_label, sequence_options, sequence_value, showing_from, showing_to, total_signals, view_id*, view_state_id*
+ui.technology_pillar|client_name*, innovation_title*, knowledge_title*, pillar_id*, pillar_name*, print_report_label*
+ui.technology_print_report_control|is_enabled*, label*, pillar_code*, report_control_id*, view_code*
+ui.technology_ui_navigation|account_label, ask_parallax_enabled*, captured_at*, global_search_placeholder, navigation_id*, page_heading*, pillar_code*, print_report_enabled*, view_code*
+ui.technology_ui_view|display_order*, is_active*, page_heading*, pillar_id*, rail_count, record_count, route_hash*, search_placeholder, sequence_default, sequence_label, sequence_options, view_code*, view_id*, view_key*, view_label*, view_name*, view_number
+ui.ui_competitor_moment_metric|display_order, metric_id*, metric_label, metric_unit, metric_value, view_state_id
+ui.ui_competitor_moment_view_state|from_date, panel_open, search_text, selected_competitor_id, selected_moment_id, sequence, time_window, to_date, view_state_id*
+ui.ui_geo_country_detail_state|active_competitor_count, category_only_competitor_count, kssl_present, location_id, rating_matched_competitor_count, selected_presence_id, state_id*
+ui.ui_geo_footprint_view_state|map_center_latitude, map_center_longitude, map_zoom, panel_open, popup_location_id, selected_competitor_id, selected_location_id, selected_presence_id, view_state_id*
+ui.ui_geo_product_comparison_state|comparison_state_id*, comparison_title, competitor_score, decision_level, evaluation_label, kssl_score, match_basis, match_id, rating_delta
+ui.ui_geo_products_supplied_state|competitor_id, export_supply_count, location_id, matched_model_count, product_count, sales_service_site_count, selected_geo_product_id, state_id*
+ui.ui_project_filter|display_order*, filter_code*, filter_id*, filter_label*, is_default*
+ui.ui_project_metric|display_order, metric_id*, metric_label, metric_unit, metric_value, view_state_id
+ui.ui_project_sequence_option|display_order*, is_default*, sequence_code*, sequence_label*, sequence_option_id*
+ui.ui_project_stage_step|stage_name*, stage_order*, stage_step_id*
+ui.ui_project_view_state|active_filter, competitor_search_text, geography_scope, panel_open, project_search_text, search_text, selected_competitor_id, selected_project_id, selected_sequence, sequence, view_state_id*

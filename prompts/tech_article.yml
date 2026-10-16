@@ -1,0 +1,178 @@
+id: tech_article
+title: Technology overview article from a news article
+version: 1
+fills: [technology_overview_article, technology_overview_fact, technology_overview_key_point, technology_overview_company, technology_overview_source, technology_source, technology_company]
+shows_on: "Technology Overview feed (card, badge, filters) and article drawer (at a glance, what the article says, key points, sources)"
+cadence: weekly                  # every news article of the last 60 days not yet run
+# HOW ARTICLES ARE FED. Articles come from staging.competitive_news_article (the news job). To feed one by hand,
+# insert a row there (headline, article_url, published_date, publisher, image_url). The relevance gate below skips
+# articles that are not technology developments.
+# No web search: the article is the only document.
+
+subject:
+  key: article_id
+  query: |
+    SELECT n.article_id, n.headline, n.article_url, n.publisher, n.published_date, n.image_url
+    FROM staging.competitive_news_article n
+    WHERE n.article_url IS NOT NULL AND n.published_date >= current_date - 60
+      AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business')
+    ORDER BY n.published_date DESC
+  documents:
+    - from: url
+      field: article_url
+
+context: [client, client_products, competitors, categories]
+
+task: |
+  TASK tech_article — decide whether one article reports a technology development in a client
+  category, and if so fill one technology-overview card.
+
+  ARTICLE: "{{subject.headline}}" — {{subject.publisher}}, {{subject.published_date}}
+  URL: {{subject.article_url}}
+
+  STEP 1 — RELEVANCE. It is relevant only if both hold:
+   a) it reports a TECHNOLOGY DEVELOPMENT: a new technology, material or process, an R&D result, a
+      prototype, a test or trial, a qualification or certification, first production, or a fielded
+      capability with stated technical content. Contract, order and budget news without technical
+      content is not one; nor are opinion pieces;
+   b) the technology falls in one of the CATEGORIES.
+  If either fails: "records": [] and "skip_reason" = one sentence naming the failed test.
+
+  STEP 2 — one record, table technology_overview_article:
+   - title: the development as a headline, max 120 characters, in the article's words
+   - card_summary: JUDGEMENT. 1-2 sentences, max 300 characters: what was developed or tested
+     (article facts) and what it changes in that category
+   - article_says: neutral summary, 3-6 sentences, max 900 characters, plain text, only what the
+     article states
+   - client_narrative: JUDGEMENT. 2-4 sentences: how the development bears on {{client.name}},
+     naming the product(s) from CLIENT PRODUCTS in the same category and whether the technology
+     could compete with, or be adopted into, them; say so if none fits. State the fit; do not
+     recommend an action
+   - classification: JUDGEMENT. competitor_advance if the developer is one of COMPETITORS (match
+     name or short name); adoptable if the developer is anyone else and {{client.name}} could adopt
+     or integrate the technology. Allowed: competitor_advance | adoptable
+   - direction: JUDGEMENT. threat if the development strengthens a competitor against
+     {{client.name}} in a category where {{client.name}} has a product; fav if it is favourable to
+     {{client.name}} (adoptable technology for its products, or a setback for a competitor);
+     watch otherwise (announced, planned, early-stage, or claimed without a demonstrated result).
+     Allowed: threat | watch | fav
+   - article_date: the date of the development as the article states it; else the published date
+     (say so in _precision)
+   - ref_category: the single CATEGORIES name that fits best, exactly as written
+   children:
+   technology_overview_fact (2-5 rows, "at a glance"):
+   - fact_key: competitor (the developer is in COMPETITORS; fact_value = its name exactly as in the
+     list), company (any other organisation the article names as developer or partner, one row
+     each; fact_value as the article writes it), category (exactly one row; fact_value = the
+     ref_category name; proof_text null). Allowed: company | competitor | category
+   - fact_value; proof_text: the verbatim article sentence that names the organisation and its role
+     (max 300 characters)
+   technology_overview_key_point (3-5 rows):
+   - point_text: one key point, one sentence, max 200 characters, a reported fact (what it is, what was
+     shown, figures stated), not an opinion
+   - evidence_text: the verbatim article sentence it rests on (max 300 characters)
+   technology_overview_company (one row per organisation the article names as developer or partner):
+   - display_label: the name as the article writes it; ref_competitor: the COMPETITORS name if the
+     same company, else null
+   - relationship: developer or partner
+   technology_overview_source (exactly one row, the article):
+   - source_url, publisher, source_kind (news | official | company); is_primary true
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+  COMPETITORS:
+  {{context.competitors}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENT (article text):
+  {{documents}}
+
+output:
+  technology_overview_article:
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      title: {required: true, max: 120}
+      card_summary: {judgement: true, max: 300}
+      article_says: {max: 900}
+      client_narrative: {judgement: true}
+      classification: {required: true, judgement: true, enum: [competitor_advance, adoptable]}
+      direction: {required: true, judgement: true, enum: [threat, watch, fav]}
+      article_date: {type: date}
+      category_id: {required: true, from_ref: ref_category}
+    loader:
+      overview_article_id: new_id
+      article_id: same_as_overview_article_id
+      pillar_id: technology_pillar_id
+      lens: technology_pillar_name
+      status: constant_active
+      sequence_no: rank_by_published_on_desc
+      external_id: subject.article_id
+      category_text: name_of_category_id
+      published_on: subject.published_date
+      image_url: subject.image_url
+      primary_company_id: company_id_of_the_developer_row
+      created_at: run_time
+      updated_at: run_time
+    children:
+      technology_overview_fact:
+        columns: [fact_key, fact_value, proof_text]
+        required: [fact_key, fact_value]
+        enum: {fact_key: [company, competitor, category]}
+        max: {proof_text: 300}
+        loader:
+          overview_fact_id: new_id
+          fact_id: same_as_overview_fact_id
+          overview_article_id: parent_id
+          article_id: parent_id
+          display_order: index
+          fact_label: label_of_fact_key        # Company | Competitor | Category
+          ui_label: label_of_fact_key
+      technology_overview_key_point:
+        columns: [point_text, evidence_text]
+        required: [point_text]
+        max: {point_text: 200, evidence_text: 300}
+        loader:
+          key_point_id: new_id
+          overview_article_id: parent_id
+          article_id: parent_id
+          point_no: index
+          display_order: index
+      technology_overview_company:
+        columns: [display_label, relationship]
+        refs: {ref_competitor: competitive_competitor}
+        required: [display_label, relationship]
+        enum: {relationship: [developer, partner]}
+        loader:
+          overview_company_id: new_id
+          overview_article_id: parent_id
+          article_id: parent_id
+          display_order: index
+          relationship_type: competitor_when_ref_competitor_resolves_else_third_party
+          company_id: id_of_technology_company_found_or_created_by_display_label
+        creates:
+          technology_company:
+            loader: {company_id: new_id_if_missing, display_name: copy_of_display_label, is_client: false}
+      technology_overview_source:
+        columns: [is_primary]
+        required: [is_primary]
+        transient: {source_url: {required: true}, publisher: {}, source_kind: {enum: [news, official, company]}}
+        loader:
+          overview_source_id: new_id
+          overview_article_id: parent_id
+          article_id: parent_id
+          display_order: index
+          source_role: constant_primary
+          source_id: id_of_technology_source_found_or_created_by_url
+        creates:
+          technology_source:
+            loader:
+              source_id: new_id_if_missing
+              url: transient.source_url
+              source_url: transient.source_url
+              publisher: transient.publisher
+              source_kind: transient.source_kind
+              label: host_of_url
+              retrieved_at: run_time

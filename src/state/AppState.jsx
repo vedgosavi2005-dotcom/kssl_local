@@ -1,12 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_ROUTE, PILLARS, RAIL, OVERVIEW_VIEW, parseRoute, routeHash } from "../lib/route";
+import { DEFAULT_ROUTE, PILLARS, PILLAR_LABEL, RAIL, OVERVIEW_VIEW, parseRoute, routeHash } from "../lib/route";
 import { clearViewState } from "../lib/viewState";
 
 const AppStateContext = createContext(null);
 
 /* The route tables live in lib/route.js (pure, tested under node); re-exported here so
    the rail, the top bar and the pages keep importing them from the state module. */
-export { PILLARS, RAIL };
+export { PILLARS, PILLAR_LABEL, RAIL };
 
 const OVERVIEW_VIEWS = new Set(Object.values(OVERVIEW_VIEW));
 export const isOverview = (view) => OVERVIEW_VIEWS.has(view);
@@ -86,7 +86,7 @@ export function AppStateProvider({ children }) {
      One place, so every panel updates the same two things when its selection moves —
      the original scattered this across `window.malloryCtx` and `window.scopedCtx`. */
   const [chatCtx, setChatCtx] = useState({
-    pillar,
+    pillar: PILLAR_LABEL[pillar] || "Competitive",
     view: view,
     selection: null,
   });

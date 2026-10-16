@@ -1,0 +1,114 @@
+id: global_requirement
+title: Global requirements of governments and armed forces, per category
+version: 2
+fills: [market_global_requirement, market_global_requirement_specification, market_global_requirement_source]
+shows_on: "Global Requirements page (cards; detail with scope, target specifications, platform match, strategic assessment, sources)"
+cadence: quarterly
+web_search: true
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: category_id
+  query: |
+    SELECT c.category_id, c.category_name, c.category_description
+    FROM staging.technology_category c
+    WHERE c.is_active
+    ORDER BY c.display_order
+  documents:
+    - from: sql                  # requirements already on record: reuse their titles so a re-run updates, not duplicates
+      query: |
+        SELECT 'KNOWN REQUIREMENT' AS doc, r.title, r.country_name, r.region, r.status, r.deadline
+        FROM staging.market_global_requirement r
+        WHERE lower(trim(r.category)) = lower(trim('{{subject.category_name}}'))
+        ORDER BY r.title
+    - from: sql
+      query: |
+        SELECT 'CLIENT PRODUCT SPEC' AS doc, p.product_name, s.spec_name, s.value_text, s.value_numeric, s.unit
+        FROM staging.client_product p
+        LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
+        WHERE lower(trim(p.category)) = lower(trim('{{subject.category_name}}'))
+        ORDER BY p.product_name, s.display_order
+
+context: [client, client_products, categories]
+
+task: |
+  TASK global_requirement — list the current and announced requirements of governments and armed
+  forces worldwide for products in the category "{{subject.category_name}}"
+  ({{subject.category_description}}). Web search is the main source; the DOCUMENTS give titles
+  already on record and the client's stored specs.
+
+  A REQUIREMENT is a need a government, ministry or armed force has stated: a programme, a planned
+  purchase, a capability gap it says it must fill, an RFI / RFP / tender, or a budget line for a
+  named item. NOT a company's sales pitch, an analyst's forecast, or a contract already being
+  delivered. Only requirements first stated or updated in the last 3 years. At most 8 records, the
+  most recent or largest first (stop searching once you have them; a run must finish in a few minutes); fewer if
+  the sources support fewer. For a requirement in KNOWN REQUIREMENT that you find again, use its title
+  exactly and re-check its status. Put KNOWN REQUIREMENT titles you could not confirm in
+  "not_found" as "market_global_requirement.<title>".
+
+  Per requirement, one record, table market_global_requirement:
+   - title: a plain name, the programme name if the source gives one; max 100 characters, no adjectives
+   - buyer_name: the ministry, armed force or agency, as written
+   - country_name: the single country, English short name; null when the need is a group's
+   - region: a group or region exactly as the source states it (e.g. a bloc), else null
+   - ref_category: {{subject.category_name}}, unless the item clearly belongs to another CATEGORIES name
+   - description: 2-3 sentences of stated facts: who needs what, quantity, timeline, budget, with the
+     date of the latest statement. No estimate, no recommendation
+   - status: by the latest procurement step a source states: monitored (need stated, no formal
+     procurement step reported), open (RFI, RFP, tender, trials or shortlist reported, no award),
+     closed (award or cancellation reported). The quote must state the step.
+     Allowed: open | monitored | closed
+   - deadline: the stated response or bid deadline as written; null if none
+   - value_text: the stated value or budget as written, with currency; null if none
+   - kssl_fit: JUDGEMENT. strong, partial or weak, from the requirement's stated parameters against
+     CLIENT PRODUCT SPEC rows; null if the client has no product in this category or no stated
+     parameter can be checked. ref_client_product (kssl_model): the best-fitting client product
+   - strategic_assessment: JUDGEMENT. 1-3 sentences: what this requirement means for {{client.name}}
+     in this category, naming the product and the facts it rests on
+   children:
+   market_global_requirement_specification (0-10 rows, the stated target parameters in source order):
+   - spec_label, spec_value (as written, with unit; no conversion)
+   market_global_requirement_source (1-3 rows):
+   - source_label (page or document title as published), source_type (official | news | company),
+     source_url
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENTS (requirements on record, then client specs):
+  {{documents}}
+
+output:
+  market_global_requirement:
+    card: true
+    key: [prompt_id, subject, title]
+    columns:
+      title: {required: true, max: 100}
+      buyer_name: {max: 240}
+      country_name: {max: 160}
+      region: {}
+      category: {from_ref: ref_category, required: true}
+      description: {required: true}
+      status: {required: true, enum: [open, monitored, closed]}
+      deadline: {max: 120}
+      value_text: {max: 120}
+      kssl_fit: {judgement: true, enum: [strong, partial, weak]}
+      kssl_model: {from_ref: ref_client_product, judgement: true}
+      strategic_assessment: {judgement: true}
+    loader:
+      requirement_id: new_id_stable_by_category_and_title
+      empty_state_message: from_ui.market_global_requirement_view.empty_state_text
+      # days_remaining is NOT stored (no closing date column; the page does not count days)
+    children:
+      market_global_requirement_specification:
+        columns: [spec_label, spec_value]
+        required: [spec_label]
+        loader: {requirement_spec_id: new_id, requirement_id: parent_id, display_order: index}
+      market_global_requirement_source:
+        columns: [source_label, source_type, source_url]
+        required: [source_label, source_url]
+        enum: {source_type: [official, news, company]}
+        loader: {requirement_source_id: new_id, requirement_id: parent_id, display_order: index}

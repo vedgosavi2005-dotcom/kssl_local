@@ -1,12 +1,11 @@
 import { useData } from "../../state/DataProvider";
 import { NO_DATE_LABEL } from "../../lib/overview.js";
+import { escRich } from "../../lib/html.js";
+import { Review } from "../review/Review";
 
-/* One row in the overview feed. `title` and `sowhat` carry markup from the dataset
-   (bolded figures), so they are injected rather than escaped.
-
-   `card.meta` ("Artillery · Hanwha Defense USA · from bench") is deliberately NOT
-   rendered — the operator asked for title and description only. The field stays on the
-   card because buildFeed's `category` sort orders on it (lib/overview.js). */
+/* One row in the overview feed: stored title and summary only (escRich: markup other than
+   b/i/em/strong/br is shown as text). `card.meta` (category) is deliberately NOT rendered.
+   The status word is the stored classification, passed in as `dirWord`. */
 export default function SignalCard({ card, dirWord, badgeClass, selected, fresh, onSelect, when }) {
   const { data } = useData();
   return (
@@ -29,34 +28,19 @@ export default function SignalCard({ card, dirWord, badgeClass, selected, fresh,
         <span className="rank">{card.rank}</span>
       </div>
       <div className="body">
-        {/* Prefer the understood, per-pillar rewrite (uiTitle) and the "why KSSL cares"
-            line (ksslImpact) written by gen_signal_text on the GPU; fall back to the raw
-            news title and the article-shaped sowhat when a card was not enriched. Both are
-            plain text, so injecting is safe -- the raw title/sowhat carry bolded figures. */}
-        <div className="ttl" dangerouslySetInnerHTML={{ __html: card.uiTitle || card.title }} />
-        <div className="sowhat" dangerouslySetInnerHTML={{ __html: card.ksslImpact || card.sowhat }} />
+        <div className="ttl" dangerouslySetInnerHTML={{ __html: escRich(card.title) }} />
+        <div className="sowhat" dangerouslySetInnerHTML={{ __html: escRich(card.sowhat) }} />
         {card.match && card.match.length > 0 && card.match[0].n && (
           <div className="koel-prod-highlight-row">
-            <span className="kph-label">{data.client?.short || ""} Product:</span>
+            <span className="kph-label">{data.client?.short || data.client?.name} Product:</span>
             <span className="kph-val">{card.match[0].n}</span>
           </div>
         )}
+        <Review src={card._src} />
       </div>
       <div className="aside">
         {/* a Technology card also carries its kind, so ADOPTABLE can read green (k-adopt) */}
         {dirWord ? <span className={`dirtag ${badgeClass || card.dir}${card.kind ? ` k-${card.kind}` : ""}`}>{dirWord}</span> : null}
-        {/* SEVERITY IS STILL COMPUTED, JUST NOT PRINTED HERE.
-            The HIGH / MEDIUM / LOW badge is off the card at the operator's request. It is
-            a display change and nothing more: backend/app.py still derives `severity`,
-            `severityRank` and `severityLabel` for every card at serve time, the payload
-            still carries them, and the feed is still SEQUENCED by severityRank -- so the
-            order the reader sees is unchanged, and the value stays available to the
-            detail panel, the report and anything downstream.
-
-            The one thing lost is that the sort key is now invisible on the row it moved.
-            That is the operator's call to make; if it should come back, restore this
-            block -- `card.severityLabel` and the greyed "unassessed" state for a card the
-            pipeline could not grade are both still served. */}
         {/* `when` comes from signalDate() so the card and its detail panel cannot
             disagree about the same event. Falls back to the card’s own value.
 

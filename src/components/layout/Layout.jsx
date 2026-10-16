@@ -7,7 +7,6 @@ import MetricsStrip from "../metricsStrip/MetricsStrip";
 import MalloryChat from "../malloryChat/MalloryChat";
 import Overview from "../../pages/overview/Overview";
 import Positioning from "../../pages/competitive/Positioning";
-import GapAnalysis from "../../pages/competitive/GapAnalysis";
 import Partnerships from "../../pages/competitive/Partnerships";
 import Geo from "../../pages/competitive/Geo";
 import Patents from "../../pages/competitive/Patents";
@@ -23,8 +22,9 @@ import Projects from "../../pages/competitive/Projects";
 import Finances from "../../pages/competitive/Finances";
 import { useAppState, isOverview } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { tilePredicate, filterMatch, readFeedSeq, writeFeedSeq, TILE_LABELS, bucketTenders } from "../../lib/overview";
-import { headerMetrics, pillarHeaderTitle } from "../../lib/uiHeader";
+import { metricsFor, tilePredicate, filterMatch, readFeedSeq, writeFeedSeq, TILE_LABELS } from "../../lib/overview";
+import { bucketTenders } from "../../lib/tenderCalc";
+import { marketMetrics, topOpportunityMetrics } from "../../lib/marketOverview";
 
 const PILLAR_OF_VIEW = {
   overview: "competitive",
@@ -92,6 +92,16 @@ export default function Layout() {
   const onMarketReport = view === "m-report" || view === "tender" || view === "awarded-tenders" || view === "closed-tenders" || view === "global-requirement" || view === "m-overview";
   const onFeed = isOverview(view) && !onMarketReport;
 
+  const metrics = useMemo(
+    () =>
+      view === "m-overview"
+        ? topOpportunityMetrics(data)
+        : onMarketReport
+          ? marketMetrics(data.tenders)
+          : metricsFor(cfg, overviewPillar, data),
+    [cfg, overviewPillar, data, onMarketReport, view],
+  );
+
   const meta = viewMeta[isOverview(view) ? "overview" : view] || viewMeta.overview;
   const onOverview = isOverview(view);
   /* The report is not an overview — it has no feed and no selectable card — but it does
@@ -101,17 +111,13 @@ export default function Layout() {
      third column reserved for a drawer that never opens. */
   const wideNoDrawer = onOverview || onMarketReport || view === "innovation";
   const showMetricsStrip = onOverview || onMarketReport;
-  const metrics = useMemo(
-    () => (showMetricsStrip ? headerMetrics(data, overviewPillar) : []),
-    [data, overviewPillar, showMetricsStrip],
-  );
   /* Each pillar's overview carries its own heading ("Market Intelligence"), which lives
      on the served config; viewMeta only has the competitive one. */
   /* onMarketReport gates LAYOUT (metric strip, collapsed third column) and covers
      m-report, tender, awarded-tenders and closed-tenders. It must not also pick the
      title, or all four render as "Market Report". Every heading now comes from
      viewMeta; only a pillar overview overrides it, from its served config. */
-  const headTitle = onOverview ? pillarHeaderTitle(data, overviewPillar) : meta.title;
+  const headTitle = onOverview ? cfg.title || meta.title : meta.title;
 
   /* The count line reflects whichever filter is active — the original rewrote it in
      applyFilter(), with the tile label or the direction word. */
@@ -126,7 +132,7 @@ export default function Layout() {
       const topOpp = data.topOpportunities || {};
       const tLen = (topOpp.topTenders || []).length;
       const pLen = (topOpp.projectsBeforeTender || []).length;
-      return `${tLen} top tenders · ${pLen} pre-tender targets · revenue & strategic fit ranked`;
+      return `${tLen} top tenders · ${pLen} pre-tender targets`;
     }
     if (view === "global-requirement") {
       const reqs = data.globalRequirements || [];
@@ -188,11 +194,9 @@ export default function Layout() {
         return <Products />;
       case "positioning":
         return <Positioning />;
-      /* ARCHIVED — off the rail, still routed. getInitialAppState validates the pillar
-         but never the view, so a saved route or a pasted link pointing here would
-         otherwise fall through to `default: null` and render a blank pane forever. */
-      case "gap-competitive":
-        return <GapAnalysis />;
+      /* Gap Analysis is hidden by decision (2026-10-16): not routed at all, so its
+         written essays never show. parseRoute sends a stale #v=gap-competitive link to
+         the pillar's default view. */
       case "partnerships":
         return <Partnerships />;
       case "projects":
@@ -205,7 +209,7 @@ export default function Layout() {
         return <Patents />;
       case "tender":
       /* Also archived: the Market overview carries Awarded and Closed as tabs now, but
-         the routes stay for the same reason gap-competitive's does. */
+         the routes stay so a saved link still resolves. */
       case "awarded-tenders":
       case "closed-tenders":
         return <Tenders mode={view} />;

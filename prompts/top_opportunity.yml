@@ -1,0 +1,133 @@
+id: top_opportunity
+title: Weekly top opportunities (top tenders, projects before tender, next moves)
+version: 1
+fills: [market_top_opportunity_tender, market_top_opportunity_project, market_next_move]
+shows_on: Top opportunity page (Top tenders, Projects to win before they tender, Next moves)
+cadence: weekly
+# ONE run per week over everything on record. Each run REPLACES all rows of the three tables
+# (`replace: all_rows`): the lists are "the current top", not a history. Run it after tender_assessment and opportunity.
+# No web search: every fact comes from the stored tender / opportunity rows below.
+
+subject:
+  key: week_start
+  query: |
+    SELECT date_trunc('week', current_date)::date AS week_start, current_date AS run_date
+  documents:
+    - from: sql
+      query: |
+        SELECT 'OPEN TENDER' AS doc, t.tender_id, t.title, t.notice_reference, t.buyer_name, t.country_name, t.closing_date,
+               t.value_text, t.status, t.source_url, t.registration_requirement, t.local_presence_requirement,
+               a.fit_grade, a.fit_score, a.kssl_model, a.match_summary,
+               (SELECT string_agg(r.requirement_type || ': ' || coalesce(r.description, '?'), '; ' ORDER BY r.display_order)
+                  FROM staging.market_tender_requirement r WHERE r.tender_id = t.tender_id) AS requirements,
+               (SELECT f.competitor_name || ' (' || coalesce(f.fit_label, '?') || ')'
+                  FROM staging.market_tender_competitor_fit f WHERE f.tender_id = t.tender_id
+                  ORDER BY f.rank_position NULLS LAST LIMIT 1) AS top_rival
+        FROM staging.market_tender t
+        LEFT JOIN staging.market_tender_fit_assessment a ON a.tender_id = t.tender_id
+        WHERE t.status = 'open' AND (t.closing_date IS NULL OR t.closing_date >= current_date)
+        ORDER BY t.closing_date NULLS LAST
+    - from: sql
+      query: |
+        SELECT 'OPPORTUNITY' AS doc, o.opportunity_id, o.title, o.buyer_name, o.country_code, o.stage, o.current_status,
+               o.latest_milestone, o.as_of_date,
+               f.fit_grade, f.client_model_display, f.rival_name, f.rival_product_display, f.rationale
+        FROM staging.market_opportunity o
+        LEFT JOIN staging.market_opportunity_fit_assessment f ON f.opportunity_id = o.opportunity_id
+        ORDER BY o.as_of_date DESC NULLS LAST
+
+context: [client]
+
+task: |
+  TASK top_opportunity — from the OPEN TENDER and OPPORTUNITY rows below, choose and order the top
+  tenders and the top projects-before-tender for {{client.name}}, and list the next moves. Run date:
+  {{subject.run_date}}. Use ONLY the rows below. WEB SEARCH is off. Copy fit, model, rival and stage
+  values exactly as given; do not estimate revenue. For rule 4 a source is an input row: url = its
+  source_url (null if none), quote = "<field>: <value>" exactly as in the row.
+
+  TOP TENDERS — table market_top_opportunity_tender, at most 10, in rank order (rank 1 first).
+  Only tenders whose fit_grade is strong or partial. Order: strong before partial; then higher
+  fit_score; then earlier closing_date. JUDGEMENT for inclusion and order (give _reason once per
+  record naming the three keys).
+   - ref_tender: the tender title exactly as in the row
+   - kssl_fit: the row's fit_grade; kssl_model: the row's kssl_model; rival_to_beat: the row's
+     top_rival (null if none)
+   - decides: JUDGEMENT. One sentence, max 160 characters: the condition or criterion the row's
+     requirements show will decide eligibility or award; null if none is stated
+   - revenue_text: null (no revenue source exists)
+
+  PROJECTS BEFORE TENDER — table market_top_opportunity_project, at most 10, in rank order. Only
+  OPPORTUNITY rows with fit_grade strong or partial. Order: strong before partial, then newest as_of_date.
+   - ref_opportunity: the title exactly as in the row
+   - buyer_name, kssl_fit (= fit_grade), kssl_model (= client_model_display), rival_to_beat
+     (= rival_name plus rival_product_display), copied as given
+   - where_it_stands: the row's stage / current_status / latest_milestone, joined as given
+   - revenue_text: null
+
+  NEXT MOVES — table market_next_move, at most 8, soonest due first. One concrete action each, tied to
+  one tender or opportunity from the lists above:
+   - action_text: JUDGEMENT. One sentence, max 160 characters, an action the row's facts call for
+     (register on the portal, request documents, confirm local-content eligibility, prepare the bid
+     before the closing date); never an action with no basis in the row
+   - ref_tender or ref_opportunity: the item it is about
+   - due_date: a date taken from the row (closing_date or a stated date); null if none
+   - priority: high (due within 14 days of the run date), medium (within 45 days), low (later or no
+     date). Allowed: high | medium | low
+
+  CLIENT: {{context.client}}
+
+  DOCUMENTS (stored tender and opportunity rows):
+  {{documents}}
+
+output:
+  market_top_opportunity_tender:
+    card: true
+    replace: all_rows            # delete every previous row of this table when this run loads
+    key: [prompt_id, subject, rank]
+    refs: {ref_tender: market_tender.title}
+    columns:
+      tender_id: {required: true, from_ref: ref_tender}
+      kssl_fit: {enum: [strong, partial, weak]}
+      kssl_model: {}
+      rival_to_beat: {}
+      decides: {judgement: true, max: 160}
+      revenue_text: {}
+    loader:
+      top_opportunity_tender_id: new_id
+      rank_position: index_plus_1_of_output_order
+      status: copy_of_tender_status
+  market_top_opportunity_project:
+    card: true
+    replace: all_rows
+    key: [prompt_id, subject, rank]
+    refs: {ref_opportunity: market_opportunity.title}
+    columns:
+      opportunity_id: {required: true, from_ref: ref_opportunity}
+      buyer_name: {}
+      kssl_fit: {enum: [strong, partial, weak]}
+      kssl_model: {}
+      rival_to_beat: {}
+      where_it_stands: {}
+      revenue_text: {}
+    loader:
+      top_opportunity_project_id: new_id
+      country_name: country_reference_table_of_opportunity_country_code
+      rank_position: index_plus_1_of_output_order
+  market_next_move:
+    card: true
+    replace: all_rows
+    key: [prompt_id, subject, sequence]
+    refs: {ref_tender: market_tender.title, ref_opportunity: market_opportunity.title}
+    columns:
+      action_text: {required: true, judgement: true, max: 160}
+      tender_id: {from_ref: ref_tender}
+      opportunity_id: {from_ref: ref_opportunity}
+      due_date: {type: date}
+      priority: {enum: [high, medium, low]}
+    loader:
+      next_move_id: new_id
+      sequence: index_plus_1_of_output_order
+      tender_title: title_of_tender_id
+      due_text: due_date_formatted_as_d_mon_yyyy
+      status: constant_open
+      # days_remaining is NOT stored (the page computes it from due_date)

@@ -1,37 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { bucketTenders } from "../../lib/overview";
+import { bucketTenders } from "../../lib/tenderCalc";
 import { formatDate } from "../../utils/formatDate";
+import { Review } from "../../components/review/Review";
 import {
   CATEGORY_COLOR,
   catOf,
   closingWindows,
   demandSplit,
-  hostOf,
   initCategoryPalette,
-  portalRows,
   reportFacets,
   reportRows,
   sliceLabel,
   windowOf,
 } from "../../lib/marketOverview";
 
-/* ===== Market Overview =====
-   Ported from the sibling JSW EV deployment (its own source, not its bundle) so the two
-   read as one product. Same five-section tab strip, same country filter beneath it, same
-   two charts in the active-tenders section only, same evidence table underneath.
-
-   What is NOT the same is the demand split. JSW cuts its corpus into Product /
-   Product + MRO / MRO-only, which is a statement about what a bus tender contracts for
-   and has no defence equivalent — nothing in these 89 rows says whether a shell contract
-   includes servicing. The honest cut on this corpus is the one the rows carry: `cat`.
-   So sections 03-05 are the LIFECYCLE cuts this corpus does have (awarded, closed) and
-   the pie navigates by category instead.
-
-   Every number is counted from the tenders `useData()` serves. Where the corpus holds
-   nothing — no tender on record publishes a value, none carries a bid verdict — the
-   measure is absent or reads "—", never 0 and never a column of dashes. */
+/* ===== Market Intelligence =====
+   Four tabs (active, by category, awarded, closed), a country / category filter, two charts
+   in the active section, and the evidence table. Every number is counted from the tenders
+   `useData()` serves; open / awarded / closed is the stored `status`. A tender with no
+   stored category is left out of the category views. */
 
 const fmt = (n) => new Intl.NumberFormat("en-IN").format(n);
 const TABLE_PAGE = 25;
@@ -148,7 +137,7 @@ function PieChart({ rows, total, colorOf, onPick, examples }) {
    chroma floor, normal-vision separation, contrast). The grey is excluded from that
    check on purpose: it is deliberately off-scale, as the note above says. */
 const WINDOW_COLORS = {
-  "1–7 days": "#c03a3a",
+  "Up to 7 days": "#c03a3a",
   "8–14 days": "#a87d16",
   "15–30 days": "#13906a",
   "30+ days": "#3670bd",
@@ -261,7 +250,7 @@ export default function MarketOverview() {
         },
         {
           h: `${bucket} tenders listed (${n})`,
-          rows: list.map((x) => [x.title, [x.country, x.cat, x.value, x.deadline].filter(Boolean).join(" · ")]),
+          rows: list.map((x) => [x.title, [x.country, x.cat, x.value, x.closingDate && formatDate(x.closingDate)].filter(Boolean).join(" · ")]),
         },
       ],
       payload: {
@@ -275,7 +264,6 @@ export default function MarketOverview() {
   }, [section, country, cat, open, awarded, closed, list, n]);
   useHeaderReport(report);
 
-  const portals = useMemo(() => portalRows(tenders), [tenders]);
   /* The charts describe the OPEN set narrowed by country — never by the category the pie
      itself sets, or picking a slice would redraw the pie as a single full circle. */
   const chartBase = useMemo(
@@ -286,6 +274,7 @@ export default function MarketOverview() {
     () => demandSplit(chartBase).map((s) => ({ key: s.label, n: s.count })),
     [chartBase],
   );
+  const demandTotal = demandRows.reduce((n, r) => n + r.n, 0);
   const closingRows = useMemo(
     () => closingWindows(chartBase).map((w) => ({ key: w.label, n: w.count })),
     [chartBase],
@@ -329,6 +318,7 @@ export default function MarketOverview() {
         <span title={t.title}>{t.title}</span>
       )}
       <span className="ovt-buyer">{[t.issuer, t.country].filter(Boolean).join(" · ")}</span>
+      <Review src={t._src} />
     </td>
   );
 
@@ -336,7 +326,7 @@ export default function MarketOverview() {
     t.url ? (
       <td>
         <a href={t.url} rel="noopener noreferrer" target="_blank" title={t.url}>
-          {hostOf(t.url)} ↗
+          {(t.srcs && t.srcs[0] && t.srcs[0].label) || "open"} ↗
         </a>
       </td>
     ) : (
@@ -384,15 +374,13 @@ export default function MarketOverview() {
     );
 
   const countOf = (s) =>
-    s.id === "sites"
-      ? portals.length
-      : s.id === "awarded"
-        ? awarded.length
-        : s.id === "closed"
-          ? closed.length
-          : s.id === "category"
-            ? demandSplit(open).length
-            : open.length;
+    s.id === "awarded"
+      ? awarded.length
+      : s.id === "closed"
+        ? closed.length
+        : s.id === "category"
+          ? demandSplit(open).length
+          : open.length;
 
   return (
     <div className="ov-report">
@@ -520,7 +508,7 @@ export default function MarketOverview() {
               examples={examplesFor((t) => sliceLabel(catOf(t)))}
               onPick={(k) => setCat((c) => (c === k ? null : k))}
               rows={demandRows}
-              total={chartBase.length}
+              total={demandTotal}
             />
           </Chart>
           <Chart
@@ -543,7 +531,7 @@ export default function MarketOverview() {
             <div className="ovc-h">
               <span className="eyebrow">By category</span>
               <span className="ovc-note">
-                every open tender counted exactly once · click a row to read it in the table
+                open tenders that state a category · click a row to read them in the table
               </span>
             </div>
             <div className="ovt-scroll">

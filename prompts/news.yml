@@ -1,0 +1,113 @@
+id: news
+title: Merge duplicate news and categorise
+version: 3
+fills: [competitive_news_article, competitive_product_news]
+shows_on: Profile + Products news lists
+cadence: daily
+recurring: false                 # a batch (one competitor's new candidates) is decided once
+handler: news_merge              # the answer is applied by prompts/news_merge.py, not the generic loader
+# model / web_search: inherit from _shared.yml (headlines only, no article text, no web search)
+
+subject:                         # one run per competitor with candidates waiting (staging.news_candidate)
+  key: batch_key                 # a new news fetch changes max(found_at) -> a new batch; a decided batch never re-runs
+  query: |
+    SELECT c.competitor_id::text || '@' || to_char(max(n.found_at), 'YYYYMMDDHH24MISS') AS batch_key,
+           c.competitor_id, c.display_name AS name, count(*) AS new_count
+    FROM staging.news_candidate n
+    JOIN staging.competitive_competitor c ON c.competitor_id = n.competitor_id
+    WHERE n.status = 'new'
+    GROUP BY c.competitor_id, c.display_name
+    ORDER BY c.display_name
+  documents:
+    - from: sql                  # 1st block: the new articles (handles C...)
+      query: |
+        SELECT 'C' || left(n.candidate_id::text, 8) AS handle,
+               CASE WHEN n.product_id IS NULL THEN 'company' ELSE 'product: ' || p.product_name END AS owner,
+               CASE WHEN g.status = 'new' THEN 'C' || left(g.candidate_id::text, 8) END AS copy_of,
+               n.published_date, n.publisher, n.source_tier, n.headline
+        FROM staging.news_candidate n
+        LEFT JOIN staging.competitive_product p ON p.product_id = n.product_id
+        LEFT JOIN staging.news_candidate g ON g.candidate_id = n.pre_group
+        WHERE n.status = 'new' AND n.competitor_id = '{{subject.competitor_id}}'::uuid
+        ORDER BY owner, n.published_date, n.candidate_id
+    - from: sql                  # 2nd block: stories already stored, last 45 days (handles S...)
+      query: |
+        SELECT 'S' || left(a.article_id::text, 8) AS handle, 'company' AS owner,
+               a.published_date, a.publisher, a.category, a.headline
+        FROM staging.competitive_news_article a
+        WHERE a.competitor_id = '{{subject.competitor_id}}'::uuid AND a.published_date >= current_date - 45
+        UNION ALL
+        SELECT 'S' || left(s.product_news_id::text, 8), 'product: ' || p.product_name,
+               s.published_date, s.publisher, s.category, s.headline
+        FROM staging.competitive_product_news s
+        JOIN staging.competitive_product p ON p.product_id = s.product_id
+        WHERE p.competitor_id = '{{subject.competitor_id}}'::uuid AND s.published_date >= current_date - 45
+        ORDER BY owner, published_date
+
+context: [client, competitors]
+
+task: |
+  TASK news — group the news articles found for {{subject.name}} into stories, and categorise each story.
+  Several publishers report the same event with different headlines; the database keeps ONE row per
+  story. You see headlines only; decide from the headlines, publishers and dates.
+
+  DOCUMENTS below hold two blocks of rows. The first block is NEW ARTICLES (handles C...; "owner" is
+  "company" or "product: <name>"; "copy_of" names an article the code already knows to be a copy of
+  this one). The second block is STORIES ALREADY STORED for {{subject.name}} in the last 45 days
+  (handles S...; "category" may be empty); "none on record" means there are none.
+
+  RULES
+   - Group articles only when they report the SAME event: the same deal, contract, test, launch or
+     announcement. A later follow-up event (the order, then its first delivery) is a different story.
+     Same topic or same company on the same day is not enough.
+   - Group by event, not by owner: one story may hold company articles and articles about one or more of
+     the company's products when they report the same event. (The code writes every story to the
+     company's news, and also to each product's news that has an article in it.)
+   - Articles that share a "copy_of" are already known copies: put them in the same story.
+   - Every C handle appears in exactly one story (a story may have a single article). Nothing is
+     dropped: every article gets a story and a category.
+   - same_as: a list of S handles of already stored stories that report the same event (the event can be
+     stored under the company and under a product, so there may be several); [] when it is new.
+   - category: exactly one of
+       Contract & order         an order, contract, tender win or selection to supply defence goods or services
+       Partnership / JV         a partnership, MoU, teaming, joint venture, licence or technology tie-up
+       Product launch & testing a product unveiled, tested, trialled or certified
+       Delivery & induction     a delivery, handover or induction into service
+       Export                   a sale, approval or contract with a foreign customer
+       Financial results        reported quarterly/annual results, profit, revenue, order book, guidance
+       Stock & market           share-price moves, analyst or broker notes, fund holdings, "breakout" or volume
+                                lists, stock tips
+       Facility & capacity      a new plant, expansion, investment, jobs, production capacity
+       Leadership & corporate   management changes, strategy statements, restructuring, acquisitions, accidents
+       Non-defence business     the company's civil, infrastructure, energy or EPC business with no defence
+                                angle (metro, offshore platform, chemical plant, real-estate corridor): a civil
+                                contract is Non-defence business, not Contract & order
+       Other                    none of the above
+     Financial results is what the company reported or guided; Stock & market is how the share or the
+     market reacts to it. Give a category for every story, also when same_as is set.
+   - JUDGEMENT fields (each needs "_reason"): category (one sentence); candidates, only when the story
+     groups 2 or more articles (one sentence: why they are the same event).
+
+  OUTPUT: records of table "news_story", one per story. "candidates" is ALWAYS the list of C handles of
+  the story, also for a story of a single article (never null or empty); every C handle must be listed:
+    {"table": "news_story",
+     "values": {"candidates": ["C1a2b3c4d", ...], "same_as": ["S5e6f7a8b"] or [], "category": "...",
+                "_reason": {"category": "...", "candidates": "..."}}}
+  skip_reason only when there are no new articles.
+
+  CLIENT: {{context.client}}
+  COMPETITORS:
+  {{context.competitors}}
+
+  DOCUMENTS (new articles, then stored stories):
+  {{documents}}
+
+output:                          # documentary: news_story is applied by prompts/news_merge.py, not the loader
+  news_story:
+    columns:
+      candidates: {required: true}                 # list of C handles
+      same_as: {}                                  # list of S handles, [] when new
+      category: {required: true, judgement: true,
+                 enum: [Contract & order, Partnership / JV, Product launch & testing, Delivery & induction, Export,
+                        Financial results, Stock & market, Facility & capacity, Leadership & corporate,
+                        Non-defence business, Other]}

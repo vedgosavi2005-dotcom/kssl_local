@@ -1,0 +1,86 @@
+id: patent_classification
+title: Patent classification (category label per filing, IPC/CPC text)
+version: 1
+fills: [competitive_patent_classification, competitive_patent_filing]
+shows_on: "Patents page (Filings by category chips, technology-field rail, filing card classification line)"
+cadence: quarterly               # a batch re-runs when its filing list changes (the key includes a fingerprint of the filing ids)
+web_search: true
+# The filings are NOT written by the model: they come from the raw patent-office load. Here the model only
+# (1) labels each filing with one client category and (2) writes the classification text for its IPC/CPC code.
+# Web search is allowed ONLY to read the official IPC/CPC title of a classification_code (WIPO, EPO or USPTO
+# scheme pages); nothing else may be searched.
+# Filings are sent in batches of 60 per portfolio (handles F001..F060 in filing_id order inside the batch).
+# competitive_patent_filing has no per-filing category column, so the labels live in the run log; the loader
+# rebuilds competitive_patent_classification for a portfolio from the latest run of EVERY batch of that portfolio.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: batch_key
+  query: |
+    WITH n AS (
+      SELECT f.portfolio_id, p.competitor_id, f.filing_id,
+             (row_number() OVER (PARTITION BY f.portfolio_id ORDER BY f.filing_id) - 1) / 60 AS batch_no
+      FROM staging.competitive_patent_filing f
+      JOIN staging.competitive_patent_portfolio p ON p.portfolio_id = f.portfolio_id
+    )
+    SELECT n.portfolio_id, n.competitor_id, n.batch_no, count(*) AS batch_size,
+           n.portfolio_id::text || '|' || n.batch_no || '|' || md5(string_agg(n.filing_id::text, ',' ORDER BY n.filing_id)) AS batch_key
+    FROM n
+    GROUP BY n.portfolio_id, n.competitor_id, n.batch_no
+    ORDER BY n.portfolio_id, n.batch_no
+  documents:
+    - from: sql
+      query: |
+        SELECT 'F' || lpad(r.rn::text, 3, '0') AS handle, r.title, r.jurisdiction, r.publication_number,
+               r.classification_code, r.classification_text, r.patent_url
+        FROM (SELECT f.*, row_number() OVER (ORDER BY f.filing_id) AS rn
+                FROM staging.competitive_patent_filing f
+               WHERE f.portfolio_id = '{{subject.portfolio_id}}') r
+        WHERE (r.rn - 1) / 60 = {{subject.batch_no}}
+        ORDER BY r.rn
+
+context: [client, categories]
+
+task: |
+  TASK patent_classification — label each filing below (portfolio batch {{subject.batch_no}},
+  {{subject.batch_size}} filings) with one {{client.name}} technology category, and
+  write its classification text. Use ONLY the FILING rows and the official classification scheme.
+  Do not change or add any filing data (title, numbers, dates, status, codes).
+
+  For every FILING row output one record, table competitive_patent_filing (exactly one per row, none
+  more or fewer):
+   - ref_filing: the handle exactly as given (F001, F002, ...)
+   - ref_category: JUDGEMENT. Exactly one CATEGORIES name that the invention is mainly for, judged
+     from its title and classification_code (and the scheme title of that code); null if it is not
+     clearly for any category (civil or general-manufacturing inventions). Do not guess from the
+     company's business alone. _reason: one short sentence. _sources: url = patent_url (or null),
+     quote = the title verbatim
+   - classification_text: only if the row's classification_text is empty: "Classified under
+     <classification_code>: <official scheme title of that code>", the title verbatim from the
+     official IPC/CPC scheme (url = the scheme page you read). If you cannot find the title, omit the
+     field and put "competitive_patent_filing.classification_text:<handle>" in "not_found"
+  Do not output competitive_patent_classification; the loader counts it from your labels.
+
+  CLIENT: {{context.client}}
+  CATEGORIES:
+  {{context.categories}}
+
+  FILINGS:
+  {{documents}}
+
+output:
+  competitive_patent_filing:
+    update_only: true            # rows exist already (raw load); only classification_text is written
+    key: [prompt_id, subject, ref_filing]
+    refs: {ref_filing: batch_handle_to_filing_id}
+    transient: {category_label: {from_ref: ref_category, judgement: true}}   # not stored on the filing: feeds competitive_patent_classification
+    columns:
+      classification_text: {max: 400}
+  competitive_patent_classification:
+    loader_only: true            # rebuilt for the whole portfolio from the transient labels of all its batches (latest run each)
+    loader:
+      portfolio_id: subject.portfolio_id
+      category_label: transient.category_label       # unlabelled filings (null) are not counted
+      filing_count: count_of_filings_with_that_label
+      lens: write_each_row_twice_as_rival_and_as_field    # the page reads both lenses: 'rival' (by competitor) and 'field' (by technology field)
+      classification_id: new_id

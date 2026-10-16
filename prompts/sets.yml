@@ -1,0 +1,14 @@
+# Which prompt belongs to which run set (routines/<folder>). Order = run order inside the set
+# (a later prompt reads what an earlier one wrote). Every prompt id in prompts/*.yml is in exactly one set.
+set1:
+  folder: routines/set1_news_weekly
+  title: "Set 1 - News & weekly"
+  when: "Daily (news, signal, tender) and weekly (tech_article, opportunity, moment, tender_assessment, top_opportunity)"
+  needs: "The news job has fetched new articles (staging.news_candidate); tender notices are in staging.market_tender_source"
+  prompts: [news, signal, tech_article, opportunity, tender, moment, tender_assessment, top_opportunity]
+set2:
+  folder: routines/set2_research
+  title: "Set 2 - Research (web search)"
+  when: "Quarterly, or on demand after the client's Excel (competitors, products, specs) changes"
+  needs: "Competitors, products and specs loaded (Excel); patent filings for patent_classification"
+  prompts: [partnership, project, geo, matchup, global_requirement, innovation_discovery, innovation_detail, patent_classification]

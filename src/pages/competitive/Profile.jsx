@@ -1,109 +1,42 @@
-import { proxied, thumbUsable } from "../../components/thumb/Thumb.jsx";
-import { revenueOptions } from "../../lib/revenueFacet";
 import { useEffect, useMemo, useState } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { buildProfile, rosterOf, formatSectorName } from "../../lib/profile";
-import { companyNews, FEED_N, collapseThreads,
-         NEWS_MAX, NEWS_WINDOWS, NEWS_WINDOW_DEFAULT, windowDays, withinWindow, capNews, newsDate } from "../../lib/news";
-import { facetOptionsByName, tidyHq } from "../../lib/countryFacet";
-import { INDEX, INDEX_NOTE } from "../../lib/articleUrl";
+import { buildProfile, rosterOf } from "../../lib/profile";
+import { revenueOptions } from "../../lib/revenueFacet";
+import { companyNews, NEWS_MAX, NEWS_WINDOWS, NEWS_WINDOW_DEFAULT, windowDays, withinWindow, capNews } from "../../lib/news";
+import { facetOptionsByName } from "../../lib/countryFacet";
+import { formatDate } from "../../utils/formatDate.js";
 import Thumb from "../../components/thumb/Thumb.jsx";
-/* SourceLink and SourceChip are no longer imported here. They rendered the publisher as
-   its own <a>, which was right while the CARD opened an in-app panel and the chip was the
-   only way out to the publisher. Now the card is that link, so a chip inside it would be
-   an anchor inside an anchor -- invalid, and resolved by browsers in a way that kills the
-   rest of the card. Both are still exported and still used by the pages that have no
-   whole-row link. */
+import { Review } from "../../components/review/Review.jsx";
+/* The article card is the link: a news item goes to the news source (see ArticleLink). */
 import { ArticleLink } from "../../components/sourceLink/SourceLink.jsx";
-import { detailLine, listLine, competitorFullName } from "../../lib/companyNames";
-/* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. This page
-   persisted to localStorage, which survives the tab, the browser and the machine's
-   next reboot -- so a company opened once was still the landing selection weeks
-   later, on a dashboard whose job is "what is new". Same key/value shape, held in
-   memory, cleared on a pillar change. See lib/viewState. */
+/* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
 
-// Helper function to extract clean company short name without full form or legal suffixes
-const cleanCompanyName = (rawName) => {
-  if (!rawName) return "";
-  let name = rawName.split("(")[0].split("-")[0].trim();
-  name = name.replace(/,?\s*(Private|Pvt|Limited|Ltd|Inc|Corp|Corporation)\b.*/gi, "").trim();
-  return name || rawName;
-};
+/* The dot beside a competitor: its stored threat_level (threat | watch | fav). Any other
+   stored value has no colour; the stored text is the tooltip. */
+const DOT = { threat: "threat", watch: "watch", fav: "fav" };
 
-// Helper function to extract executive initials for avatar
-const getInitials = (name) => {
-  if (!name) return "EX";
-  const clean = name.replace(/^(Mr\.|Ms\.|Dr\.|Shri|Prof\.|Commodore|Cdre\.|Retd)\s+/i, "").trim();
+// Initials for the avatar: the stored avatar_initials, else the first letters of the first and last word of the name
+const getInitials = (name, stored) => {
+  if (stored) return stored;
+  const clean = String(name || "").replace(/^(Mr\.|Ms\.|Dr\.|Shri|Prof\.|Commodore|Cdre\.|Retd)\s+/i, "").trim();
+  if (!clean) return "";
   const parts = clean.split(/\s+/);
   if (parts.length >= 2) return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
   return parts[0].slice(0, 2).toUpperCase();
 };
 
-const fmtNewsDate = (item) => {
-  if (item && item.date) {
-    try {
-      const d = new Date(item.date);
-      if (!isNaN(d.getTime())) {
-        const day = String(d.getDate()).padStart(2, "0");
-        const month = d.toLocaleString("en-US", { month: "short" });
-        const year = d.getFullYear() || 2026;
-        return `${day} ${month} ${year}`;
-      }
-    } catch (e) {}
-  }
-  return "";
-};
-
-const formatNewsSource = (item) => {
-  if (item && item.source && item.source !== "Unattributed") {
-    return item.source;
-  }
-  if (item && item.url) {
-    try {
-      const u = new URL(item.url);
-      return u.hostname.replace(/^www\./, "");
-    } catch (e) {}
-  }
-  return "Unattributed";
-};
-
-const cleanNewsCategory = (cat) => {
-  const c = String(cat || "").toLowerCase();
-  if (c.includes("finan") || c.includes("revenue") || c.includes("order")) return "Financial";
-  if (c.includes("gov") || c.includes("mod") || c.includes("ministry") || c.includes("indigenis")) return "Government";
-  if (c.includes("work") || c.includes("skill") || c.includes("employ") || c.includes("talent")) return "Workforce";
-  if (c.includes("market") || c.includes("stock") || c.includes("share") || c.includes("analyst")) return "Markets";
-  return "Defence";
-};
-
-/* A NEWS ROW'S PRODUCT CATEGORY, from the dataset's own keyword map (CAT_ALIASES:
-   "howitzer" -> Artillery, "ammo" -> Ammunition ...). Whole words only, longest keyword
-   first, so "small arms" wins over "arms". The headline is read first; a headline that
-   names no product falls back to the company's own sector line. */
-export function productCategoryOf(text, aliases) {
-  const t = ` ${String(text || "").toLowerCase().replace(/[^a-z0-9&/ ]+/g, " ")} `;
-  const keys = Object.keys(aliases || {}).sort((a, b) => b.length - a.length);
-  for (const k of keys) {
-    if (t.includes(` ${k} `) || t.includes(` ${k}/`) || t.includes(`/${k} `)) return aliases[k];
-  }
-  return null;
-}
-// sector tag colours: one per news sector the feed filters on
-const SECTOR_CLASS = { defence: "def", financial: "fin", government: "gov", workforce: "wrk", markets: "mkt" };
-const sectorClass = (c) => SECTOR_CLASS[String(c || "").toLowerCase()] || "oth";
-
 /* ONE EXECUTIVE, FULL PAGE. Opened from a Leadership card; replaces the profile in the
-   right-hand column until "Back". Every section prints only what the leadership row
-   carries (`experience`, `education`) and says so plainly when a section has nothing --
-   no career is inferred from a job title. */
+   right-hand column until "Back". Every section prints only what the stored leader rows
+   carry (competitive_leader + competitive_leader_record) and says so plainly when a
+   section has nothing -- no career is inferred from a job title. */
 const yearOf = (v) => {
   const m = String(v == null ? "" : v).match(/(19|20)\d{2}/);
   return m ? Number(m[0]) : null;
 };
 const isPresent = (v) => v == null || v === "" || /present|current|now/i.test(String(v));
-// "2018 – Present · 8 yrs"
+// "2018 – Present · 8 yrs": a computed presentation of the stored start / end dates (end empty = present)
 export function tenureText(from, to, now = new Date().getFullYear()) {
   const a = yearOf(from);
   const b = isPresent(to) ? now : yearOf(to);
@@ -118,18 +51,20 @@ export function tenureText(from, to, now = new Date().getFullYear()) {
 function LeaderPage({ leader, companyName, companyArticles, onBack }) {
   const exp = leader.experience || [];
   const edu = leader.education || [];
+  // current position: the experience record with no end date; else the leader's stored role + organisation
   const current = exp.find((e) => isPresent(e.to)) || null;
+  const nowRole = current ? current.role : leader.role;
+  const nowOrg = current ? current.org : leader.org;
 
+  /* NEWS NAMING THIS PERSON: the company's articles whose headline contains the leader's full
+     name. No other article is offered as related; with none, the section is not shown. */
   const leaderNews = useMemo(() => {
-    const lName = (leader.name || "").toLowerCase();
-    const parts = lName.replace(/^(mr\.|ms\.|dr\.|shri|commodore|cdre\.|retd\.?)\s+/i, "").split(/\s+/).filter(w => w.length > 2);
-    const matched = (companyArticles || []).filter((a) => {
-      const text = `${a.title} ${a.excerpt || ""} ${a.description || ""}`.toLowerCase();
-      return parts.some((part) => text.includes(part));
-    });
-    if (matched.length >= 2) return matched.slice(0, 6);
-    return (companyArticles || []).slice(0, 4);
+    const full = String(leader.name || "").trim().toLowerCase();
+    return full ? (companyArticles || []).filter((a) => String(a.title || "").toLowerCase().includes(full)) : [];
   }, [leader, companyArticles]);
+
+  const sourceLinks = [["Role", leader.url], ["Career & education", [...exp, ...edu].map((r) => r.url).find(Boolean)]]
+    .filter(([, u], i, arr) => u && arr.findIndex(([, v]) => v === u) === i);
 
   return (
     <div className="cp-person">
@@ -137,37 +72,40 @@ function LeaderPage({ leader, companyName, companyArticles, onBack }) {
         ← Back to {companyName}
       </button>
       <div className="cp-person-head">
-        <PersonAvatar name={leader.name} photo={leader.photo} className="cp-person-avatar" />
+        <PersonAvatar name={leader.name} initials={leader.initials} className="cp-person-avatar" />
         <div>
-          <h1 className="cp-person-name">{leader.fullName || leader.name}</h1>
+          <h1 className="cp-person-name">{leader.name}</h1>
+          <Review src={leader._src} />
           <div className="cp-person-now">
             {leader.role}
-            <span className="cp-person-at"> · {current ? current.company : companyName}</span>
+            {nowOrg ? <span className="cp-person-at"> · {nowOrg}</span> : null}
           </div>
         </div>
       </div>
 
-      <section className="cp-person-sec">
-        <h2 className="cp-person-h">Current Position</h2>
-        <div className="cp-person-row">
-          <div className="cp-person-row-main">
-            <span className="cp-person-role">{current ? current.role : leader.role}</span>
-            <span className="cp-person-org">{current ? current.company : companyName}</span>
+      {nowRole || nowOrg ? (
+        <section className="cp-person-sec">
+          <h2 className="cp-person-h">Current Position</h2>
+          <div className="cp-person-row">
+            <div className="cp-person-row-main">
+              <span className="cp-person-role">{nowRole}</span>
+              <span className="cp-person-org">{nowOrg}</span>
+            </div>
+            {current ? <span className="cp-person-when">{tenureText(current.from, current.to)}</span> : null}
           </div>
-          {current ? <span className="cp-person-when">{tenureText(current.from, current.to)}</span> : null}
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       <section className="cp-person-sec">
         <h2 className="cp-person-h">Professional Experience</h2>
         {exp.length ? (
           <div className="cp-person-list">
             {exp.map((e, i) => (
-              <div className="cp-person-row" key={`${e.company}-${e.role}-${i}`}>
+              <div className="cp-person-row" key={e.id || `${e.org}-${e.role}-${i}`}>
                 <span className="cp-person-dot" />
                 <div className="cp-person-row-main">
                   <span className="cp-person-role">{e.role}</span>
-                  <span className="cp-person-org">{e.company}</span>
+                  <span className="cp-person-org">{e.org}</span>
                 </div>
                 <span className="cp-person-when">{tenureText(e.from, e.to)}</span>
               </div>
@@ -183,11 +121,11 @@ function LeaderPage({ leader, companyName, companyArticles, onBack }) {
         {edu.length ? (
           <div className="cp-person-list">
             {edu.map((e, i) => (
-              <div className="cp-person-row" key={`${e.institution}-${i}`}>
+              <div className="cp-person-row" key={e.id || `${e.org}-${i}`}>
                 <span className="cp-person-dot" />
                 <div className="cp-person-row-main">
-                  <span className="cp-person-role">{e.degree}</span>
-                  <span className="cp-person-org">{e.institution}</span>
+                  <span className="cp-person-role">{e.role}</span>
+                  <span className="cp-person-org">{e.org}</span>
                 </div>
                 {e.from || e.to ? <span className="cp-person-when">{tenureText(e.from, e.to).split(" · ")[0]}</span> : null}
               </div>
@@ -198,9 +136,9 @@ function LeaderPage({ leader, companyName, companyArticles, onBack }) {
         )}
       </section>
 
-      <section className="cp-person-sec">
-        <h2 className="cp-person-h">News Related to {leader.name}</h2>
-        {leaderNews.length ? (
+      {leaderNews.length ? (
+        <section className="cp-person-sec">
+          <h2 className="cp-person-h">News Related to {leader.name}</h2>
           <div className="cp-person-list">
             {leaderNews.map((item, idx) => (
               <ArticleLink
@@ -212,131 +150,47 @@ function LeaderPage({ leader, companyName, companyArticles, onBack }) {
                 <span className="cp-person-dot" />
                 <div className="cp-person-row-main">
                   <span className="cp-person-role" style={{ fontSize: "13.5px" }}>{item.title}</span>
-                  <span className="cp-person-org" style={{ fontSize: "11.5px" }}>{item.source || "Unattributed"} · {item.category}</span>
+                  <span className="cp-person-org" style={{ fontSize: "11.5px" }}>
+                    {[item.source, item.category].filter(Boolean).join(" · ")}
+                  </span>
                 </div>
-                <span className="cp-person-when">{item.ago || (item.date ? String(item.date).slice(0, 10) : "")}</span>
+                <span className="cp-person-when">{item.ago}</span>
               </ArticleLink>
             ))}
           </div>
-        ) : (
-          <div className="cp-thin">No recent news on record.</div>
-        )}
-      </section>
+        </section>
+      ) : null}
 
-      {leader.source || leader.bioSource || leader.photoSource ? (
+      {sourceLinks.length ? (
         <div className="cp-person-src" style={{ marginTop: "24px" }}>
-          {[["Role", leader.source], ["Career & education", leader.bioSource], ["Photo", leader.photoSource]]
-            .filter(([, u], i, arr) => u && arr.findIndex(([, v]) => v === u) === i)
-            .map(([label, u]) => (
-              <div key={label}>{label}: <a href={u} target="_blank" rel="noopener noreferrer">{u}</a></div>
-            ))}
+          {sourceLinks.map(([label, u]) => (
+            <div key={label}>{label}: <a href={u} target="_blank" rel="noopener noreferrer">{u}</a></div>
+          ))}
         </div>
       ) : null}
     </div>
   );
 }
 
-
-/* A person's avatar: their photo (through our own /api/img proxy, like every other image)
-   when one is on record, else -- or if it fails to load -- their initials. */
-function PersonAvatar({ name, photo, className }) {
-  const [broken, setBroken] = useState(false);
-  // same URL rule as every other image (http(s) only, not a known-dead link), and an onError fallback
-  // a photo cached on our own origin (/local-photos/...) is served as-is, no proxy
-  const local = typeof photo === "string" && /^\/local-photos\/[\w.-]+$/.test(photo);
-  if ((local || thumbUsable(photo)) && !broken) {
-    return (
-      <div className={`cp-avatar cp-avatar-photo ${className || ""}`}>
-        <img onError={() => setBroken(true)} alt={name} src={local ? photo : proxied(photo)} />
-      </div>
-    );
-  }
-  return <div className={`cp-avatar ${className || ""}`}>{getInitials(name)}</div>;
+/* A person's avatar: their initials (competitive_leader has no photo column). */
+function PersonAvatar({ name, initials, className }) {
+  return <div className={`cp-avatar ${className || ""}`}>{getInitials(name, initials)}</div>;
 }
 
-// Helper to derive exact metadata for BDL and all tracked competitors
-/* Company facts, from the pipeline's own columns.
- *
- * This function used to hold a hand-written dossier for about eleven named firms
- * — founded date, headcount, revenue, site count, all typed in — and a fallback
- * that INVENTED the rest: "₹1,000 Cr+ (Published Financials)", "1,000–5,000
- * Employees". Every one of those values now has a column in serving.competitors
- * (starting_year, company_size, sales, global_locations, hq, sector, assess), so
- * the panel reads them instead. A fact the corpus does not state renders as a
- * dash. The markup below is untouched; only where the values come from changed.
- */
 const DASH = "—";
 
-const firstValue = (v) => {
-  if (!v) return null;
-  if (Array.isArray(v)) {
-    const hit = v.find((x) => x && (typeof x === "string" ? x.trim() : x.value));
-    if (!hit) return null;
-    return typeof hit === "string" ? hit : hit.value || null;
-  }
-  return typeof v === "string" ? v.trim() || null : null;
-};
-
-/* A revenue figure without its year is ambiguous — "$68.9 billion" could be any of the
-   six figures the corpus holds for a company. `detail` carries the reporting period the
-   extractor tied the amount to, so show it. Undated figures (kept only when the sentence
-   calls itself annual) have an empty `detail` and render as the bare amount. */
-const firstFigure = (v) => {
-  /* TWO WRITERS, TWO SHAPES. The corpus fill writes an array of {value, detail, url},
-     newest first; the audited workbook writes one {text, fy, srcs} object. Both land in
-     the same `sales` column, and reading only the array shape showed a dash for every
-     company the workbook covered -- the value was in the database the whole time. */
-  if (v && !Array.isArray(v) && typeof v === "object") {
-    const text = (v.text || "").trim();
-    if (!text) return null;
-    const fy = (v.fy || "").trim();
-    return fy ? `${text} (${fy})` : text;
-  }
-  if (!Array.isArray(v)) return firstValue(v);
-  const hit = v.find((x) => x && (typeof x === "string" ? x.trim() : x.value));
-  if (!hit) return null;
-  if (typeof hit === "string") return hit.trim() || null;
-  const period = (hit.detail || "").trim().replace(/^(?:in|for|during|of)\s+/i, "");
-  return period ? `${hit.value} (${period})` : hit.value || null;
-};
-
-/* HEADQUARTERS, AT ONE GRANULARITY. The column holds three different things: a full
-   postal address ("241 18th Street South, Suite 650, Arlington, Virginia 22202, United
-   States"), a city/region/country chain, and a bare country ("Israel"). Rendered raw
-   they read as different fields, and the street line is noise on a competitor profile.
-
-   The rule itself moved to lib/countryFacet.js on 2026-09-06 -- unchanged -- because the
-   geo map's "Head office" badge needed the same answer and had been doing raw
-   full-string equality instead. It is imported at the top of this file. */
-
-const joinList = (v) => {
-  if (!Array.isArray(v) || !v.length) return null;
-  const names = v
-    .map((x) => (typeof x === "string" ? x : x && (x.value || x.name)))
-    .filter(Boolean);
-  return names.length ? names.join(" · ") : null;
-};
-
-/* feed cards opened per "View more" click */
-/* Superseded by feedSplit/FEED_N in lib/news.js. The feed used to open at six and
-   grow by six per click with no ceiling, so Rheinmetall's 56 articles became 55
-   stacked cards in a 28%-wide column and pushed Facilities, Partnerships and
-   everything else under it off the page. */
-const NEWS_PAGE = FEED_N;
-
-const getCompanyDetailsMeta = (p) => {
-  if (!p) return null;
-  return {
-    founded: p.starting_year ? String(p.starting_year) : DASH,
-    hq: tidyHq(p.hq) || DASH,
-    globalLocs: joinList(p.global_locations) || DASH,
-    size: p.company_size || DASH,
-    revenue: firstFigure(p.sales) || DASH,
-    sector: p.sector || DASH,
-    /* assess is 100% filled and already grounded against the corpus. */
-    assess: p.assess || null,
-  };
-};
+/* One labelled row of the Company Details box. */
+const ROW_STYLE = { display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" };
+const LABEL_STYLE = { fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" };
+function MetaRow({ label, children, top }) {
+  return (
+    <div style={{ ...ROW_STYLE, alignItems: top ? "start" : "center" }}>
+      <span style={{ ...LABEL_STYLE, paddingTop: top ? "3px" : undefined }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+const VALUE_STYLE = { color: "var(--d-txt)", fontWeight: "600" };
 
 function Sec({ title, actions, children }) {
   return (
@@ -352,9 +206,9 @@ function Sec({ title, actions, children }) {
   );
 }
 
-const PROFILE_KEY = "kssl_profile_cid";
-
 const UNKNOWN_ORIGIN = "Origin not established";
+const NO_TIER = "__no_tier";
+const PROFILE_KEY = "kssl_profile_cid";
 
 export default function Profile() {
   const { data } = useData();
@@ -363,27 +217,21 @@ export default function Profile() {
   const [country, setCountry] = useState("all");
   const [revenue, setRevenue] = useState("all");
   const roster = useMemo(() => rosterOf(data), [data]);
-  /* Finding T 3: no country-level filter on the competitor list.
-
-     2026-09-06: this filters on ORIGIN -- the country a company is FROM -- and not
-     on companyCountries, which unions the geo footprint, global_locations and hq to
-     answer "where is it recorded". Those are different questions, and the union
-     answered the wrong one out loud: Bharat Dynamics appeared under "France (6)"
-     because a footprint row was earned from "produces MILAN-2T under license from
-     MBDA Missile Systems, France". France is the licensor's country; BDL builds
-     MILAN-2T in India.
-
-     A company whose origin nobody has established is listed under its own option
-     rather than dropped, because a filter that silently hides rows is worse than
-     one that admits what it does not know. */
+  /* The origin filter: the stored origin_country of each company, with how many rows carry
+     it. A company with no stored origin is listed under its own option rather than dropped. */
   const countryOptions = useMemo(
     () => facetOptionsByName(roster, (r) => [r.origin || UNKNOWN_ORIGIN]),
     [roster],
   );
-  /* The selected competitor is remembered, as Positioning, Partnerships, Geo, Patents
-     and the Tender Pipeline remember theirs: this page reset to roster[0] on every
-     reload and every detour to another rail row, alone among the sidebars. A saved id
-     that the served roster no longer carries falls back to the first row. */
+  /* The revenue filter: the stored revenue_tier text, as stored. Companies with no stored tier
+     get a neutral bucket, offered only when at least one tier exists. */
+  const revenueOpts = useMemo(() => {
+    const opts = revenueOptions(roster);
+    const none = roster.filter((r) => !r.revenueTier).length;
+    return opts.length && none ? opts.concat([{ v: NO_TIER, n: none, l: "Revenue not on record" }]) : opts;
+  }, [roster]);
+  /* The selected competitor is remembered while the pillar stays open; a saved id that the
+     served roster no longer carries falls back to the first row. */
   const [cid, setCidState] = useState(() => {
     try {
       const saved = viewState.getItem(PROFILE_KEY);
@@ -399,65 +247,66 @@ export default function Profile() {
     } catch (e) {}
   };
 
-  /* Opened from global search targeting one company. Without this the page took the
-     jump but never read the payload, so picking "RENK" in the search box landed on
-     roster[0] -- the search looked broken because it navigated to the wrong rival. */
+  /* Opened from global search targeting one company. */
   useEffect(() => {
     const pend = takePending("profile");
     if (pend && pend.cid && data.competitors && data.competitors[pend.cid]) {
       setCid(pend.cid);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [takePending, data.competitors]);
 
-  // News category filter pill
-  const [newsFilter, setNewsFilter] = useState("All");
+  // News category pill: "" = all
+  const [newsFilter, setNewsFilter] = useState("");
   // the Leadership card opened as a full page in the right column (leader object), or null
   const [selectedLeader, setSelectedLeader] = useState(null);
-  const [stockOpen, setStockOpen] = useState(false);
-  useEffect(() => { setSelectedLeader(null); setStockOpen(false); }, [cid]);
+  useEffect(() => { setSelectedLeader(null); }, [cid]);
   // opening or closing a person starts that page at its top
   useEffect(() => {
     let el = document.querySelector(".v-profile .cp-body");
     while (el) { el.scrollTop = 0; el = el.parentElement; }
-  }, [selectedLeader, stockOpen]);
-  /* How far back counts as current. The reader's choice, not a constant -- see
-     lib/news.NEWS_WINDOWS. The 15-card cap below is the panel's and is not. */
+  }, [selectedLeader]);
+  /* How far back counts as current: the reader's choice, see lib/news.NEWS_WINDOWS. */
   const [newsWindow, setNewsWindow] = useState(NEWS_WINDOW_DEFAULT);
-  /* How many feed cards are open. "View More News" had no handler and the stack
-     already listed every article, so the button could not have done anything; the
-     stack now opens NEWS_PAGE at a time and the button says how many remain. */
-  const [newsShown, setNewsShown] = useState(NEWS_PAGE);
   const [showAllNews, setShowAllNews] = useState(false);
-  /* The full NEWS list's own filters (not the feed's): a keyword and a date window. */
+  /* The full NEWS list's own filters: a keyword and a date window. */
   const [listQ, setListQ] = useState("");
   const [listRange, setListRange] = useState("all");   // all | 7d | 30d | 3m | 6m | 12m | custom
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
-  useEffect(() => { setListQ(""); setListRange("all"); setListFrom(""); setListTo(""); }, [cid]);
-
-  useEffect(() => {
-    const pend = takePending("profile");
-    if (pend && pend.cid) {
-      setCid(pend.cid);
-    }
-  }, [takePending]);
+  useEffect(() => { setListQ(""); setListRange("all"); setListFrom(""); setListTo(""); setShowAllNews(false); }, [cid]);
 
   const list = useMemo(() => {
     const q = (query || searchQuery || "").trim().toLowerCase();
     const tokens = q.split(/\s+/).filter(Boolean);
     return roster.filter((r) => {
       if (country !== "all" && (r.origin || UNKNOWN_ORIGIN) !== country) return false;
-      if (revenue !== "all" && r.revenueTier !== revenue) return false;
+      if (revenue !== "all" && (revenue === NO_TIER ? !!r.revenueTier : r.revenueTier !== revenue)) return false;
       if (!tokens.length) return true;
-      const fn = competitorFullName(r.cid, r.name);
-      const fullText = `${r.name || ""} ${fn || ""} ${r.sector || ""} ${r.hq || ""} ${r.cid || ""}`.toLowerCase();
+      const fullText = `${r.name} ${r.short || ""} ${r.legal || ""} ${r.sector || ""} ${r.hq || ""} ${r.cid}`.toLowerCase();
       return tokens.every((tok) => fullText.includes(tok));
     });
   }, [roster, query, searchQuery, country, revenue]);
-  const revenueOpts = useMemo(() => revenueOptions(roster), [roster]);
 
   const p = useMemo(() => (cid ? buildProfile(data, cid) : null), [data, cid]);
-  const displayName = p ? competitorFullName(p.cid, p.name) : "";
+  const displayName = p ? p.name : "";
+
+  /* LIVE company pulse -- trending headlines (Google News), fetched server-side via
+     /api/pulse. The one live, non-DB element (by decision); shown in its own block, never
+     mixed with the stored news. null-safe so a dead feed never breaks the page. */
+  const [pulse, setPulse] = useState(null);
+  useEffect(() => {
+    if (!p || !p.cid) { setPulse(null); return; }
+    let cancelled = false;
+    setPulse({ loading: true });
+    fetch(`/api/pulse?cid=${encodeURIComponent(p.cid)}&name=${encodeURIComponent(p.name || "")}`)
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled) setPulse(j || {}); })
+      .catch(() => { if (!cancelled) setPulse({ trending: [] }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p && p.cid]);
+  const liveHeadlines = pulse && Array.isArray(pulse.trending) ? pulse.trending.filter((t) => t && t.title) : [];
 
   useEffect(() => {
     if (!p) return;
@@ -470,208 +319,78 @@ export default function Profile() {
 
   // Reset the news filter when switching company
   useEffect(() => {
-    setNewsFilter("All");
-    setNewsShown(NEWS_PAGE);
+    setNewsFilter("");
   }, [cid]);
-  useEffect(() => {
-    setNewsShown(NEWS_PAGE);
-  }, [newsFilter, newsWindow]);
 
-  /* Executive leadership.
-   *
-   * This block used to carry a hand-typed board for about six named firms --
-   * "Shri Shailesh Vagerwal, Chairman & Managing Director" at Bharat Dynamics,
-   * "Sukaran Singh" at TASL, "Gautam Adani" at Adani Defence -- returned before
-   * the real branch could run. Named people in named roles at real companies is
-   * the most damaging kind of invented content on this dashboard, and it was the
-   * one I missed on the first pass: the strings survived into the deployed
-   * bundle, which is where I found them.
-   *
-   * competitors.leadership is the column for this. It is 0% filled today, so the
-   * section renders empty until enrichment writes it -- which is the correct
-   * state, not a regression.
-   */
-  const leadershipList = useMemo(() => {
-    if (!p || !p.leadership || !p.leadership.length) return [];
-    return p.leadership.map((r) => ({
-      name: r.value,
-      fullName: r.full_name || r.value,
-      role: r.detail || "",
-      source: r.url,
-      photo: r.photo || null,
-      photoSource: r.photo_source || null,
-      bioSource: r.bio_source || null,
-      experience: Array.isArray(r.experience) ? r.experience : [],
-      education: Array.isArray(r.education) ? r.education : [],
-    }));
-  }, [p]);
+  const leaders = p ? p.leaders : [];
 
-  const supportLeadershipList = useMemo(() => {
-    if (!p) return [];
-    const list = (p.support_leadership && p.support_leadership.length)
-      ? p.support_leadership
-      : ((data.competitors && data.competitors[p.cid] && data.competitors[p.cid].support_leadership) || []);
-    if (!list.length) return [];
-    return list.map((r) => ({
-      name: r.name || r.value || "",
-      fullName: r.fullName || r.full_name || r.name || r.value || "",
-      role: r.role || r.detail || "",
-      source: r.url || null,
-      photo: r.photo || null,
-      photoSource: r.photo_source || null,
-      bioSource: r.bio_source || null,
-      experience: Array.isArray(r.experience) ? r.experience : [],
-      education: Array.isArray(r.education) ? r.education : [],
-    }));
-  }, [p, data.competitors]);
-
-  /* Facilities. Same fault: a hand-typed plant list for Bharat Dynamics
-     (Kanchanbagh, Bhanur, Visakhapatnam, and an "Armenia (Deployed) / Philippines
-     (Negotiation)" export pipeline) shadowed the harvested branch. Now: the
-     facilities column if it has rows, else the country presence rows, else
-     nothing. */
-  /* Memoised because the header report below depends on it: a fresh object each
-     render would republish the report each render, and each publish re-renders. */
-  const companyMeta = useMemo(() => (p ? getCompanyDetailsMeta(p) : null), [p]);
-  // Absent for a company no dated document names -- the tile then does not render
-  // at all, rather than showing a confident zero.
-  const metrics = (data.competitorMetrics || {})[cid] || null;
+  /* Memoised because the header report below depends on it. */
   const companyArticles = useMemo(
     () => (p && p.cid ? companyNews(data, p.cid) : []),
     [data, p],
   );
 
-  /* A ROW SOURCED FROM A LISTING PAGE IS WRONG IN THREE WAYS, NOT ONE.
-   *
-   * These were reported as a missing image. The image was the symptom. Where the
-   * extractor recorded a SECTION INDEX as a story's source document, everything the
-   * row takes from "the document" is about the wrong page:
-   *
-   *   url    the section, not the story. Screenshotted: a card headlined "DOD Plans To
-   *          Procure 500 Roadrunner Interceptors" opened the Air Warfare section.
-   *   date   the LISTING's date, not the story's. Measured over the 73 such rows in
-   *          the served feed: 44 carry the listing page's own published_at and 4 the
-   *          day it was crawled. Resolved against the real articles, 7 of 8 were
-   *          wrong, by a median of 192 days and a maximum of 1,552 -- an April 2022
-   *          Lithuania/Boxer story was reading as 21 July 2026 news.
-   *   image  none, because a listing page carries no article-level og:image. 63 of 73.
-   *
-   * THE REST OF THE FEED IS SOUND, which is what makes this safe to cut rather than a
-   * reason to distrust every date: of the 232 rows whose url carries its own
-   * publication date, 229 are dated exactly right and 3 are one day out on a timezone
-   * boundary. The fault is specific to rows whose document was an index.
-   *
-   * SO THEY LEAVE THE FEED, AND NOTHING IS LOST. A card grid answers "what is new",
-   * and a row that cannot say when it happened or link to what happened is not an
-   * answer. Every one of them is still in the full record below, marked, because the
-   * headline and the company attribution behind it are real -- it is the document
-   * metadata that is wrong. The fix is upstream and in progress; this is what the UI
-   * does until the rows come back attributed.
-   */
-  const unattributed = useMemo(
-    () => companyArticles.filter((a) => a.sourceKind === INDEX),
-    [companyArticles],
-  );
-  const attributed = useMemo(
-    () => companyArticles.filter((a) => a.sourceKind !== INDEX),
+  /* Categories offered as pills: the distinct stored categories of this company's articles
+     (none are offered when no article carries one). */
+  const categories = useMemo(
+    () => Array.from(new Set(companyArticles.map((a) => a.category).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
     [companyArticles],
   );
 
-  /* WINDOW, THEN CATEGORY, THEN CAP -- in that order, and the order matters. Capping
-     before the category filter would show fewer than fifteen of a category that has
-     more, for no reason a reader could see. */
+  /* WINDOW, THEN CATEGORY, THEN CAP -- in that order, and the order matters. */
   const windowedArticles = useMemo(
-    () => withinWindow(attributed, windowDays(newsWindow)),
-    [attributed, newsWindow],
+    () => withinWindow(companyArticles, windowDays(newsWindow)),
+    [companyArticles, newsWindow],
+  );
+  const filteredArticles = useMemo(
+    () => capNews(newsFilter ? windowedArticles.filter((a) => a.category === newsFilter) : windowedArticles, NEWS_MAX),
+    [windowedArticles, newsFilter],
   );
 
-  // Filter articles based on selected Category Pill
-  const filteredArticles = useMemo(() => {
-    if (!newsFilter || newsFilter === "All" || newsFilter.includes("Updates")) {
-      return capNews(windowedArticles, NEWS_MAX);
-    }
-    const f = newsFilter.toLowerCase();
-    return capNews(windowedArticles.filter(
-      (a) => a.category.toLowerCase().includes(f) || f.includes(a.category.toLowerCase())
-    ), NEWS_MAX);
-  }, [windowedArticles, newsFilter]);
-
-  /* The lead needs no special rule any more: nothing sourced from a listing page
-     reaches `filteredArticles`, so it cannot reach the lead slot either. The
-     fallback stays `attributed`, never `companyArticles` -- falling back to the
-     whole list would put a row the feed just excluded into its biggest card. */
-  const topStory = useMemo(() => {
-    return filteredArticles.find((a) => a.isTopStory) || filteredArticles[0] || attributed[0];
-  }, [filteredArticles, attributed]);
-
-  /* One uniform grid: the newest story is no longer pulled into a bigger lead card,
-     it threads in with the rest. topStory survives only as the "is there any news at
-     all" gate for the section below. */
-  const feedArticles = useMemo(() => filteredArticles, [filteredArticles]);
-
-  /* THE FEED IS THREADED; THE FULL LIST BELOW IS NOT.
-     Three PAC-3 stories in a fortnight are one running story, and the same wire piece
-     from four outlets is one event reported four times. news_chain.py decides which,
-     from spans the extraction layer typed -- not from a word in the headline. The full
-     News section still lists every article, so collapsing here hides nothing.
-
-     It has to sit BELOW feedArticles, not beside the useState calls at the top of the
-     component. A const is in its temporal dead zone until its own line runs, so a
-     useMemo declared earlier that reads it throws "Cannot access 'feedArticles' before
-     initialization" -- at RENDER, not at build. esbuild compiled it happily and every
-     name resolved to a binding; test_filter_counts.mjs, which actually renders the
-     page, is what caught it. */
-  const threadedFeed = useMemo(() => collapseThreads(feedArticles), [feedArticles]);
-
-  /* What the header's Copy / Export / Print act on: this company's profile as shown --
-     details, leadership, and every sourced article. Nothing is added to the record. */
+  /* What the header's Copy / Export / Print act on: this company's profile as shown. */
   const report = useMemo(() => {
     if (!p) return null;
-    const details = companyMeta
-      ? [
-          /* the exported profile must say what the panel says */
-          ...(detailLine(cid, p.name) && detailLine(cid, p.name) !== displayName ? [["Entity note", detailLine(cid, p.name)]] : []),
-          ["Starting year", companyMeta.founded],
-          ["Headquarters", companyMeta.hq],
-          ["Global locations", companyMeta.globalLocs],
-          ["Company size", companyMeta.size],
-          ["Annual revenue / sales", companyMeta.revenue],
-          ["Industry / sector", formatSectorName(companyMeta.sector)],
-        ]
-      : [];
+    const details = [
+      p.legal && p.legal !== p.name ? ["Legal name", p.legal] : null,
+      p.short && p.short !== p.name ? ["Short name", p.short] : null,
+      ["Starting year", p.starting_year ? String(p.starting_year) : DASH],
+      ["Headquarters", p.hq || DASH],
+      ["Global locations", p.locations.length ? p.locations.map((l) => l.name).join(", ") : p.global_locations || DASH],
+      ["Company size", p.company_size || DASH],
+      ["Annual revenue / sales", p.revenue || DASH],
+      ["Industry / sector", p.sector || DASH],
+    ].filter(Boolean);
     return {
       title: displayName,
       subtitle: "Competitor profile",
       sections: [
         { h: "Company details", rows: details },
-        /* "Strategic positioning & operations" removed (FE-COMP-100): unverified
-           analyst placeholder prose, kept out of the profile and its export. */
         {
           h: "Leadership",
-          rows: leadershipList.length
-            ? leadershipList.map((l) => [l.name, l.role])
+          rows: leaders.length
+            ? leaders.map((l) => [l.name, l.role])
             : ["No executive officers published on public record."],
         },
         {
           h: `Company latest news (${companyArticles.length})`,
           rows: companyArticles.map((a) => [a.title, [a.source, a.ago, a.category].filter(Boolean).join(" · ")]),
         },
-      ].filter(Boolean),
+      ],
       payload: {
         cid: p.cid,
         name: displayName,
-        details: companyMeta
-          ? {
-              startingYear: companyMeta.founded,
-              hq: companyMeta.hq,
-              globalLocations: companyMeta.globalLocs,
-              companySize: companyMeta.size,
-              revenue: companyMeta.revenue,
-              sector: companyMeta.sector,
-              assessment: companyMeta.assess || null,
-            }
-          : null,
-        leadership: leadershipList.map((l) => ({ name: l.name, role: l.role, source: l.source || null })),
+        details: {
+          legalName: p.legal || null,
+          shortName: p.short || null,
+          startingYear: p.starting_year || null,
+          hq: p.hq || null,
+          globalLocations: p.locations.map((l) => l.name),
+          companySize: p.company_size,
+          revenue: p.revenue || null,
+          revenueTier: (data.competitors[p.cid] || {}).revenue_tier || null,
+          sector: p.sector || null,
+        },
+        leadership: leaders.map((l) => ({ name: l.name, role: l.role, source: l.url || null })),
         news: companyArticles.map((a) => ({
           title: a.title,
           source: a.source || null,
@@ -681,36 +400,32 @@ export default function Profile() {
         })),
       },
     };
-  }, [p, displayName, companyMeta, leadershipList, companyArticles]);
+  }, [p, displayName, leaders, companyArticles, data.competitors]);
   useHeaderReport(report);
 
   /* The full NEWS list, narrowed by its own keyword + date filters. A date filter can only
-     keep an article whose date is known (listing-page rows carry none). */
+     keep an article whose date is known. */
   const newsListDated = listRange !== "all";
-  const newsListFiltered = listQ.trim().length > 0 || newsListDated;
   const listRows = useMemo(() => {
-    const catOf = (item) =>
-      productCategoryOf(`${item.title} ${item.excerpt || ""}`, data.CAT_ALIASES)
-      || productCategoryOf(companyMeta && companyMeta.sector, data.CAT_ALIASES);
     const days = { "7d": 7, "30d": 30, "3m": 91, "6m": 182, "12m": 365 }[listRange];
     const since = days ? new Date(Date.now() - days * 86400000).toISOString().slice(0, 10) : null;
     const toks = listQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return (companyArticles || []).filter((item) => {
-      const d = item.sourceKind === INDEX ? "" : String(item.date || "").slice(0, 10);
+      const d = String(item.date || "").slice(0, 10);
       if (listRange !== "all" && !d) return false;
       if (since && d < since) return false;
       if (listRange === "custom" && ((listFrom && d < listFrom) || (listTo && d > listTo))) return false;
       if (toks.length) {
-        const hay = `${item.title} ${item.excerpt || ""} ${item.category || ""} ${catOf(item) || ""} ${item.source || ""}`.toLowerCase();
+        const hay = `${item.title} ${item.category || ""} ${item.source || ""}`.toLowerCase();
         if (!toks.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
-  }, [companyArticles, companyMeta, data.CAT_ALIASES, listQ, listRange, listFrom, listTo]);
+  }, [companyArticles, listQ, listRange, listFrom, listTo]);
 
   return (
     <div className="pos-view v-profile" style={{ gridTemplateColumns: "300px 1fr" }}>
-      {/* 1. LEFT SIDEBAR: UNCHANGED COMPETITORS LIST */}
+      {/* 1. LEFT SIDEBAR: COMPETITORS LIST */}
       <div className="mu-list">
         <div className="mu-list-h">
           <span className="eyebrow">Competitors</span>
@@ -772,9 +487,9 @@ export default function Profile() {
               tabIndex={0}
             >
               <span className="pli-n" style={{ display: "flex", alignItems: "center", gap: "8px", whiteSpace: "normal" }}>
-                <span className={`wdot ${r.threat === "high" ? "threat" : r.threat === "low" ? "fav" : "watch"}`} style={{ flexShrink: 0 }} />
+                <span className={`wdot ${DOT[String(r.threat).toLowerCase()] || ""}`} title={r.threat || undefined} style={{ flexShrink: 0 }} />
                 <span style={{ minWidth: 0, wordBreak: "break-word" }}>
-                  <span>{competitorFullName(r.cid, r.name)}</span>
+                  <span>{r.name}</span>
                 </span>
               </span>
             </div>
@@ -787,27 +502,10 @@ export default function Profile() {
         </div>
       </div>
 
-      {/* 2. RIGHT PANE.
-
-          THE IN-APP ARTICLE WINDOW IS GONE. Every news item on this page used to open a
-          white panel HERE that replaced the profile and re-hosted the story: the
-          publisher's headline over `signal_detail.what` as the body, with the real
-          article one further click away behind "Source Publisher". At the operator's
-          request a news item now goes to the news source -- see ArticleLink in
-          components/sourceLink. The panel and its `activeArticle` state went with it,
-          along with the reason the profile could be replaced by something that was not
-          a profile.
-
-          What that removed is worth naming: the panel was the only surface printing the
-          pipeline's own read of an article (`what` / `why`) as though it were the
-          article. Those fields are still served and are still shown on the SIGNAL card
-          detail, which is where a paraphrase belongs -- labelled as this system's
-          analysis, not laid out as reporting. */}
+      {/* 2. RIGHT PANE. A news item goes to the news source (ArticleLink); no in-app article window. */}
       <div className="cp-body" style={{ padding: "24px" }}>
         {!p ? (
           <div className="cp-empty">select a competitor</div>
-        ) : stockOpen ? (
-          <StockPage stockRecord={data.stocks && data.stocks[p.cid]} companyName={displayName} onBack={() => setStockOpen(false)} />
         ) : selectedLeader ? (
           <LeaderPage
             leader={selectedLeader}
@@ -820,132 +518,68 @@ export default function Profile() {
             {/* 1. COMPANY NAME HEADER */}
             <div className="cp-head">
               <div className="cp-name">{displayName}</div>
+              <Review src={p._src} />
             </div>
 
-            {/* 1. COMPANY DETAILS */}
+            {/* 2. COMPANY DETAILS: every value is a stored competitive_competitor column */}
             <Sec title="Company Details">
-              {companyMeta && (
-                <div
-                  className="cp-meta-rows"
-                  style={{
-                    marginBottom: "20px",
-                    display: "flex",
-                    flexDirection: "column",
-                    background: "var(--d-bg-1)",
-                    border: "1px solid var(--d-line)",
-                    borderRadius: "6px",
-                    overflow: "hidden",
-                  }}
-                >
-                  {detailLine(cid, p.name) && detailLine(cid, p.name) !== displayName ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
-                      <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
-                        Entity Note
-                      </span>
-                      <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{detailLine(cid, p.name)}</span>
-                    </div>
-                  ) : null}
-
-                  <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
-                      Starting Year
-                    </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.founded}</span>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
-                      Headquarters
-                    </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.hq}</span>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "start" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap", paddingTop: "3px" }}>
-                      Global Locations
-                    </span>
-                    <span className="cp-loc-wrap">
-                      <span className="cp-loc-chip">India</span>
-                    </span>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
-                      Company Size
-                    </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.size}</span>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
-                      Annual Revenue / Sales
-                    </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.revenue}</span>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", fontSize: "13px", alignItems: "center" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
-                      Industry / Sector
-                    </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{formatSectorName(companyMeta.sector)}</span>
-                  </div>
-                </div>
-              )}
-            </Sec>
-
-            {/* 2. STRATEGIC POSITIONING */}
-            <Sec title="Strategic Positioning">
-              <p className="cp-prose" style={{ fontSize: "13.5px", lineHeight: "1.65", color: "var(--d-read)", marginBottom: "18px" }}>
-                {p.strategic_positioning || "No strategic positioning recorded."}
-              </p>
-
-              {/* PARALLAX READ */}
-              <div style={{ marginTop: "18px", marginBottom: "22px" }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: "11px", fontWeight: "700", letterSpacing: ".1em", color: "var(--d-txt-2)", textTransform: "uppercase", marginBottom: "8px" }}>
-                  PARALLAX READ
-                </div>
-                <div style={{ padding: "16px 20px", background: "var(--d-bg-1)", border: "1px solid #f0593c", borderRadius: "8px", fontSize: "13.5px", lineHeight: "1.6", color: "var(--d-txt)" }}>
-                  {(() => {
-                    const cleanAssess = (p.assess || "").replace(/<[^>]*>/g, "").trim();
-                    return cleanAssess || "No Parallax read recorded.";
-                  })()}
-                </div>
-              </div>
-
-              {/* STRENGTHS & WEAKNESSES (EMPTY FOR NOW) */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                {/* STRENGTHS */}
-                <div style={{ background: "var(--d-bg-1)", border: "1px solid rgba(52, 211, 153, 0.3)", borderTop: "2px solid #34d399", borderRadius: "8px", padding: "16px 18px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "11px", fontWeight: "700", letterSpacing: ".08em", color: "#34d399", textTransform: "uppercase" }}>STRENGTHS</span>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "10px", padding: "1px 6px", background: "rgba(52, 211, 153, 0.15)", color: "#34d399", borderRadius: "4px" }}>0</span>
-                  </div>
-                  <div className="cp-thin" style={{ fontSize: "12px", fontStyle: "italic", padding: "8px 0" }}>
-                    No strengths on record.
-                  </div>
-                </div>
-
-                {/* WEAKNESSES */}
-                <div style={{ background: "var(--d-bg-1)", border: "1px solid rgba(248, 113, 113, 0.3)", borderTop: "2px solid #f87171", borderRadius: "8px", padding: "16px 18px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "11px", fontWeight: "700", letterSpacing: ".08em", color: "#f87171", textTransform: "uppercase" }}>WEAKNESSES</span>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: "10px", padding: "1px 6px", background: "rgba(248, 113, 113, 0.15)", color: "#f87171", borderRadius: "4px" }}>0</span>
-                  </div>
-                  <div className="cp-thin" style={{ fontSize: "12px", fontStyle: "italic", padding: "8px 0" }}>
-                    No weaknesses on record.
-                  </div>
+              <div
+                className="cp-meta-rows"
+                style={{
+                  marginBottom: "20px",
+                  display: "flex",
+                  flexDirection: "column",
+                  background: "var(--d-bg-1)",
+                  border: "1px solid var(--d-line)",
+                  borderRadius: "6px",
+                  overflow: "hidden",
+                }}
+              >
+                {p.legal && p.legal !== p.name ? (
+                  <MetaRow label="Legal Name"><span style={VALUE_STYLE}>{p.legal}</span></MetaRow>
+                ) : null}
+                {p.short && p.short !== p.name ? (
+                  <MetaRow label="Short Name"><span style={VALUE_STYLE}>{p.short}</span></MetaRow>
+                ) : null}
+                <MetaRow label="Starting Year"><span style={VALUE_STYLE}>{p.starting_year ? String(p.starting_year) : DASH}</span></MetaRow>
+                <MetaRow label="Headquarters"><span style={VALUE_STYLE}>{p.hq || DASH}</span></MetaRow>
+                <MetaRow label="Global Locations" top>
+                  <span className="cp-loc-wrap">
+                    {p.locations.length ? (
+                      p.locations.map((l) => (
+                        <span
+                          className="cp-loc-chip"
+                          key={l.id || l.name}
+                          title={[l.type, l.country].filter(Boolean).join(" · ") || undefined}
+                        >
+                          {l.name}
+                        </span>
+                      ))
+                    ) : (
+                      <span style={VALUE_STYLE}>{p.global_locations || DASH}</span>
+                    )}
+                  </span>
+                </MetaRow>
+                <MetaRow label="Company Size"><span style={VALUE_STYLE}>{p.company_size || DASH}</span></MetaRow>
+                <MetaRow label="Annual Revenue / Sales"><span style={VALUE_STYLE}>{p.revenue || DASH}</span></MetaRow>
+                <div style={{ ...ROW_STYLE, borderBottom: "none" }}>
+                  <span style={LABEL_STYLE}>Industry / Sector</span>
+                  <span style={VALUE_STYLE}>{p.sector || DASH}</span>
                 </div>
               </div>
             </Sec>
 
-            {/* 3. LEADERSHIP */}
+            {/* Strategic Positioning, Parallax Read and Strengths / Weaknesses are hidden by
+                decision (2026-10-16); the columns exist but are not shown. */}
+
+            {/* 3. LEADERSHIP (competitive_leader) */}
             <Sec title="Leadership">
-              {leadershipList.length > 0 ? (
+              {leaders.length > 0 ? (
                 <div className="cp-leadership-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "14px" }}>
-                  {leadershipList.map((leader, i) => (
+                  {leaders.map((leader) => (
                     <div
                       className="cp-lead-card cp-lead-card-link"
-                      key={`${leader.name}-${i}`}
+                      key={leader.id}
                       role="button"
                       tabIndex={0}
                       title={`Open ${leader.name}'s profile`}
@@ -957,10 +591,11 @@ export default function Profile() {
                         }
                       }}
                     >
-                      <PersonAvatar name={leader.name} photo={leader.photo} />
+                      <PersonAvatar name={leader.name} initials={leader.initials} />
                       <div className="cp-lead-info">
                         <span className="cp-lead-name">{leader.name}</span>
                         <span className="cp-lead-role">{leader.role}</span>
+                        <Review src={leader._src} />
                       </div>
                     </div>
                   ))}
@@ -972,41 +607,7 @@ export default function Profile() {
               )}
             </Sec>
 
-            {/* 4. SUPPORT LEADERSHIP */}
-            <Sec title="Support Leadership">
-              {supportLeadershipList.length > 0 ? (
-                <div className="cp-leadership-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "14px" }}>
-                  {supportLeadershipList.map((leader, i) => (
-                    <div
-                      className="cp-lead-card cp-lead-card-link"
-                      key={`${leader.name}-${i}`}
-                      role="button"
-                      tabIndex={0}
-                      title={`Open ${leader.name}'s profile`}
-                      onClick={() => setSelectedLeader(leader)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedLeader(leader);
-                        }
-                      }}
-                    >
-                      <PersonAvatar name={leader.name} photo={leader.photo} />
-                      <div className="cp-lead-info">
-                        <span className="cp-lead-name">{leader.name}</span>
-                        <span className="cp-lead-role">{leader.role}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="cp-thin" style={{ fontSize: "12px", padding: "8px 0" }}>
-                  No support executive officers published on public record.
-                </div>
-              )}
-            </Sec>
-
-            {/* 5. COMPANY LATEST NEWS */}
+            {/* 4. COMPANY LATEST NEWS (competitive_news_article) */}
             <Sec
               title={
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
@@ -1040,398 +641,202 @@ export default function Profile() {
                 </label>
               }
             >
-              {!filteredArticles.length && !companyArticles.length ? (
+              {!companyArticles.length ? (
                 <div className="cp-thin" style={{ fontSize: "12px", padding: "8px 0" }}>
-                  No sourced article in the corpus names {displayName}.
+                  No news on record for {displayName}.
                 </div>
-              ) : null}
-              {(filteredArticles.length > 0 || companyArticles.length > 0) && (
+              ) : (
                 <div className="ln-dashboard" style={{ marginTop: "6px" }}>
+                  {/* Category pills: the distinct stored categories, when any article carries one */}
+                  {categories.length ? (
+                    <div className="ln-pills" style={{ marginBottom: "14px" }}>
+                      {[""].concat(categories).map((cat) => (
+                        <button
+                          key={cat || "all"}
+                          type="button"
+                          className={`ln-pill${newsFilter === cat ? " on" : ""}`}
+                          onClick={() => setNewsFilter(cat)}
+                        >
+                          {cat || "All"}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
 
-                  {/* Category Filter Pills */}
-                  <div className="ln-pills" style={{ marginBottom: "14px" }}>
-                    {["All", `${displayName} Updates`, "Defence", "Financial", "Government", "Workforce", "Markets"].map((cat) => (
-                      <button
-                        key={cat}
-                        type="button"
-                        className={`ln-pill${newsFilter === cat ? " on" : ""}`}
-                        onClick={() => setNewsFilter(cat)}
-                      >
-                        {cat}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* 3x3 Grid of exactly 9 Cards */}
-                  <div className="ln-grid">
-                    {(() => {
-                      const displayList = filteredArticles.length >= 9
-                        ? filteredArticles.slice(0, 9)
-                        : (companyArticles.length >= 9
-                            ? companyArticles.slice(0, 9)
-                            : (filteredArticles.concat(companyArticles)).slice(0, 9));
-                      return displayList.map((item, idx) => {
-                        const imgUrl = item.image || "";
-                        return (
-                          <div className="ln-feed-item" key={item.id || idx}>
-                            <ArticleLink article={item} className="ln-feed-card">
-                              <Thumb src={imgUrl} alt="" className="ln-feed-thumb" />
-                              <div className="ln-feed-info">
-                                <div className="ln-feed-meta">
-                                  {item.category || ""} · {item.ago || (item.date ? String(item.date).slice(0, 10) : "")}
-                                </div>
-                                <div className="ln-feed-title">{item.title}</div>
-                                <span className="ln-feed-src">{item.source || "Unattributed"}</span>
+                  {filteredArticles.length ? (
+                    <div className="ln-grid">
+                      {filteredArticles.map((item, idx) => (
+                        <div className="ln-feed-item" key={item.id || idx}>
+                          <ArticleLink article={item} className="ln-feed-card">
+                            {item.image ? <Thumb src={item.image} alt="" className="ln-feed-thumb" /> : null}
+                            <div className="ln-feed-info">
+                              <div className="ln-feed-meta">
+                                {[item.category, item.ago].filter(Boolean).join(" · ")}
                               </div>
-                            </ArticleLink>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
+                              <div className="ln-feed-title">{item.title}</div>
+                              {item.source ? <span className="ln-feed-src">{item.source}</span> : null}
+                            </div>
+                          </ArticleLink>
+                          <Review src={item._src} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="cp-thin" style={{ fontSize: "12px", padding: "8px 0" }}>
+                      No article matches this window{newsFilter ? ` and category` : ""}.
+                    </div>
+                  )}
                 </div>
               )}
-            </Sec>
 
-            {/* 6. COMPANY STOCKS */}
-            <Sec title="Company Stocks">
-              <div className="ln-widget-row" style={{ marginTop: "4px" }}>
-                {(() => {
-                  const stockRecord = data.stocks && data.stocks[p.cid];
-                  const quote = stockRecord && stockRecord.quote;
-                  const sparkRange = stockRecord && stockRecord.ranges && stockRecord.ranges["1mo"];
-                  const sparkSeries = sparkRange ? sparkRange.points.map((point) => point.c) : [];
-                  const sparkChange = sparkRange && sparkRange.rangeChangePct;
-                  if (!quote || quote.price == null) {
-                    return <div className="cp-thin">{quote && quote.emptyMessage ? quote.emptyMessage : "No stock quote on record."}</div>;
-                  }
-                  const open = () => { setSelectedLeader(null); setStockOpen(true); };
-                  return (
-                    <div
-                      className="ln-widget cp-stock-card"
-                      role="button"
-                      tabIndex={0}
-                      title="Open the price history"
-                      onClick={open}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }}
-                      style={{ cursor: "pointer", transition: "border-color 0.15s ease", border: "1px solid var(--d-line)" }}
+              {/* LIVE headlines: the one non-DB element, kept apart from the stored news above */}
+              {liveHeadlines.length ? (
+                <div className="ln-live" style={{ marginTop: "22px" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: "11px", fontWeight: 700, letterSpacing: ".08em", color: "var(--d-txt-3)", textTransform: "uppercase", marginBottom: "8px" }}>
+                    Live headlines (Google News, not reviewed)
+                  </div>
+                  {liveHeadlines.map((t, i) => (
+                    <ArticleLink
+                      article={{ url: t.url, source: t.source }}
+                      className="ln-all-row"
+                      key={`${t.url || t.title}-${i}`}
+                      style={{ display: "flex", gap: "12px", padding: "8px 4px", borderBottom: "1px solid var(--d-line)", alignItems: "baseline" }}
                     >
-                      <div className="ln-widget-h">
-                        <span className="eyebrow">STOCK · {quote.symbol}</span>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
-                        <span style={{ fontSize: "26px", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                          {quote.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                        </span>
-                        <span style={{ fontSize: "12px", color: "var(--d-txt-2)" }}>{quote.currency}</span>
-                        {typeof sparkChange === "number" ? (
-                          <span style={{ fontSize: "12px", fontVariantNumeric: "tabular-nums",
-                            color: sparkChange >= 0 ? "var(--d-up, #34d399)" : "var(--d-down, #f87171)" }}>
-                            {sparkChange >= 0 ? "+" : ""}{sparkChange}%
-                          </span>
-                        ) : null}
-                      </div>
-                      {sparkSeries.length > 1 ? <Spark series={sparkSeries} up={(sparkChange || 0) >= 0} /> : null}
-                      <div style={{ fontSize: "11px", color: "var(--d-txt-2)", marginTop: "4px" }}>
-                        {quote.exchange} · {quote.asOf ? new Date(quote.asOf).toLocaleDateString() : ""}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            </Sec>
-
-            {/* 7. NEWS (LIST / TABULAR FORMAT) */}
-            <Sec
-              title="News"
-              actions={
-                <>
-                  <div className="cp-news-search">
-                    <svg className="si" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-                      <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                      <path d="M11 11 L14.5 14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                    </svg>
-                    <input
-                      type="text"
-                      value={listQ}
-                      onChange={(e) => setListQ(e.target.value)}
-                      placeholder="Search news…"
-                      aria-label="Search the news list"
-                    />
-                    {listQ ? <button type="button" className="cp-news-clear" onClick={() => setListQ("")} aria-label="Clear search">×</button> : null}
-                  </div>
-                  <select className="cp-news-range" value={listRange} onChange={(e) => setListRange(e.target.value)} aria-label="Filter the news list by date">
-                    <option value="all">All dates</option>
-                    <option value="7d">Last 7 days</option>
-                    <option value="30d">Last 30 days</option>
-                    <option value="3m">Last 3 months</option>
-                    <option value="6m">Last 6 months</option>
-                    <option value="12m">Last 12 months</option>
-                    <option value="custom">Custom range…</option>
-                  </select>
-                  {listRange === "custom" ? (
-                    <span className="cp-news-dates">
-                      <input type="date" value={listFrom} max={listTo || undefined} onChange={(e) => setListFrom(e.target.value)} aria-label="From date" />
-                      <span>to</span>
-                      <input type="date" value={listTo} min={listFrom || undefined} onChange={(e) => setListTo(e.target.value)} aria-label="To date" />
-                    </span>
-                  ) : null}
-                </>
-              }
-            >
-              <div id="all-company-news" style={{ marginTop: "10px" }}>
-                {!listRows.length ? (
-                  <div className="cp-thin" style={{ padding: "16px 12px" }}>
-                    No article matches{listQ.trim() ? <> “{listQ.trim()}”</> : null}{newsListDated ? " in this date range" : ""}.
-                  </div>
-                ) : null}
-                {(showAllNews ? listRows : listRows.slice(0, 20)).map((item, idx) => (
-                  <ArticleLink
-                    article={item}
-                    className="ln-all-row"
-                    key={item.id || `all-${idx}`}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "110px 1fr 140px 220px",
-                      gap: "16px",
-                      alignItems: "center",
-                      padding: "10px 14px",
-                      borderBottom: "1px solid var(--d-line)",
-                      background: idx % 2 === 0 ? "rgba(255, 255, 255, 0.015)" : "transparent",
-                      textDecoration: "none",
-                      color: "inherit",
-                    }}
-                  >
-                    <span className="ln-row-date" style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", whiteSpace: "nowrap" }}>
-                      {fmtNewsDate(item, idx)}
-                    </span>
-                    <span className="ln-row-title" style={{ fontSize: "13px", color: "var(--d-txt)", fontWeight: "500", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {item.title}
-                    </span>
-                    <span className="ln-row-cat" style={{ display: "flex", justifyContent: "center" }}>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          padding: "3px 12px",
-                          background: "var(--d-bg-2)",
-                          border: "1px solid var(--d-line)",
-                          borderRadius: "4px",
-                          fontFamily: "var(--mono)",
-                          fontSize: "11px",
-                          color: "var(--d-txt-2)",
-                          textAlign: "center",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {cleanNewsCategory(item.category)}
+                      <span style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", whiteSpace: "nowrap" }}>
+                        {t.date ? formatDate(t.date) : ""}
                       </span>
-                    </span>
-                    <span className="ln-row-url" style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {formatNewsSource(item)}
-                    </span>
-                  </ArticleLink>
-                ))}
-              </div>
-              {!showAllNews && listRows.length > 20 ? (
-                <button
-                  type="button"
-                  onClick={() => setShowAllNews(true)}
-                  style={{
-                    width: "100%",
-                    padding: "10px",
-                    marginTop: "10px",
-                    background: "var(--d-bg-2)",
-                    border: "1px solid var(--d-line)",
-                    borderRadius: "6px",
-                    color: "var(--d-txt-2)",
-                    fontFamily: "var(--mono)",
-                    fontSize: "12px",
-                    cursor: "pointer",
-                  }}
-                >
-                  Show the remaining {listRows.length - 20}
-                </button>
+                      <span style={{ fontSize: "13px", color: "var(--d-txt)", flex: 1, minWidth: 0 }}>{t.title}</span>
+                      {t.source ? (
+                        <span style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", whiteSpace: "nowrap" }}>{t.source}</span>
+                      ) : null}
+                    </ArticleLink>
+                  ))}
+                </div>
               ) : null}
             </Sec>
+
+            {/* Company stock: removed by decision (stock is hidden; no live quotes). */}
+            {/* 5. NEWS (LIST / TABULAR FORMAT) */}
+            {companyArticles.length ? (
+              <Sec
+                title="News"
+                actions={
+                  <>
+                    <div className="cp-news-search">
+                      <svg className="si" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                        <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+                        <path d="M11 11 L14.5 14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        type="text"
+                        value={listQ}
+                        onChange={(e) => setListQ(e.target.value)}
+                        placeholder="Search news…"
+                        aria-label="Search the news list"
+                      />
+                      {listQ ? <button type="button" className="cp-news-clear" onClick={() => setListQ("")} aria-label="Clear search">×</button> : null}
+                    </div>
+                    <select className="cp-news-range" value={listRange} onChange={(e) => setListRange(e.target.value)} aria-label="Filter the news list by date">
+                      <option value="all">All dates</option>
+                      <option value="7d">Last 7 days</option>
+                      <option value="30d">Last 30 days</option>
+                      <option value="3m">Last 3 months</option>
+                      <option value="6m">Last 6 months</option>
+                      <option value="12m">Last 12 months</option>
+                      <option value="custom">Custom range…</option>
+                    </select>
+                    {listRange === "custom" ? (
+                      <span className="cp-news-dates">
+                        <input type="date" value={listFrom} max={listTo || undefined} onChange={(e) => setListFrom(e.target.value)} aria-label="From date" />
+                        <span>to</span>
+                        <input type="date" value={listTo} min={listFrom || undefined} onChange={(e) => setListTo(e.target.value)} aria-label="To date" />
+                      </span>
+                    ) : null}
+                  </>
+                }
+              >
+                <div id="all-company-news" style={{ marginTop: "10px" }}>
+                  {!listRows.length ? (
+                    <div className="cp-thin" style={{ padding: "16px 12px" }}>
+                      No article matches{listQ.trim() ? <> “{listQ.trim()}”</> : null}{newsListDated ? " in this date range" : ""}.
+                    </div>
+                  ) : null}
+                  {(showAllNews ? listRows : listRows.slice(0, 20)).map((item, idx) => (
+                    <div key={item.id || `all-${idx}`}>
+                    <ArticleLink
+                      article={item}
+                      className="ln-all-row"
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "110px 1fr 140px 220px",
+                        gap: "16px",
+                        alignItems: "center",
+                        padding: "10px 14px",
+                        borderBottom: "1px solid var(--d-line)",
+                        background: idx % 2 === 0 ? "rgba(255, 255, 255, 0.015)" : "transparent",
+                        textDecoration: "none",
+                        color: "inherit",
+                      }}
+                    >
+                      <span className="ln-row-date" style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", whiteSpace: "nowrap" }}>
+                        {item.ago}
+                      </span>
+                      <span className="ln-row-title" style={{ fontSize: "13px", color: "var(--d-txt)", fontWeight: "500", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {item.title}
+                      </span>
+                      <span className="ln-row-cat" style={{ display: "flex", justifyContent: "center" }}>
+                        {item.category ? (
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "3px 12px",
+                              background: "var(--d-bg-2)",
+                              border: "1px solid var(--d-line)",
+                              borderRadius: "4px",
+                              fontFamily: "var(--mono)",
+                              fontSize: "11px",
+                              color: "var(--d-txt-2)",
+                              textAlign: "center",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {item.category}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="ln-row-url" style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {item.source}
+                      </span>
+                    </ArticleLink>
+                    <Review src={item._src} style={{ margin: "0 14px 6px" }} />
+                    </div>
+                  ))}
+                </div>
+                {!showAllNews && listRows.length > 20 ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllNews(true)}
+                    style={{
+                      width: "100%",
+                      padding: "10px",
+                      marginTop: "10px",
+                      background: "var(--d-bg-2)",
+                      border: "1px solid var(--d-line)",
+                      borderRadius: "6px",
+                      color: "var(--d-txt-2)",
+                      fontFamily: "var(--mono)",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Show the remaining {listRows.length - 20}
+                  </button>
+                ) : null}
+              </Sec>
+            ) : null}
           </>
         )}
       </div>
     </div>
-  );
-}
-
-
-/* THE STOCK CARD'S PAGE. Opened from the Stock card; replaces the profile in the right
-   column. Prices and series are read from the served stock tables. Each move includes
-   only the fields stored with that series row. */
-const fmtMoney = (v, cur) => {
-  if (typeof v !== "number") return "—";
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency: cur || "USD", maximumFractionDigits: 2 }).format(v);
-  } catch (e) {
-    return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  }
-};
-const fmtDay = (iso) => {
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
-};
-
-function PriceChart({ points, moves, currency }) {
-  const W = 900, H = 300, PL = 88, PR = 16, PT = 16, PB = 30;
-  const n = points.length;
-  if (n < 2) return null;
-  const vals = points.map((p) => p.c);
-  const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
-  const X = (i) => PL + (i / (n - 1)) * (W - PL - PR);
-  const Y = (v) => PT + (1 - (v - min) / span) * (H - PT - PB);
-  const line = points.map((p, i) => `${X(i).toFixed(1)},${Y(p.c).toFixed(1)}`).join(" ");
-  const up = vals[n - 1] >= vals[0];
-  const col = up ? "#34d399" : "#f87171";
-  const idx = {};
-  points.forEach((p, i) => { idx[p.t] = i; });
-  const ticks = [0, 0.5, 1].map((f) => min + f * span);
-  const xl = [0, Math.floor((n - 1) / 2), n - 1];
-  return (
-    <svg className="cp-stock-chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Price history">
-      <defs>
-        <linearGradient id="cpStockFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={col} stopOpacity="0.28" />
-          <stop offset="100%" stopColor={col} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {ticks.map((v, i) => (
-        <g key={i}>
-          <line x1={PL} x2={W - PR} y1={Y(v)} y2={Y(v)} stroke="var(--d-line)" strokeDasharray="3 5" />
-          <text x={PL - 8} y={Y(v) + 4} textAnchor="end" className="cp-stock-axis">{fmtMoney(v, currency)}</text>
-        </g>
-      ))}
-      {xl.map((i) => (
-        <text key={i} x={X(i)} y={H - 8} textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"} className="cp-stock-axis">
-          {fmtDay(points[i].t)}
-        </text>
-      ))}
-      <polygon points={`${X(0)},${H - PB} ${line} ${X(n - 1)},${H - PB}`} fill="url(#cpStockFill)" />
-      <polyline points={line} fill="none" stroke={col} strokeWidth="2" strokeLinejoin="round" />
-      {(moves || []).map((m, k) => {
-        const i = idx[m.date];
-        if (i == null) return null;
-        const x = X(i), y = Y(points[i].c), drop = m.dir === "drop";
-        return (
-          <a key={k} href={`#move-${m.date}`} onClick={(e) => { e.preventDefault(); const el = document.getElementById(`move-${m.date}`); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }}>
-            <title>{`${fmtDay(m.date)}: ${m.pct > 0 ? "+" : ""}${m.pct}%`}</title>
-            <path d={drop ? `M${x - 6},${y + 8} L${x + 6},${y + 8} L${x},${y + 18} Z` : `M${x - 6},${y - 8} L${x + 6},${y - 8} L${x},${y - 18} Z`}
-                  fill={drop ? "#f87171" : "#34d399"} />
-            <circle cx={x} cy={y} r="3.5" fill={drop ? "#f87171" : "#34d399"} />
-          </a>
-        );
-      })}
-    </svg>
-  );
-}
-
-function StockPage({ stockRecord, companyName, onBack }) {
-  const ranges = stockRecord && stockRecord.ranges ? stockRecord.ranges : {};
-  const rangeOptions = Object.values(ranges).map((item) => [item.range, item.label || item.value || item.range]);
-  const [range, setRange] = useState(() => rangeOptions[0] && rangeOptions[0][0]);
-  const quote = stockRecord && stockRecord.quote;
-  const h = ranges[range] ? { ...ranges[range], ...quote } : null;
-  return (
-    <div className="cp-person cp-stock">
-      <button type="button" className="cp-person-back" onClick={onBack}>← Back to {companyName}</button>
-      <div className="cp-stock-head">
-        <div>
-          <h1 className="cp-person-name">{companyName} · Stock</h1>
-          <div className="cp-person-now">
-            {h ? `${h.symbol}${h.exchange ? ` · ${h.exchange}` : ""}` : ""}
-          </div>
-        </div>
-        {h ? (
-          <div className="cp-stock-price">
-            <span className="cp-stock-now">{fmtMoney(h.price, h.currency)}</span>
-            {typeof h.rangeChangePct === "number" ? (
-              <span className={h.rangeChangePct >= 0 ? "cp-up" : "cp-down"}>
-                {h.rangeChangePct >= 0 ? "+" : ""}{h.rangeChangePct}% over {h.label || h.value || h.range}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="cp-stock-tabs">
-        {rangeOptions.map(([k, l]) => (
-          <button
-            key={k}
-            type="button"
-            className={`cp-stock-tab${range === k ? " on" : ""}`}
-            onClick={() => setRange(k)}
-          >
-            {l}
-          </button>
-        ))}
-        {h ? (
-          <span className="cp-stock-hl">High {fmtMoney(h.high, h.currency)} · Low {fmtMoney(h.low, h.currency)}</span>
-        ) : null}
-      </div>
-
-      {!h ? (
-        <div className="cp-thin" style={{ padding: "40px 0" }}>Price history unavailable right now.</div>
-      ) : (
-        <>
-          <div className="cp-stock-chart-wrap">
-            <PriceChart points={h.points} moves={h.moves} currency={h.currency} />
-          </div>
-
-          <section className="cp-person-sec">
-            <h2 className="cp-person-h">Biggest moves · {h.moves.length}</h2>
-            <p className="cp-stock-note">
-              Days the price moved unusually far for this stock. Under each: headlines published within 3 days of it
-              (Google News) &mdash; what was in the news at the time, <b>not a confirmed cause</b>.
-            </p>
-            {h.moves.length ? (
-              <div className="cp-person-list">
-                {h.moves.map((m) => (
-                  <div className={`cp-stock-move ${m.dir}`} id={`move-${m.date}`} key={m.date}>
-                    <div className="cp-stock-move-top">
-                      <span className={`cp-stock-badge ${m.dir}`}>{m.dir === "drop" ? "▼ Drop" : "▲ Rise"} {m.pct > 0 ? "+" : ""}{m.pct}%</span>
-                      <span className="cp-stock-move-date">{fmtDay(m.date)}</span>
-                      <span className="cp-stock-move-px">{fmtMoney(m.from, h.currency)} → {fmtMoney(m.to, h.currency)}</span>
-                    </div>
-                    {m.news && m.news.length ? (
-                      <ul className="cp-stock-news">
-                        {m.news.map((a, j) => (
-                          <li key={j}>
-                            <a href={a.url} target="_blank" rel="noopener noreferrer">{a.title}</a>
-                            <span className="cp-stock-src">{a.source || ""}{a.date ? ` · ${fmtDay(a.date)}` : ""}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <div className="cp-thin" style={{ fontSize: "12px" }}>No headline found around this date.</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="cp-thin">No unusually large move in this range.</div>
-            )}
-          </section>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* Tiny inline sparkline for the live stock widget -- last ~22 closes, no library. */
-function Spark({ series, up }) {
-  const w = 132, h = 30, n = series.length;
-  const min = Math.min(...series), max = Math.max(...series), span = max - min || 1;
-  const pts = series.map((v, i) => `${(i / (n - 1)) * w},${h - ((v - min) / span) * (h - 4) - 2}`).join(" ");
-  const col = up ? "var(--d-up, #34d399)" : "var(--d-down, #f87171)";
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block", marginTop: "6px" }}
-         role="img" aria-label="30-day price trend" preserveAspectRatio="none">
-      <polyline points={pts} fill="none" stroke={col} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
   );
 }

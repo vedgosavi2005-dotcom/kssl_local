@@ -1,0 +1,138 @@
+id: project
+title: Defence projects of one competitor
+version: 1
+fills: [competitive_project, competitive_project_source, competitive_project_specification, competitive_project_stage, competitive_project_timeline]
+shows_on: "Projects page (feed; drawer with facts, stage stepper, specs, timeline, strategic assessment, sources)"
+cadence: quarterly
+web_search: true                 # programme facts are rarely in the news rows
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: competitor_id
+  query: |
+    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country,
+           (SELECT string_agg(s.stage_name, ' > ' ORDER BY s.stage_order)
+              FROM staging_ui.ui_project_stage_step s) AS stage_steps,
+           (SELECT string_agg(f.filter_code || ' = ' || f.filter_label, '; ' ORDER BY f.display_order)
+              FROM staging_ui.ui_project_filter f) AS region_filters
+    FROM staging.competitive_competitor c
+    ORDER BY c.display_name
+  documents:
+    - from: sql
+      query: |
+        SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
+        FROM staging.competitive_news_article n
+        WHERE n.competitor_id = '{{subject.competitor_id}}' AND n.published_date >= current_date - 730
+          AND COALESCE(n.category, '') NOT IN ('Stock & market', 'Non-defence business')
+        ORDER BY n.published_date DESC LIMIT 80
+    - from: sql                  # the client's stored specs, only for kssl_platform / kssl_advantage
+      query: |
+        SELECT 'CLIENT SPEC' AS doc, p.product_name, s.spec_name, s.value_text, s.value_numeric, s.unit
+        FROM staging.client_product p
+        JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
+        ORDER BY p.product_name, s.display_order
+
+context: [client, client_products]
+
+task: |
+  TASK project — list the defence projects of {{subject.display_name}} ({{subject.origin_country}}),
+  with stage, specifications, timeline and sources. Use the DOCUMENTS first, then web search for gaps.
+
+  A PROJECT is a named defence programme or contract in which the company is lead organisation or
+  prime contractor for a stated customer. Not a product launch without a customer, and not a
+  programme where the company is only a sub-supplier. At most 5 projects, largest or most recent
+  first. None: "records": [] and "skip_reason".
+
+  Per project, one record, table competitive_project:
+   - project_title: the programme or contract name as written in the main source (max 200)
+   - kind: short type as the source describes it (e.g. development, production contract,
+     upgrade), max 64 characters
+   - customer: the customer or end user as written
+   - location: where the work is done or delivered (plant, city, country), as stated
+   - region: JUDGEMENT. One filter_code from REGION FILTERS (left of the "="), chosen by its label;
+     null if none fits
+   - stage: JUDGEMENT. One name from STAGE STEPS: the furthest stage a source reports (the steps
+     are listed first to last). Give the reporting source in _sources
+   - stage_note: one sentence on the current stage, as stated
+   - card_summary: one sentence, max 200 characters, what the project is
+   - what_the_project_is: 2-4 sentences: objective, system, quantity, customer, as stated
+   - assessment_stance: JUDGEMENT. threat if the project directly strengthens the competitor with
+     customers {{client.name}} sells to in a category where {{client.name}} has a product (CLIENT
+     PRODUCTS); fav if it weakens the competitor or opens ground for {{client.name}}; watch
+     otherwise. Allowed: threat | watch | fav
+   - assessment_read: JUDGEMENT. 2-4 sentences: what the project means for {{client.name}}, naming
+     the {{client.name}} product(s) it touches
+   - ref_client_product: JUDGEMENT. The CLIENT PRODUCTS name that competes most directly; null if none
+   - kssl_advantage: JUDGEMENT. One sentence naming a stated figure of that {{client.name}} product
+     (CLIENT SPEC rows) that beats or trails a stated figure of the project's system; null unless
+     both figures are stated
+   children:
+   competitive_project_specification (0-12 rows, stated parameters in source order):
+   - spec_label (short English name), spec_value (as written, no conversion), unit (as written).
+     A stated contract or programme value is a row here: spec_value = the amount as written,
+     unit = its currency
+   competitive_project_timeline (3-8 dated events, oldest first):
+   - event_date; event_title (max 120 chars); event_description (one sentence, as stated);
+     is_expected: true for a future or planned event, false for one that happened
+   competitive_project_source (2-4 rows, the sources used most):
+   - source_label (page or document title as published), source_url,
+     source_type (official = government, ministry, armed forces; company; news)
+  Do not output competitive_project_stage; the loader builds it from the stage you choose.
+
+  STAGE STEPS: {{subject.stage_steps}}
+  REGION FILTERS: {{subject.region_filters}}
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+
+  DOCUMENTS (news leads for {{subject.display_name}}, then client specs):
+  {{documents}}
+
+output:
+  competitive_project:
+    card: true
+    key: [prompt_id, subject, project_title]
+    columns:
+      project_title: {required: true, max: 200}
+      kind: {max: 64}
+      customer: {}
+      location: {}
+      region: {judgement: true, enum_from: ui.ui_project_filter.filter_code}     # coupling: filter_code must equal region
+      stage: {required: true, judgement: true, enum_from: ui.ui_project_stage_step.stage_name}
+      stage_note: {}
+      card_summary: {max: 200}
+      what_the_project_is: {required: true}
+      assessment_stance: {required: true, judgement: true, enum: [threat, watch, fav]}
+      assessment_read: {judgement: true}
+      kssl_platform: {from_ref: ref_client_product, judgement: true}   # product_name text of the referenced client product
+      kssl_advantage: {judgement: true}
+    loader:
+      project_id: new_id
+      competitor_id: subject.competitor_id
+      company_display: subject.display_name
+      researched_as_of: run_date
+      latest_milestone: title_of_latest_past_timeline_event
+      latest_milestone_date: date_of_latest_past_timeline_event
+      display_order: rank_by_latest_milestone_date_desc
+    children:
+      competitive_project_specification:
+        columns: [spec_label, spec_value, unit]
+        required: [spec_label, spec_value]
+        loader: {project_spec_id: new_id, project_id: parent_id, display_order: index}
+      competitive_project_timeline:
+        columns: [event_date, event_title, event_description, is_expected]
+        required: [event_date, event_title, is_expected]
+        loader: {timeline_id: new_id, project_id: parent_id, display_order: index}
+      competitive_project_source:
+        columns: [source_label, source_url, source_type]
+        required: [source_url]
+        enum: {source_type: [official, company, news]}
+        loader: {source_id: new_id, project_id: parent_id, source_domain: host_of_source_url}
+      competitive_project_stage:
+        loader_only: true        # one row per stage step of ui_project_stage_step; is_current = (stage_name = the project's stage)
+        loader:
+          project_stage_id: new_id
+          project_id: parent_id
+          stage_name: from_ui.ui_project_stage_step.stage_name
+          stage_order: from_ui.ui_project_stage_step.stage_order
+          is_current: stage_name_equals_project_stage

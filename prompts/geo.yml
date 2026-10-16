@@ -1,0 +1,197 @@
+id: geo
+title: Geo footprint of one company (countries, products supplied, client counter-products)
+version: 2
+fills: [competitive_geo_company_presence, competitive_geo_product, competitive_geo_product_match, competitive_geo_product_specification, competitive_geo_product_news, competitive_geo_source, competitive_geo_location]
+shows_on: Geo Footprint page (map markers, country drawer, company -> countries, products supplied, client comparison panel)
+cadence: quarterly
+web_search: true
+# Subjects: every competitor, plus the client itself (company_role = client) so the map can show the
+# client's own footprint and the overlap rollup has something to compare with. Delete the second
+# SELECT if the client footprint is to come from somewhere else. The client subject runs FIRST.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: subject_id
+  query: |
+    SELECT a.client_id::text AS subject_id, 'client' AS company_role, a.client_name AS display_name, a.country AS origin_country
+    FROM staging.client_account a
+    UNION ALL
+    SELECT c.competitor_id::text, 'competitor', c.display_name, c.origin_country
+    FROM staging.competitive_competitor c
+    ORDER BY company_role, display_name
+  documents:
+    - from: sql
+      query: |
+        SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
+        FROM staging.competitive_news_article n
+        WHERE n.competitor_id::text = '{{subject.subject_id}}' AND n.published_date >= current_date - 1095
+          AND COALESCE(n.category, '') NOT IN ('Stock & market', 'Non-defence business')
+        ORDER BY n.published_date DESC LIMIT 80
+    - from: sql                  # the client's footprint already on record
+      query: |
+        SELECT 'CLIENT FOOTPRINT' AS doc, l.country_name, p.activity_type, p.presence_status
+        FROM staging.competitive_geo_company_presence p
+        JOIN staging.competitive_geo_location l ON l.location_id = p.location_id
+        WHERE p.company_role = 'client'
+        ORDER BY l.country_name
+    - from: sql                  # the client's products with stored specs
+      query: |
+        SELECT 'CLIENT CATALOGUE' AS doc, p.product_name, p.category, s.spec_name, s.value_text, s.unit
+        FROM staging.client_product p
+        LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
+        ORDER BY p.product_name, s.display_order
+    - from: sql                  # this company's products with stored specs (empty for the client run)
+      query: |
+        SELECT 'SUBJECT CATALOGUE' AS doc, p.product_name, p.category, s.spec_label, s.spec_value, s.unit
+        FROM staging.competitive_product p
+        LEFT JOIN staging.competitive_product_specification s ON s.product_id = p.product_id
+        WHERE p.competitor_id::text = '{{subject.subject_id}}'
+        ORDER BY p.product_name, s.spec_label
+
+context: [client, client_products, competitors, categories]
+
+task: |
+  TASK geo — find the countries where {{subject.display_name}} ({{subject.company_role}}) is active,
+  what it supplies there, and (competitors only) which {{client.name}} product counters each
+  product. Part A uses the DOCUMENTS first, then web search for gaps. Part B uses ONLY the
+  CLIENT CATALOGUE, SUBJECT CATALOGUE and CLIENT FOOTPRINT rows: no web search. If the subject's
+  company_role is client, skip Part B.
+
+  ACTIVE IN A COUNTRY means a source states one of: the company produces there (own plant, joint
+  venture or licensed production), it has supplied or contracted to supply that country's forces
+  or industry, or it runs a sales and service site there. Include the home country when it
+  produces there. At most 12 countries, strongest evidence first. None: "records": [] and
+  "skip_reason".
+
+  PART A. Per country, one record, table competitive_geo_company_presence:
+   - ref_location: the country, English short name (the loader creates the location row)
+   - activity_type: the main activity there, the first that applies of: Local production,
+     Licensed production, Export, Sales and service
+   - presence_status: Active (in place) or Planned (announced, not yet in place)
+   - relationship_text: one sentence on the activity, as stated
+   children:
+   competitive_geo_product (1-10 rows per country: each product or named product group):
+   - product_name: exactly as in SUBJECT CATALOGUE when it is there, else as written in the source;
+     null only if no product is named (then record_note says what the source states)
+   - activity_type: as above, for this product
+   - since_date: when the activity began (contract or first delivery), as stated
+   - quantity: as written, with its unit word; reported_value: contract value as written with
+     currency; both null if not stated
+   - ref_category: the CATEGORIES name the product belongs to (a plain string field of the product, not
+     an object; the loader stores it as the product range); null if none
+   - record_note: one factual sentence (stage, customer), as stated
+   competitive_geo_source (1-2 rows per product): source_label, source_type (company | official |
+   news), source_url
+   competitive_geo_product_news (0-3 rows per product): choose from the NEWS rows only the ones
+   naming this product and country; copy headline, publisher, published_date, article_url exactly
+
+  PART B (competitors only). For each competitive_geo_product with a counter, one child
+  competitive_geo_product_match:
+   - ref_client_product: the CLIENT CATALOGUE name that competes most directly; omit the whole
+     match if none
+   - match_status: JUDGEMENT. matched if both products are in the same category AND both
+     catalogues give comparable spec rows; category_only if same category but the specs are not
+     comparable or not on file
+   - match_basis: what the two share, from catalogue rows (max 200 characters)
+   - evaluation_label: JUDGEMENT. 2-6 words naming the result, e.g. who leads on what
+   - qualitative_summary: JUDGEMENT. 1-2 sentences citing the spec values that lead to the result
+   children (matched only; 2-8 rows): competitive_geo_product_specification:
+   - ref_client_spec: the CLIENT CATALOGUE spec_name; ref_competitor_spec: the SUBJECT CATALOGUE
+     spec_label that measures the same thing (omit a pair that does not)
+   - better_side: JUDGEMENT. client, competitor or equal, for a buyer of this product class
+     (lower is better for e.g. weight, reaction time, crew; higher for e.g. range, rate of fire,
+     payload). equal when the stated values are the same or not materially different
+   Values, units and spec_group are copied by the loader from the catalogue rows. For every Part B
+   field give _reason and _sources; a source is an input row (url = null, quote = "<doc>: <row>").
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+  COMPETITORS:
+  {{context.competitors}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENTS:
+  {{documents}}
+
+output:
+  competitive_geo_company_presence:
+    card: true
+    key: [prompt_id, subject, country]
+    columns:
+      location_id: {required: true, from_ref: ref_location}
+      activity_type: {required: true, enum: [Local production, Licensed production, Export, Sales and service]}
+      presence_status: {enum: [Active, Planned]}
+      relationship_text: {}
+    loader:
+      presence_id: new_id
+      company_role: subject.company_role
+      competitor_id: subject.subject_id_when_competitor
+      client_id: subject.subject_id_when_client
+      company_name: subject.display_name
+      display_order: rank_by_country
+      product_count: count_children
+      products_summary: join_child_product_names
+      overlap_status: derive.geo_rollup      # confirmed if any match is 'matched'; category if any is 'category_only'; else none; null for the client
+      matched_ranges: derive.geo_rollup      # distinct categories of the matched client products, comma-separated
+    children:
+      competitive_geo_product:
+        columns: [product_name, activity_type, since_date, quantity, reported_value, product_range, record_note]
+        enum: {activity_type: [Local production, Licensed production, Export, Sales and service]}
+        loader: {geo_product_id: new_id, presence_id: parent_id, display_order: index}
+        from_ref: {product_range: ref_category}
+        children:
+          competitive_geo_source:
+            columns: [source_label, source_type, source_url]
+            required: [source_url]
+            enum: {source_type: [company, official, news]}
+            loader: {source_id: new_id, geo_product_id: parent_id, location_id: presence_location_id}
+          competitive_geo_product_news:
+            columns: [headline, publisher, published_date, article_url]
+            required: [headline]
+            loader: {news_id: new_id, geo_product_id: parent_id, display_order: index}
+          competitive_geo_product_match:
+            columns: [match_status, match_basis, evaluation_label, qualitative_summary]
+            refs: {ref_client_product: client_product}
+            judgement: [match_status, evaluation_label, qualitative_summary]
+            enum: {match_status: [matched, category_only]}
+            max: {match_basis: 200}
+            loader:
+              match_id: new_id
+              geo_product_id: parent_id
+              kssl_product_id: resolved_ref_client_product_id
+              kssl_counter_label: resolved_ref_client_product_name
+              comparison_title: "{kssl_counter_label} vs {geo product_name}"
+              decision_level: derive.geo_match_edge
+            children:
+              competitive_geo_product_specification:
+                columns: [better_side]
+                refs: {ref_client_spec: client_product_specification.spec_name, ref_competitor_spec: competitive_product_specification.spec_label}
+                judgement: [better_side]
+                enum: {better_side: [client, competitor, equal]}
+                loader:
+                  comparison_spec_id: new_id
+                  match_id: parent_id
+                  display_order: index
+                  spec_name: copy_of_ref_client_spec
+                  spec_group: copy_from_client_spec
+                  unit: copy_from_client_spec
+                  kssl_value: copy_from_client_spec
+                  competitor_value: copy_from_competitor_spec
+                  gap_value: derive.geo_match_edge
+  competitive_geo_location:
+    loader_only: true            # found or created from ref_location (country_name); never output by the model
+    loader:
+      location_id: new_id_if_missing
+      country_name: from_ref_location
+      map_label: from_ref_location
+      region_name: country_reference_table      # latitude / longitude / region come from the loader's country table, never from the model
+      latitude: country_reference_table
+      longitude: country_reference_table
+      presence_types: derive.geo_rollup         # distinct activity_type of all presence rows there
+      kssl_presence_summary: derive.geo_rollup  # relationship_text of the client's rows there; null when the client has none (never "absent")
+
+derive:
+  - geo_rollup       # per presence row and per location: the roll-ups named above
+  - geo_match_edge   # geo matches: decision_level and per-spec gap_value, same rules as matchup_edge; kssl_score, competitor_score, rating_delta stay null

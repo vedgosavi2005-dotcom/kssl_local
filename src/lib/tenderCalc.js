@@ -1,184 +1,45 @@
-/**
- * Tender Deadline Calculation Helper.
- * Checks DB record for tender closing dates / dl offset, and calculates
- * real days left dynamically relative to current system date.
- */
+/* Tender buckets and days left.
 
-export function computeTenderRealDays(tender, referenceDate = new Date()) {
-  if (!tender) {
-    return {
-      dl: 0,
-      deadline: "—",
-      timing: "—",
-      status: "closed",
-      class: "settled",
-      isLive: false,
-    };
-  }
+   ONE rule for open / awarded / closed: the stored `status`. "awarded" and "closed" are
+   their own tabs; every other stored value (open, closing, ...) is an open tender. The
+   closing date never moves a tender between tabs. It only drives the days-left chip,
+   which is presentation: whole days from today's local midnight to `closing_date`. */
 
-  const rawStatus = (tender.status || "").toLowerCase();
-  const isAwardedOrSettled =
-    rawStatus === "awarded" ||
-    rawStatus === "settled" ||
-    (tender.deadline && tender.deadline.toLowerCase().startsWith("awarded"));
-
-  if (isAwardedOrSettled) {
-    return {
-      dl: 0,
-      deadline: tender.deadline || "Awarded / Settled",
-      timing: "Awarded - programme concluded",
-      status: "awarded",
-      class: "settled",
-      isLive: false,
-    };
-  }
-
-  /* A real programme with a published STAGE (AoN cleared, RFI, FMS approved…)
-     shows the stage, not a manufactured countdown. Far dl keeps it sorted after
-     anything with a genuine closing date and out of the urgency bands. */
-  if (tender.stage) {
-    return {
-      dl: 365,
-      deadline: tender.stage,
-      timing: tender.stage,
-      status: "open",
-      class: "normal",
-      isLive: true,
-    };
-  }
-
-  const now = new Date(referenceDate);
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-  let targetDate = null;
-  let closingStr = tender.closingDate || tender.dueDate || tender.closing_date;
-
-  if (!closingStr && Array.isArray(tender.req)) {
-    const pair = tender.req.find(
-      (r) =>
-        r &&
-        r[0] &&
-        (r[0].toLowerCase().includes("closing date") ||
-          r[0].toLowerCase().includes("due date") ||
-          r[0].toLowerCase().includes("deadline"))
-    );
-    if (pair && pair[1]) closingStr = pair[1];
-  }
-
-  if (!closingStr && typeof tender.deadline === "string") {
-    const m = tender.deadline.match(/(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/);
-    if (m) closingStr = m[1];
-  }
-
-  if (closingStr) {
-    const parsed = new Date(closingStr);
-    if (!isNaN(parsed.getTime())) {
-      targetDate = parsed;
-    }
-  }
-
-  if (
-    !targetDate &&
-    typeof tender.dl === "number" &&
-    tender.dl > 0 &&
-    tender.dl < 1000
-  ) {
-    const diffDays = tender.dl;
-    const cls = diffDays <= 7 ? "urgent" : diffDays <= 14 ? "soon" : "normal";
-    return {
-      dl: diffDays,
-      deadline: `${diffDays} day${diffDays !== 1 ? "s" : ""} left`,
-      timing: `closes in ${diffDays} day${diffDays !== 1 ? "s" : ""}`,
-      status: diffDays <= 3 ? "closing" : "open",
-      class: cls,
-      isLive: true,
-    };
-  }
-
-  if (targetDate && !isNaN(targetDate.getTime())) {
-    const targetDay = new Date(
-      targetDate.getFullYear(),
-      targetDate.getMonth(),
-      targetDate.getDate()
-    );
-    const diffMs = targetDay.getTime() - today.getTime();
-    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays <= 0) {
-      return {
-        dl: 0,
-        deadline: "Closed / Expired",
-        timing: "Closed - deadline passed",
-        status: "closed",
-        class: "settled",
-        isLive: false,
-      };
-    }
-
-    const cls = diffDays <= 7 ? "urgent" : diffDays <= 14 ? "soon" : "normal";
-    return {
-      dl: diffDays,
-      deadline: `${diffDays} day${diffDays !== 1 ? "s" : ""} left`,
-      timing: `closes in ${diffDays} day${diffDays !== 1 ? "s" : ""}`,
-      status: diffDays <= 3 ? "closing" : "open",
-      class: cls,
-      isLive: true,
-    };
-  }
-
-  /* No createdAt and no resolvable date. Only an explicit "Closed" from the
-     source is treated as closed; otherwise this is an open tender whose deadline
-     the record simply does not carry — say so instead of computing days from
-     nothing. dl=9999 keeps it in the open bucket (dl<=0 reads as closed) and
-     sorts it after everything with a genuine closing date. */
-  if (tender.deadline && /closed|expired/i.test(tender.deadline)) {
-    return {
-      dl: 0,
-      deadline: tender.deadline,
-      timing: "Closed",
-      status: "closed",
-      class: "settled",
-      isLive: false,
-    };
-  }
-  /* A served descriptive deadline ("Q4 2026 expected") still shows — but a baked
-     countdown string ("12 days left") is a stale computation, not a record, and
-     repeating it would manufacture the very countdown this path refuses. */
-  const desc =
-    tender.deadline && !/days?\s+left|closes in/i.test(tender.deadline) ? tender.deadline : null;
-  return {
-    dl: 9999,
-    deadline: desc || "no deadline on record",
-    timing: desc || "no deadline on record",
-    status: "open",
-    class: "normal",
-    isLive: true,
-  };
+export function tenderBucket(t) {
+  const s = String((t && t.status) || "").trim().toLowerCase();
+  return s === "awarded" ? "awarded" : s === "closed" ? "closed" : "open";
 }
 
-/**
- * Wire tender dataset with calculated real days left relative to current date.
- */
-export function wireTendersWithRealDays(tenders, referenceDate = new Date()) {
+export function bucketTenders(tenders) {
+  const out = { open: [], awarded: [], closed: [] };
+  (tenders || []).forEach((t) => out[tenderBucket(t)].push(t));
+  return out;
+}
+
+/* Whole days from `today` to an ISO "yyyy-mm-dd" closing date; null when there is none.
+   Negative once the date has passed. */
+export function daysLeft(closingDate, today = new Date()) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(closingDate || ""));
+  if (!m) return null;
+  const from = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const to = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Math.round((to - from) / 86400000);
+}
+
+/* Adds the presentation fields to each served tender; the stored fields (closingDate,
+   deadline, status, ...) are left exactly as served.
+     bucket      "open" | "awarded" | "closed"  (the rule above)
+     dl          days left to closingDate (negative once passed); absent without a date
+     statusClass urgency band for the chip: urgent <= 7 days, soon <= 14, else normal
+     isLive      bucket === "open", so the shared overview bucketing reads the same rule */
+export function wireTendersWithRealDays(tenders, today = new Date()) {
   if (!Array.isArray(tenders)) return [];
   return tenders.map((t) => {
-    const calc = computeTenderRealDays(t, referenceDate);
-    return {
-      ...t,
-      dl: calc.dl,
-      /* The served date, kept. `deadline` is overwritten below with a countdown, so
-         after wiring there was NO date left on the object -- and the columns headed
-         "Closes" and "Closing date" printed "19 days left" or "no deadline on record"
-         instead of a date. A countdown is a useful chip; it is not a closing date. */
-      closingDate: t.deadline || null,
-      deadline: calc.deadline,
-      /* The whole phrase, built once here. Every call site used to write
-         `closes in ${deadline}`, which read "closes in Awarded" on the 15
-         concluded programmes — a countdown on a contract already signed, the
-         same defect as the Feb-2023 tender that showed "6 days left". */
-      timing: calc.timing,
-      statusClass: calc.class,
-      isLive: calc.isLive,
-    };
+    const bucket = tenderBucket(t);
+    const dl = daysLeft(t.closingDate, today);
+    const out = { ...t, bucket, isLive: bucket === "open" };
+    if (dl !== null) out.dl = dl;
+    out.statusClass = bucket !== "open" ? "settled" : dl === null ? "normal" : dl <= 7 ? "urgent" : dl <= 14 ? "soon" : "normal";
+    return out;
   });
 }

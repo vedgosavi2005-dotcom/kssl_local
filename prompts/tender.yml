@@ -1,0 +1,162 @@
+id: tender
+title: Tender extraction from one notice
+version: 1
+fills: [market_tender, market_tender_requirement, market_tender_source, market_tender_closing_window]
+shows_on: Tenders page (card, drawer facts, "What the tender requires", sources, closing line), Market Intelligence, Top opportunity
+cadence: daily
+# HOW NEW NOTICES ARE FED. The model never searches for tenders; a routine or a person hands it a URL:
+#   1. insert a STUB staging.market_tender row: tender_id = any new bigint, title = the link text or the URL host
+#      (title and status are NOT NULL, so use that text and status 'open'), url_kind = 'notice' or 'award',
+#      source_url = the notice URL;
+#   2. insert one staging.market_tender_source row for it: tender_id, source_url = the same URL, is_primary = true,
+#      portal_name if known (source_id = any new bigint).
+# `python -m prompts.run --due` then picks the source row up (a source_id already run with this prompt version is
+# skipped), fetches the page, and the loader REPLACES the stub: same tender_id, real title/dates/status.
+# A corrigendum or award notice for a known tender = a new source row with the EXISTING tender_id and url_kind
+# 'notice' or 'award' (a different source_id, so it runs again and updates the same tender).
+# url_kind 'portal' rows (listing pages) are ignored here.
+# No web search: the notice text is the only document.
+
+subject:
+  key: source_id
+  query: |
+    SELECT s.source_id, s.tender_id, s.source_url, s.portal_name, t.url_kind
+    FROM staging.market_tender_source s
+    JOIN staging.market_tender t ON t.tender_id = s.tender_id
+    WHERE s.source_url IS NOT NULL AND t.url_kind IN ('notice', 'award')
+    ORDER BY s.retrieved_at DESC NULLS FIRST, s.source_id
+  documents:
+    - from: url                  # the runner fetches the notice (page or PDF) text
+      field: source_url
+
+context: [client, categories]
+
+task: |
+  TASK tender — extract one tender from the notice below. Use ONLY the notice text; web search is
+  off. Every value must be stated in the notice: quote it (url = {{subject.source_url}}). Do not judge
+  whether {{client.name}} should bid; that is another task.
+
+  If the notice is not a procurement of defence or security goods or services (office supplies,
+  catering, civil works): "records": [] and "skip_reason" = one sentence.
+
+  One record, table market_tender:
+   - title: the procurement title as published (English if the notice gives one, else the original
+     language); do not rewrite or shorten. title_localized: the title in the notice's original
+     language when the notice also gives an English title; else null
+   - buyer_name: the contracting authority as written. country_name: the buyer's country, English
+     short name (for a multinational agency, the country of the address in the notice)
+   - ref_category: JUDGEMENT. The one name from CATEGORIES the procured item belongs to, from the
+     item description; null if none fits (defence item outside the categories)
+   - description: 2-4 sentences: what is procured, for whom, quantity and place, as stated
+   - value_amount: the contract value stated for the whole tender as a plain number in FULL units of
+     value_currency ("EUR 12.5 M" -> 12500000). Do not add up lot values; if only lot values are
+     stated, null. Bid security / EMD is not the contract value. value_currency: ISO 4217.
+     value_text: the value exactly as written (amount, currency, scale only)
+   - quantity: a plain number, only when ONE total quantity is stated; quantity_unit: its unit word.
+     Per-lot quantities go to requirement rows
+   - status: from the notice type only: open (contract notice, solicitation, RFP, RFQ), awarded
+     (contract award notice), closed (cancellation, withdrawal, or the notice says bidding is
+     closed). Never change status because a date has passed. Allowed: open | awarded | closed
+   - published_date: the date the notice was published or dispatched
+   - closing_date: the deadline for submitting bids (not for questions, not the opening date);
+     give _precision. deadline_text: only when the deadline is not a calendar date ("30 days from
+     publication"); else null
+   - notice_reference: the notice number as written; tender_number: the buyer's own tender / RFP
+     number if different; else null
+   - frequency: one-off, framework, recurring or similar, as the notice states; else null
+   - latest_milestone: the latest procedural step the notice states (e.g. "Bids due 2026-10-20",
+     "Contract awarded 2026-09-30"); else null
+   - local_presence_requirement, registration_requirement, submission_method: as stated; else null
+   children:
+   market_tender_requirement (5-15 rows, one per stated requirement, in notice order): technical
+   requirements (calibre, range, standard), quantity per lot, delivery period and place,
+   eligibility (local content, domestic supplier, past performance, turnover), bid security,
+   warranty, offsets:
+   - requirement_type: short English name, e.g. "Calibre", "Delivery period", "Local content"
+   - description: the requirement and its value as written in the notice; null if the notice names
+     the requirement without giving its value (say so in source_text)
+   - quantity, quantity_unit: only for a quantity requirement
+   - equipment_scope: the lot or item it applies to when lots differ; use_case: intended use or
+     platform as stated; else null
+   - source_text: the verbatim notice sentence (max 300 characters)
+   market_tender_source (exactly one row, the notice itself):
+   - publisher: the issuing organisation; portal_name: the portal as named in the notice;
+     source_type: notice, award or annex; access_note: login or registration needed to read the
+     documents, as stated; status_check_url: a URL the notice gives for checking status; else null
+   market_tender_closing_window (exactly one row):
+   - milestone_text: the dates the notice states, in order, e.g. "Questions by 2026-10-05; bids due
+     2026-10-20; opening 2026-10-21"
+   - is_extension_confirmed: true only when the notice (a corrigendum) states the deadline was extended
+
+  CLIENT: {{context.client}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENT (notice text, {{subject.source_url}}, portal {{subject.portal_name}}):
+  {{documents}}
+
+output:
+  market_tender:
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      title: {required: true}
+      title_localized: {}
+      buyer_name: {required: true}
+      country_name: {required: true, max: 160}
+      category_id: {judgement: true, from_ref: ref_category}
+      description: {}
+      value_amount: {type: number}
+      value_currency: {max: 3}
+      value_text: {}
+      quantity: {type: number}
+      quantity_unit: {max: 80}
+      status: {required: true, enum: [open, awarded, closed]}
+      published_date: {type: date}
+      closing_date: {type: date}
+      deadline_text: {max: 255}
+      notice_reference: {max: 255}
+      tender_number: {max: 255}
+      frequency: {max: 255}
+      latest_milestone: {}
+      local_presence_requirement: {}
+      registration_requirement: {}
+      submission_method: {}
+    loader:
+      tender_id: subject.tender_id               # replaces the stub row
+      category_text: name_of_category_id
+      issuer_display: copy_of_buyer_name
+      country_code: country_reference_table
+      url_kind: subject.url_kind
+      source_url: subject.source_url
+      is_live: status_is_open
+      created_at: keep_stub_value
+      updated_at: run_time
+      # days_remaining is NOT stored (it goes stale; the page computes it from closing_date).
+      # kssl_fit, kssl_model, lean_code, lean_text, rank_position, expected_revenue_text: set by derive.tender_fit (prompt tender_assessment).
+    children:
+      market_tender_requirement:
+        columns: [requirement_type, description, quantity, quantity_unit, equipment_scope, use_case, source_text]
+        required: [requirement_type]
+        max: {source_text: 300}
+        loader: {requirement_id: new_id, tender_id: parent_id, display_order: index}
+      market_tender_source:
+        columns: [publisher, portal_name, source_type, access_note, status_check_url]
+        enum: {source_type: [notice, award, annex]}
+        loader:
+          source_id: subject.source_id           # updates the existing row
+          tender_id: parent_id
+          source_url: subject.source_url
+          is_primary: true
+          retrieved_at: run_time
+      market_tender_closing_window:
+        columns: [milestone_text, is_extension_confirmed]
+        loader:
+          closing_window_id: new_id
+          tender_id: parent_id
+          as_of_date: run_date
+          status: copy_of_tender_status
+          closing_date: copy_of_tender_closing_date
+          published_date: copy_of_tender_published_date
+          extension_checked_at: run_time
+          # days_remaining is NOT stored

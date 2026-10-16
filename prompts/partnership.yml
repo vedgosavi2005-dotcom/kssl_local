@@ -1,0 +1,144 @@
+id: partnership
+title: Partnerships of one competitor (partners + evidence cards)
+version: 2
+fills: [competitive_partnership, competitive_partnership_evidence, competitive_partnership_relationship_detail]
+shows_on: Partnership page (network graph, partner roster, tie view, evidence cards, relationship detail)
+cadence: quarterly
+web_search: true                 # the competitor's partners are mostly not in the news rows; search for gaps
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: competitor_id
+  query: |
+    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country, c.headquarters
+    FROM staging.competitive_competitor c
+    ORDER BY c.display_name
+  documents:
+    - from: sql                  # headlines only: leads for the web search, not proof of a tie
+      query: |
+        SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
+        FROM staging.competitive_news_article n
+        WHERE n.competitor_id = '{{subject.competitor_id}}' AND n.published_date >= current_date - 730
+        ORDER BY n.published_date DESC LIMIT 80
+    - from: sql                  # canonical partner names already on record (rivals' and the client's), for exact-name matching
+      query: |
+        SELECT 'KNOWN PARTNER' AS doc, k.partner_name, k.region
+        FROM (SELECT partner_name, max(region) AS region FROM staging.competitive_partnership GROUP BY partner_name
+              UNION
+              SELECT partner_name, max(country) FROM staging.client_partner GROUP BY partner_name) k
+        ORDER BY k.partner_name
+
+context: [client, competitors]
+
+task: |
+  TASK partnership — list the partner organisations of {{subject.display_name}}
+  ({{subject.origin_country}}) and the evidence for each tie. Use the DOCUMENTS first, then web
+  search for gaps.
+
+  A PARTNER is an organisation with which the company has a joint venture, a teaming or
+  co-development agreement, an MoU, a technology licence or transfer of technology, an acquisition
+  of or by it, or a supply relationship (either direction). NOT partners: organisations that are
+  only customers (armed forces, ministries, governments buying from the company), and ties a
+  source reports as ended, cancelled or dissolved. One record per partner organisation, not per
+  agreement; several agreements with one partner become several evidence cards. Never a partner:
+  {{subject.display_name}} itself or one of its own units or subsidiaries, and never {{client.name}}.
+  Write partner_name as the partner organisation's own name; never copy a line of the COMPETITORS
+  list (those lines carry short names and countries in brackets). At most 20
+  partners, strongest evidence first. None found: "records": [] and "skip_reason".
+
+  PARTNER NAMES. {{client.name}}'s dashboard detects a partner shared with {{client.name}} by exact
+  name. If the organisation (same legal entity or same named unit, also under an alias) is in the
+  KNOWN PARTNER rows, use that name character for character. If it is one of COMPETITORS, use its
+  display name. Otherwise use the name the organisation uses for itself in English, without
+  legal-form suffixes (Ltd, Pvt, GmbH, S.A., Inc.); keep a country or unit name only when that
+  unit is the party in the source. Never shorten to an acronym unless the organisation does.
+
+  Per partner, one record, table competitive_partnership:
+   - partner_name: as above
+   - partner_type: one of Joint venture (the two own a joint company), Supplier (main tie is
+     supply of products, subsystems or services, either way), Technology partner (licence,
+     transfer of technology, co-development, integration), MoU / strategic (MoU, teaming,
+     strategic agreement), Acquisition (one acquired the other or a unit of it), Other. If several
+     ties exist, take the first that applies in that order.
+   - region: the partner's home country, English short name; for a multinational body the region
+     as written in the source; null if no source states it
+   - description: 1-2 sentences saying who the partner is and what the tie is, from the sources
+   - relationship_scope: what the two do together, as stated (products, programme, work share)
+   - relationship_confidence: official if the company, the partner or a government body itself
+     states the tie; else corroborated if two or more independent editorial sources (different
+     publishers) state it; else single_source. List all the sources used in _sources
+   - source_note: short factual note on the sources, e.g. "company announcement and one news report"
+   - as_of_date: date of the most recent source stating the tie is in place
+   children:
+   competitive_partnership_evidence (1-3 cards per partner, most informative first; one per source article):
+   - evidence_type: one of Agreement, Contract, Joint venture, Delivery, Co-development, Statement
+     (the event the source reports)
+   - relationship_label: short label of the tie this source shows, max 40 characters
+   - evidence_text: 2-4 sentences summarising what this source says about the tie
+   - scope: the scope of the tie as stated in this source
+   - confidence: official | corroborated | single_source, by the same rule, for this tie
+   - source_note: short factual note on this source
+   - basis_for_type: the verbatim sentence supporting relationship_label and partner_type (max 300)
+   - source_article_title: the page or article title as published
+   - source_publisher: the publisher's name
+   - source_type: Official source (company, government, armed forces, regulator) or News article
+   - source_url: the article URL
+   - as_of_date: date of the event the source reports, else its publication date
+  Do not output competitive_partnership_relationship_detail; the loader builds it.
+
+  CLIENT: {{context.client}}
+  COMPETITORS:
+  {{context.competitors}}
+
+  DOCUMENTS (news leads for {{subject.display_name}}, then partner names on record):
+  {{documents}}
+
+output:
+  competitive_partnership:
+    card: true
+    key: [prompt_id, subject, partner_name]  # same partner -> same relationship id
+    columns:
+      partner_name: {required: true, max: 250}
+      partner_type: {required: true, enum: [Joint venture, Supplier, Technology partner, MoU / strategic, Acquisition, Other]}
+      region: {max: 100}
+      description: {}
+      relationship_scope: {}
+      relationship_confidence: {required: true, enum: [official, corroborated, single_source]}
+      source_note: {}
+      as_of_date: {type: date}
+    loader:
+      relationship_id: new_id
+      competitor_id: subject.competitor_id
+      partner_id: uuid5_of_casefolded_partner_name   # same partner under different rivals -> same partner_id
+      mapped_partner_count: count_partners_of_competitor
+      source_count: count_evidence_cards
+      view_relationship_action: true_when_evidence_exists
+    children:
+      competitive_partnership_evidence:
+        columns: [evidence_type, relationship_label, evidence_text, scope, confidence, source_note,
+                  basis_for_type, source_article_title, source_publisher, source_type, source_url, as_of_date]
+        required: [evidence_type, evidence_text, source_url]
+        max: {relationship_label: 40, basis_for_type: 300}
+        enum:
+          evidence_type: [Agreement, Contract, Joint venture, Delivery, Co-development, Statement]
+          confidence: [official, corroborated, single_source]
+          source_type: [Official source, News article]
+        loader: {evidence_card_id: new_id, relationship_id: parent_id, card_number: index, source_article_url: copy_of_source_url}
+  competitive_partnership_relationship_detail:
+    loader_only: true            # never output by the model; built per evidence card from stored values
+    loader:
+      detail_id: new_id
+      relationship_id: parent_id
+      selected_card_id: evidence_card_id
+      relationship_title: "{subject.display_name} <-> {partner_name}"
+      detail_label: "{subject.display_name} - {relationship_label} - {year of as_of_date}"
+      type: copy_of_evidence_relationship_label
+      scope: copy_of_evidence_scope
+      source_note: copy_of_evidence_source_note
+      confidence: copy_of_evidence_confidence
+      basis_for_type: copy_of_evidence_basis_for_type
+      stated_as_of: copy_of_evidence_as_of_date
+      source_article_url: copy_of_evidence_source_url
+      source_publisher_label: copy_of_evidence_source_publisher
+      back_action: false           # UI flag, NOT NULL
+      # image_state is not filled (images are hidden)

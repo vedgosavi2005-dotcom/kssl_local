@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import HtmlBlock from "../htmlBlock/HtmlBlock";
-import { specPanelHtml, matchupGapHtml, advantageText } from "../../lib/specs";
+import { Review } from "../review/Review";
+import { specPanelHtml, matchupGapHtml, SHOW_POSITIONING_SOURCES } from "../../lib/specs";
 
 const TABS = [
   ["adv", "Analytics"],
   ["specs", "Spec Comparison"],
 ];
 
-/* The right-hand dossier for one matchup: verdict, gap block, product identity,
-   then two tabs: Analytics and Spec Comparison. */
-export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTender }) {
+/* The right-hand dossier for one matchup: verdict, stored decision band, product identity,
+   then two tabs: Analytics and Spec Comparison. Every value is a stored column (see
+   backend/areas/b_products.py); nothing here judges or recomputes. */
+export default function MatchupDossier({ m, data, onClose }) {
+  const clientName = (data.client && data.client.short) || "KSSL";
   const [tab, setTab] = useState("adv");
   const dossierRef = useRef(null);
 
@@ -21,10 +24,6 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
     }
   }, [m]);
 
-  const prodRow = (m.specs || []).find((s) => s.l === "Product (sourced)") || {};
-  const compDesc = prodRow.cv && prodRow.cv !== "—" ? prodRow.cv : "";
-  const bfDesc = prodRow.kv && prodRow.kv !== "—" ? prodRow.kv : "";
-
   return (
     <div className="mu-dossier">
       <div className="mu-dossier-scroll" ref={dossierRef}>
@@ -34,40 +33,7 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
               ✕
             </button>
           </div>
-          {/* "Verified specs · analysed" was stamped on EVERY matchup, the majority of
-              which have no dimension published on both sides at all -- their client
-              column reads "no published figure" from top to bottom. A verification
-              badge over a comparison that never happened is the worst kind of claim on
-              this page, because a badge is what a reader checks before trusting the
-              numbers under it. `m.global` did not help: it selects a global-prime
-              PAIRING, which says nothing about the evidence, and both of its branches
-              asserted analysis anyway.
-
-              specDims is how many independent dimensions BOTH products publish (stored
-              by wireDataset from computeSpecEdge), so the badge states that count and
-              says plainly when it is zero.
-
-              NOTE: shell.css carries `.srcbadge{display:none !important}`, so nothing
-              in this slot is on screen today -- the false version was invisible too.
-              The class is kept, because hiding these badges was a deliberate change
-              and un-hiding them is not this fix's call; what changes is that whatever
-              this slot says is now true if it is ever shown again. */}
-          <span className="eyebrow">
-            {m.cat}{" "}
-            <span
-              className="srcbadge"
-              style={{ marginLeft: "6px" }}
-              title={
-                m.specDims
-                  ? "Dimensions published by both products and compared line by line. Pairing axes (calibre, length, weight class) are excluded."
-                  : "Neither product publishes a dimension the other also publishes, so nothing here has been compared."
-              }
-            >
-              {m.specDims
-                ? `${m.specDims} spec${m.specDims === 1 ? "" : "s"} compared on both sides`
-                : "No spec published on both sides"}
-            </span>
-          </span>
+          <span className="eyebrow">{m.cat}</span>
           <div className="matchup">
             <div className="side comp">
               <div className="pn">{m.comp}</div>
@@ -77,26 +43,23 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
               <div className="pn">{m.bf}</div>
             </div>
           </div>
+          <Review src={m._src} />
         </div>
 
-        {/* verdict always visible */}
-        <div className="mu-sec" style={{ background: "var(--l-bg-2)" }}>
-          <div className="pos-takeaway">
-            <span className="tl">{m.verdictH || "Positioning verdict"}</span>
-            <span dangerouslySetInnerHTML={{ __html: (m.verdict || "").replace(/\s*Based only on values sourced for both products\.?/i, "").replace(/\s*on \d+ of \d+ comparable field\(s\)/i, "").trim() }} />
+        {/* verdict: the stored headline as the label, the stored verdict as the body */}
+        {m.verdictH || m.verdict ? (
+          <div className="mu-sec" style={{ background: "var(--l-bg-2)" }}>
+            <div className="pos-takeaway">
+              {m.verdictH ? <span className="tl">{m.verdictH}</span> : null}
+              <span>{m.verdict}</span>
+            </div>
           </div>
-        </div>
+        ) : null}
 
-        {/* gap block — this matchup's gap in cross-pillar context */}
-        <HtmlBlock
-          className="mu-sec"
-          handlers={{
-            "[data-tender]": (el) => onJumpToTender(el.getAttribute("data-tender")),
-          }}
-          html={matchupGapHtml(m, gapModel)}
-        />
+        {/* the stored decision_level and edge_score; nothing when no decision is stored */}
+        <HtmlBlock className="mu-sec" html={matchupGapHtml(m, clientName)} />
 
-        {/* product profile: name + thin accent line + sourced descriptor */}
+        {/* the pair: name + thin accent line + the stored pairing basis */}
         <div className="mu-sec pp2-sec">
           <div className="pp2">
             <div className="pp2-col comp">
@@ -108,14 +71,14 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
                   the underline are gone. */}
               <div className="pp2-name">{m.comp}</div>
               <div className="pp2-line comp" />
-              {compDesc ? <div className="pp2-desc">{compDesc}</div> : null}
+              {m.country ? <div className="pp2-desc">{m.country}</div> : null}
             </div>
             <div className="pp2-col bf">
               <div className="pp2-name">{m.bf}</div>
               <div className="pp2-line bf" />
-              {bfDesc ? <div className="pp2-desc">{bfDesc}</div> : null}
             </div>
           </div>
+          {m.matchBasis ? <div className="pp2-desc" style={{ marginTop: "10px" }}>Paired on: {m.matchBasis}</div> : null}
         </div>
 
         <div className="mu-tabs">
@@ -153,7 +116,7 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
                   {(m.advComp || []).map((a, i) => (
                     <div className="adv-item" key={i}>
                       <span className="mk">▲</span>
-                      <span dangerouslySetInnerHTML={{ __html: advantageText(a) }} />
+                      <span>{a}</span>
                     </div>
                   ))}
                 </div>
@@ -161,7 +124,7 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
               <div className="adv-col bf">
                 <div className="ah">
                   <span className="dot" />
-                  <span>{data.client?.short || ""} analytics</span>
+                  <span>{clientName} analytics</span>
                 </div>
                 <div>
                   {(m.advBf || []).length ? null : (
@@ -170,7 +133,7 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
                   {(m.advBf || []).map((a, i) => (
                     <div className="adv-item" key={i}>
                       <span className="mk">▲</span>
-                      <span dangerouslySetInnerHTML={{ __html: advantageText(a) }} />
+                      <span>{a}</span>
                     </div>
                   ))}
                 </div>
@@ -185,7 +148,17 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
               <span className="sh-comp">{m.comp}</span>
               <span className="sh-bf">{m.bf}</span>
             </div>
-            <HtmlBlock html={specPanelHtml(m)} />
+            <HtmlBlock html={specPanelHtml(m, clientName)} />
+            {SHOW_POSITIONING_SOURCES && (m.sources || []).length ? (
+              <div className="adv-empty">
+                {m.sources.map((x) => (
+                  <div key={x.id}>
+                    <a href={x.url} rel="noopener noreferrer" target="_blank">{x.label}</a>
+                    {x.type ? ` · ${x.type}` : ""}{x.date ? ` · ${x.date}` : ""}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

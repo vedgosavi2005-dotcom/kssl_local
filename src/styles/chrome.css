@@ -522,3 +522,8 @@
    threats first"); this is the difference between a shortlist and a corpus of thirty. */
 .ov-shortnote{font-family:var(--mono);font-size:11px;color:var(--d-txt-3);
   padding:7px 16px 0;line-height:1.45}
+/* Threat dot beside a company name (Profile, Partnerships, Projects, Moment, Products). */
+.wdot{display:inline-block;width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.wdot.threat{background:var(--threat)}
+.wdot.watch{background:var(--watch)}
+.wdot.fav{background:var(--fav)}

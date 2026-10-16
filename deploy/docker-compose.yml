@@ -1,0 +1,74 @@
+# KSSL v2 on the VPS (project kssl2, /opt/kssl-v2). Behind the host's Traefik (letsencrypt resolver).
+#   live    https://${LIVE_HOST}      vite preview of the live build   -> api        (kssl_serving)
+#   review  https://${REVIEW_HOST}    vite preview of the review build -> api-review (kssl_staging + kssl_serving), basic auth
+# Secrets come from /opt/kssl-v2/.env (never committed): POSTGRES_PASSWORD, APP_PASSWORD, REVIEW_AUTH, hosts.
+# The database listens on the host's 127.0.0.1:5460 only (reach it through an SSH tunnel).
+name: kssl2
+
+x-api: &api
+  build: {context: .., dockerfile: deploy/Dockerfile.api}
+  image: kssl2-api
+  restart: unless-stopped
+  depends_on: [db]
+
+x-web: &web
+  build: {context: .., dockerfile: deploy/Dockerfile.web}
+  image: kssl2-web
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16
+    container_name: kssl2-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kssl_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:5460:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  api:
+    <<: *api
+    container_name: kssl2-api
+    environment:
+      KSSL_SERVING_DSN: host=db port=5432 dbname=kssl_serving user=kssl_app password=${APP_PASSWORD}
+      KSSL_STAGING_DSN: host=db port=5432 dbname=kssl_staging user=kssl_app password=${APP_PASSWORD}
+
+  api-review:
+    <<: *api
+    container_name: kssl2-api-review
+    environment:
+      KSSL_VIEW: review
+      KSSL_SERVING_DSN: host=db port=5432 dbname=kssl_serving user=kssl_app password=${APP_PASSWORD}
+      KSSL_STAGING_DSN: host=db port=5432 dbname=kssl_staging user=kssl_app password=${APP_PASSWORD}
+
+  web:
+    <<: *web
+    container_name: kssl2-web
+    command: ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "5178", "--outDir", "dist"]
+    environment: {KSSL_API_TARGET: "http://api:8600"}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=kssl2_default
+      - traefik.http.routers.kssl2-web.rule=Host(`${LIVE_HOST}`)
+      - traefik.http.routers.kssl2-web.entrypoints=websecure
+      - traefik.http.routers.kssl2-web.tls.certresolver=letsencrypt
+      - traefik.http.services.kssl2-web.loadbalancer.server.port=5178
+
+  web-review:
+    <<: *web
+    container_name: kssl2-web-review
+    command: ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "5180", "--outDir", "dist-review"]
+    environment: {KSSL_API_TARGET: "http://api-review:8600"}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=kssl2_default
+      - traefik.http.routers.kssl2-review.rule=Host(`${REVIEW_HOST}`)
+      - traefik.http.routers.kssl2-review.entrypoints=websecure
+      - traefik.http.routers.kssl2-review.tls.certresolver=letsencrypt
+      - traefik.http.routers.kssl2-review.middlewares=kssl2-review-auth
+      - traefik.http.middlewares.kssl2-review-auth.basicauth.users=${REVIEW_AUTH}
+      - traefik.http.services.kssl2-review.loadbalancer.server.port=5180
+
+volumes:
+  pgdata:

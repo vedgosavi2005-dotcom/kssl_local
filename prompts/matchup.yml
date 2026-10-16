@@ -1,0 +1,154 @@
+id: matchup
+title: Product matchup (one client product against one competitor product)
+version: 1
+fills: [competitive_matchup, competitive_matchup_specification, competitive_matchup_advantage, competitive_matchup_source]
+shows_on: Product Evaluation (matchup list, dossier verdict, spec comparison and parity gauge, advantage lists)
+cadence: quarterly               # a re-run of the same pair replaces its card (same pair_key -> same ids)
+# No web search: the only facts are the specs already stored from the client's Excel files. The model
+# judges; it never copies or computes a number (values are copied by the loader, gap and edge by derive).
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: pair_key
+  query: |
+    SELECT cp.client_product_id, p.product_id, c.competitor_id,
+           cp.product_name AS client_product, p.product_name AS competitor_product,
+           c.display_name AS competitor, c.origin_country AS competitor_country, p.category AS category,
+           cp.client_product_id::text || '|' || p.product_id::text AS pair_key
+    FROM staging.client_product cp
+    JOIN staging.competitive_product p ON lower(trim(p.category)) = lower(trim(cp.category))
+    JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+    WHERE EXISTS (SELECT 1 FROM staging.client_product_specification s WHERE s.client_product_id = cp.client_product_id)
+      AND EXISTS (SELECT 1 FROM staging.competitive_product_specification s WHERE s.product_id = p.product_id)
+    ORDER BY p.category, cp.product_name, c.display_name, p.product_name
+  documents:
+    - from: sql
+      query: |
+        SELECT 'CLIENT SPEC' AS doc, s.display_order, s.spec_group, s.spec_name, s.value_text, s.value_numeric, s.unit, src.source_url
+        FROM staging.client_product_specification s
+        LEFT JOIN staging.client_product_source src
+               ON src.source_id = s.source_id AND src.client_product_id = s.client_product_id
+        WHERE s.client_product_id = {{subject.client_product_id}}
+        ORDER BY s.display_order
+    - from: sql
+      query: |
+        SELECT 'COMPETITOR SPEC' AS doc, s.spec_label, s.spec_value, s.unit, s.source_url
+        FROM staging.competitive_product_specification s
+        WHERE s.product_id = '{{subject.product_id}}'
+        ORDER BY s.spec_label
+
+context: [client]
+
+task: |
+  TASK matchup — judge how {{client.name}}'s {{subject.client_product}} compares with
+  {{subject.competitor}}'s {{subject.competitor_product}} (category {{subject.category}}), using ONLY
+  the CLIENT SPEC and COMPETITOR SPEC rows below. WEB SEARCH is off. Never add a figure from general
+  knowledge. Do not output any number, value, unit, gap, count, score or level: the loader copies
+  values and units from the rows and computes the rest.
+  For rule 4, a source is an input row: url = the row's source_url (null if it has none), quote =
+  "<label>: <value> <unit>" exactly as in the row.
+
+  Table competitive_matchup (exactly one record):
+   - match_basis: one sentence, max 200 characters: what makes the two products comparable
+     (class, calibre, role), from the rows
+   - verdict_headline: JUDGEMENT. Max 80 characters, who leads and on what, plainly
+   - verdict: JUDGEMENT. 2-4 sentences: which side leads on which compared specs, and what cannot
+     be compared because a value is missing or measured differently. No counts, no adjectives such
+     as "superior", no recommendation
+   children:
+   competitive_matchup_specification (one row per parameter that appears on either side; pair
+   differently worded labels only when they measure the same thing; max 20 rows, the most
+   decision-relevant first):
+   - spec_label: the CLIENT SPEC spec_name, or the COMPETITOR SPEC spec_label when only that side
+     has the parameter
+   - ref_client_spec: the CLIENT SPEC spec_name (omit if that side has none)
+   - ref_competitor_spec: the COMPETITOR SPEC spec_label (omit if that side has none)
+   - comparability_state: JUDGEMENT. comparable = both values present, same parameter, same unit
+     and same condition; one_sided = only one side has a value; not_comparable = both present but
+     unit, condition or definition differ
+   - better_side: JUDGEMENT, only when comparable, else null. client, competitor or equal, for a
+     buyer of this product class: lower is better for e.g. weight, reaction time, crew size; higher
+     for e.g. range, rate of fire, payload. equal when the values are the same or not materially
+     different
+   competitive_matchup_advantage (2-4 rows per side, JUDGEMENT):
+   - side: client or competitor
+   - advantage_text: one sentence, max 200 characters, stating the advantage with the figures of both
+     sides from the rows (e.g. "Longer stated range: 41 km vs 38 km")
+  Give _reason for every judgement and _sources (the input rows) for every verdict sentence,
+  better_side and advantage. competitive_matchup_source is built by the loader.
+
+  CLIENT: {{context.client}}
+
+  DOCUMENTS (stored spec rows of both products):
+  {{documents}}
+
+output:
+  competitive_matchup:
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      match_basis: {max: 200}
+      verdict_headline: {judgement: true, max: 80}
+      verdict: {judgement: true}
+    loader:
+      matchup_id: new_id
+      category_code: subject.category            # carries the human category label
+      client_product_id: subject.client_product_id
+      client_product_name: subject.client_product
+      competitor_id: subject.competitor_id
+      competitor_name: subject.competitor
+      competitor_country: subject.competitor_country
+      competitor_product_id: subject.product_id
+      competitor_product_name: subject.competitor_product
+      created_at: run_time
+      updated_at: run_time
+      comparable_spec_count: derive.matchup_edge
+      sourced_spec_count: derive.matchup_edge
+      edge_score: derive.matchup_edge
+      decision_level: derive.matchup_edge
+    children:
+      competitive_matchup_specification:
+        columns: [spec_label, comparability_state, better_side]
+        refs: {ref_client_spec: client_product_specification.spec_name, ref_competitor_spec: competitive_product_specification.spec_label}
+        required: [spec_label, comparability_state]
+        judgement: [comparability_state, better_side]
+        enum:
+          comparability_state: [comparable, one_sided, not_comparable]
+          better_side: [client, competitor, equal]
+        loader:
+          comparison_specification_id: new_id
+          matchup_id: parent_id
+          display_order: index
+          spec_group: copy_from_client_spec_else_none
+          unit: copy_from_client_spec_else_competitor_spec
+          client_value_text: copy_from_client_spec
+          client_value_numeric: copy_from_client_spec
+          competitor_value_text: copy_from_competitor_spec
+          competitor_value_numeric: parse_plain_number_of_competitor_spec_value_else_null
+          gap_value: derive.matchup_edge
+      competitive_matchup_advantage:
+        columns: [side, advantage_text]
+        required: [side, advantage_text]
+        judgement: [advantage_text]
+        enum: {side: [client, competitor]}
+        max: {advantage_text: 200}
+        loader: {advantage_id: new_id, matchup_id: parent_id, display_order: index}
+      competitive_matchup_source:
+        loader_only: true        # one row per distinct source_url of the spec rows the record cites
+        loader:
+          source_id: new_id
+          matchup_id: parent_id
+          source_url: distinct_cited_spec_source_url
+          source_label: host_of_source_url
+          source_type: constant_stored_spec
+
+derive:
+  - matchup_edge
+# matchup_edge (loader, after the card is stored; the prompt never outputs these):
+#   per spec row, gap_value = abs(client_numeric - competitor_numeric) / mean(client_numeric, competitor_numeric) * 100,
+#     only when comparability_state = comparable and both numerics exist; else null.
+#   a comparable row whose gap_value is under 3 gets better_side = equal (dead band of the old edge.js; the override is logged).
+#   comparable_spec_count = rows with comparability_state = comparable; sourced_spec_count = rows with a value on at least one side.
+#   dec = comparable rows where better_side <> equal; leadK = comparable rows where better_side = client.
+#   edge_score = NULL when dec = 0, else round(50 + (100 * leadK / dec - 50) * dec / (dec + 1)), clamped to 2..98.
+#   decision_level = NULL when edge_score is NULL, else 1 (client behind) if edge_score < 42, 3 (client ahead) if >= 58, else 2 (near parity).

@@ -6,24 +6,31 @@ and adapts the domain tables into the contract consumed by the existing React UI
 An empty database therefore produces empty arrays and maps throughout the UI.
 """
 
-from collections import defaultdict
-from datetime import date, datetime
-from decimal import Decimal
 import os
-import re
 from typing import Any
-from uuid import UUID
 
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
+from backend.areas import a_competitive, b_products, c_network, d_market_tech
+from backend import review
+from backend.common import json_value
 
-DSN = os.environ.get("KSSL_DSN", "").strip()
+AREAS = (a_competitive, b_products, c_network, d_market_tech)  # a first: others read competitors
+
+
+# Two databases (db/make_databases.sh): the live backend reads the serving DB (KSSL_SERVING_DSN,
+# schemas ui / serving); the review backend (KSSL_VIEW=review) reads the staging DB
+# (KSSL_STAGING_DSN, schemas staging_ui / staging) under the same "ui" / "serving" keys. Each DSN
+# falls back to KSSL_DSN (one database holding all four schemas, e.g. the kssl_v2_test* DBs).
+REVIEW = os.environ.get("KSSL_VIEW", "").strip().lower() == "review"
+SOURCE_SCHEMA = {"ui": "staging_ui", "serving": "staging"} if REVIEW else {"ui": "ui", "serving": "serving"}
 
 app = FastAPI(title="KSSL PostgreSQL Dataset API", docs_url=None, redoc_url=None)
+from backend.news import router as news_router; app.include_router(news_router)  # noqa: E402,E702
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,57 +39,21 @@ app.add_middleware(
 )
 
 
-def json_value(value: Any) -> Any:
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, (Decimal, UUID)):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(k): json_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_value(v) for v in value]
-    return value
-
-
-def slug(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
-
-
-def text(value: Any) -> str:
-    return "" if value is None else str(value)
-
-
-def number(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def first_nonempty(row: dict[str, Any], *names: str) -> Any:
-    for name in names:
-        value = row.get(name)
-        if value not in (None, ""):
-            return value
-    return None
-
-
-def rows_by_id(rows: list[dict[str, Any]], *names: str) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
-    for index, row in enumerate(rows):
-        key = first_nonempty(row, *names) or f"row-{index + 1}"
-        result[str(key)] = row
-    return result
+def build_dataset(database):
+    """The UI contract. Each area module fills its keys; nothing is defaulted beyond empty."""
+    d = {"database": database, "details": {}, "sourceRegistry": {}, "companySources": {}}
+    for area in AREAS:
+        area.build(database, d)
+    return d
 
 
 def connect():
-    if not DSN:
+    dsn = review.staging_dsn() if REVIEW else review.serving_dsn()
+    if not dsn:
         raise RuntimeError(
-            "KSSL_DSN is not configured. Set it to the PostgreSQL connection string."
+            "KSSL_SERVING_DSN / KSSL_STAGING_DSN (or KSSL_DSN) is not configured. Set it to the PostgreSQL connection string."
         )
-    return psycopg2.connect(DSN, connect_timeout=5)
+    return psycopg2.connect(dsn, connect_timeout=5)
 
 
 def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -90,28 +61,24 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
     database: dict[str, dict[str, list[dict[str, Any]]]] = {"ui": {}, "serving": {}}
     with connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT table_schema, table_name
-                FROM information_schema.tables
-                WHERE table_schema IN ('ui', 'serving')
-                  AND table_type = 'BASE TABLE'
-                ORDER BY table_schema, table_name
-                """
-            )
-            tables = cur.fetchall()
-            for table in tables:
-                schema = table["table_schema"]
-                name = table["table_name"]
+            for schema, source in SOURCE_SCHEMA.items():
                 cur.execute(
-                    'SELECT * FROM "{}"."{}"'.format(
-                        schema.replace('"', '""'), name.replace('"', '""')
-                    )
+                    """
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = %s AND table_type = 'BASE TABLE'
+                      AND table_name NOT IN ('fact_source', 'review_decision')
+                    ORDER BY table_name
+                    """,
+                    (source,),
                 )
-                database[schema][name] = [
-                    {key: json_value(value) for key, value in dict(row).items()}
-                    for row in cur.fetchall()
-                ]
+                for name in [r["table_name"] for r in cur.fetchall()]:
+                    cur.execute(
+                        'SELECT * FROM "{}"."{}"'.format(source, name.replace('"', '""'))
+                    )
+                    database[schema][name] = [
+                        {key: json_value(value) for key, value in dict(row).items()}
+                        for row in cur.fetchall()
+                    ]
     return database
 
 
@@ -126,12 +93,14 @@ def load_schema_manifest() -> dict[str, dict[str, list[dict[str, Any]]]]:
                        data_type, udt_name, is_nullable, character_maximum_length,
                        numeric_precision, numeric_scale
                 FROM information_schema.columns
-                WHERE table_schema IN ('ui', 'serving')
+                WHERE table_schema IN %s
                 ORDER BY table_schema, table_name, ordinal_position
-                """
+                """,
+                (tuple(SOURCE_SCHEMA.values()),),
             )
+            back = {v: k for k, v in SOURCE_SCHEMA.items()}
             for row in cur.fetchall():
-                schema = row["table_schema"]
+                schema = back[row["table_schema"]]
                 name = row["table_name"]
                 manifest[schema].setdefault(name, []).append({
                     key: json_value(value)
@@ -141,611 +110,6 @@ def load_schema_manifest() -> dict[str, dict[str, list[dict[str, Any]]]]:
     return manifest
 
 
-def table(database: dict[str, dict[str, list[dict[str, Any]]]], schema: str, name: str) -> list[dict[str, Any]]:
-    return database.get(schema, {}).get(name, [])
-
-
-def build_competitors(database):
-    result = {}
-    order = []
-    for row in table(database, "serving", "competitive_competitor"):
-        cid = text(first_nonempty(row, "competitor_id", "company_id")) or slug(
-            first_nonempty(row, "display_name", "legal_name")
-        )
-        if not cid:
-            continue
-        result[cid] = {
-            "id": cid,
-            "cid": cid,
-            "name": text(first_nonempty(row, "display_name", "legal_name")),
-            "short": text(row.get("short_name")),
-            "threat": text(row.get("threat_level")),
-            "origin": text(row.get("origin_country")),
-            "sector": text(row.get("industry_sector")),
-            "description": text(row.get("parallax_read")),
-            "strategic_positioning": text(row.get("strategic_positioning")),
-            "assess": text(row.get("parallax_read")),
-            "hq": text(row.get("headquarters")),
-            "starting_year": row.get("starting_year"),
-            "global_locations": row.get("global_locations"),
-            "company_size": row.get("employee_count"),
-            "sales": row.get("annual_revenue"),
-            "partners": [],
-            "products": [],
-        }
-        order.append(cid)
-    return result, order
-
-
-def build_products(database):
-    """Build product catalog rows from serving tables only.
-
-    Product images, specifications, and programs are optional database records. When
-    they are absent the API returns empty values so the UI can show its empty state.
-    """
-    specs_by_product = defaultdict(list)
-    for row in table(database, "serving", "competitive_product_specification"):
-        product_id = text(row.get("product_id"))
-        if not product_id:
-            continue
-        label = text(row.get("spec_label"))
-        value = text(row.get("spec_value"))
-        unit = text(row.get("unit"))
-        if label and value:
-            specs_by_product[product_id].append((label, f"{value}{f' {unit}' if unit else ''}"))
-
-    programs_by_product = defaultdict(list)
-    for row in table(database, "serving", "competitive_product_program"):
-        product_id = text(row.get("product_id"))
-        if not product_id:
-            continue
-        programs_by_product[product_id].append({
-            "title": text(row.get("program_title")),
-            "authority": text(row.get("authority")),
-            "status": text(row.get("status")),
-            "statusColor": text(row.get("status_color")),
-            "date": text(row.get("program_date")),
-            "description": text(row.get("description")),
-        })
-
-    products_by_company = defaultdict(list)
-    for row in table(database, "serving", "competitive_product"):
-        product_id = text(row.get("product_id"))
-        competitor_id = text(row.get("competitor_id"))
-        name = text(row.get("product_name"))
-        if not product_id or not competitor_id or not name:
-            continue
-        products_by_company[competitor_id].append({
-            "id": product_id,
-            "name": name,
-            "category": text(row.get("category")),
-            "image": text(row.get("image_url")),
-            "imageSource": text(row.get("image_source_url")),
-            "specs": dict(specs_by_product.get(product_id, [])),
-            "programs": programs_by_product.get(product_id, []),
-            "source": text(row.get("product_search_query")),
-            "source_url": text(row.get("image_source_url")),
-        })
-
-    client_products = []
-    client_specs = defaultdict(list)
-    for row in table(database, "serving", "client_product_specification"):
-        product_id = text(row.get("client_product_id"))
-        label = text(row.get("spec_name"))
-        value = text(first_nonempty(row, "value_text", "value_numeric"))
-        unit = text(row.get("unit"))
-        if product_id and label and value:
-            client_specs[product_id].append((label, f"{value}{f' {unit}' if unit else ''}"))
-    client_programs = defaultdict(list)
-    for row in table(database, "serving", "client_product_program"):
-        product_id = text(row.get("client_product_id"))
-        if product_id:
-            client_programs[product_id].append({
-                "title": text(row.get("program_name")),
-                "authority": text(row.get("owner")),
-                "status": text(row.get("status")),
-                "date": text(first_nonempty(row, "start_date", "end_date")),
-                "description": text(row.get("description")),
-            })
-    for row in table(database, "serving", "client_product"):
-        product_id = text(row.get("client_product_id"))
-        name = text(row.get("product_name"))
-        client_id = text(row.get("client_id"))
-        if not product_id or not name or not client_id:
-            continue
-        client_products.append((client_id, {
-            "id": product_id,
-            "name": name,
-            "category": text(row.get("category")),
-            "image": text(row.get("image_url")),
-            "specs": dict(client_specs.get(product_id, [])),
-            "programs": client_programs.get(product_id, []),
-            "source": "",
-            "source_url": "",
-        }))
-    return products_by_company, client_products
-
-
-def build_stocks(database):
-    """Build stock quote and history records from serving stock tables only."""
-    result = {}
-    stock_to_company = {}
-    for row in table(database, "serving", "competitive_stock_quote"):
-        competitor_id = text(row.get("competitor_id"))
-        stock_id = text(row.get("stock_id"))
-        if not competitor_id or not stock_id:
-            continue
-        stock_to_company[stock_id] = competitor_id
-        result[competitor_id] = {
-            "quote": {
-                "symbol": text(row.get("ticker")),
-                "price": number(row.get("latest_price")),
-                "currency": text(row.get("currency")),
-                "exchange": text(row.get("exchange")),
-                "asOf": text(row.get("quote_timestamp")),
-                "availabilityState": text(row.get("availability_state")),
-                "emptyMessage": text(row.get("empty_message")),
-            },
-            "ranges": {},
-        }
-
-    grouped = defaultdict(list)
-    for row in table(database, "serving", "competitive_stock_series"):
-        stock_id = text(row.get("stock_id"))
-        if stock_id and stock_id in stock_to_company:
-            grouped[(stock_id, text(row.get("range_key")))].append(row)
-
-    for (stock_id, range_key), rows in grouped.items():
-        competitor_id = stock_to_company[stock_id]
-        rows = sorted(rows, key=lambda item: text(item.get("period_end")))
-        points = []
-        moves = []
-        for index, row in enumerate(rows):
-            close = number(row.get("close_price"))
-            date_value = text(row.get("period_end"))
-            if close is not None and date_value:
-                points.append({"t": date_value, "c": close, "v": row.get("volume")})
-            direction = text(row.get("move_direction"))
-            move_percent = number(row.get("move_percent"))
-            if direction and move_percent is not None and close is not None:
-                previous = number(rows[index - 1].get("close_price")) if index else None
-                moves.append({
-                    "date": date_value,
-                    "dir": direction,
-                    "pct": move_percent,
-                    "from": previous,
-                    "to": close,
-                    "newsArticleId": text(row.get("move_news_article_id")),
-                })
-        if not points:
-            continue
-        result[competitor_id]["ranges"][range_key] = {
-            "range": range_key,
-            "label": text(rows[0].get("range_label")),
-            "value": text(rows[0].get("range_value")),
-            "points": points,
-            "moves": moves,
-            "high": max(point["c"] for point in points),
-            "low": min(point["c"] for point in points),
-            "rangeChangePct": ((points[-1]["c"] - points[0]["c"]) / points[0]["c"] * 100)
-            if points[0]["c"]
-            else None,
-        }
-    return result
-
-
-def build_competitor_news(database):
-    product_companies = {
-        text(row.get("product_id")): text(row.get("competitor_id"))
-        for row in table(database, "serving", "competitive_product")
-        if row.get("product_id") and row.get("competitor_id")
-    }
-    news = defaultdict(list)
-    for row in table(database, "serving", "competitive_product_news"):
-        product_id = text(row.get("product_id"))
-        company_id = product_companies.get(product_id)
-        if not company_id:
-            continue
-        news[company_id].append({
-            "id": text(first_nonempty(row, "product_news_id", "matchup_id")),
-            "title": text(row.get("headline")),
-            "source": text(row.get("publisher")),
-            "date": text(row.get("published_date")),
-            "category": text(row.get("category")),
-            "url": text(row.get("article_url")),
-            "product_id": product_id,
-        })
-    return dict(news)
-
-
-def build_signals(database, details):
-    lanes = {"competitive": [], "market": [], "technology": []}
-    for row in table(database, "serving", "competitive_signal"):
-        signal_id = text(first_nonempty(row, "signal_id", "id"))
-        if not signal_id:
-            continue
-        lane = text(row.get("classification")).lower()
-        lane = "technology" if lane.startswith("tech") else "market" if lane.startswith("market") else "competitive"
-        card = {
-            "id": signal_id,
-            "dir": text(row.get("classification")) or "watch",
-            "rank": text(row.get("sequence_no")),
-            "title": text(row.get("title")),
-            "company": text(row.get("company_id")),
-            "meta": text(row.get("category")),
-            "ago": text(row.get("event_date")),
-            "tags": text(row.get("category")),
-            "lens": lane.title(),
-            "sec": [],
-            "url": text(row.get("source_url")),
-            "sowhat": text(row.get("summary")),
-        }
-        lanes[lane].append(card)
-    for row in table(database, "serving", "competitive_signal_detail"):
-        signal_id = text(row.get("signal_id"))
-        if signal_id:
-            details[signal_id] = {
-                "id": signal_id,
-                "title": text(row.get("drawer_title")),
-                "summary": text(row.get("why_it_matters")),
-                "what": text(row.get("what_article_says")),
-                "why": text(row.get("why_it_matters")),
-                "lens": [],
-                "url": text(row.get("source_url")),
-            }
-    return lanes
-
-
-def build_competitor_moment(database):
-    competitors = []
-    for row in table(database, "serving", "competitive_competitor"):
-        cid = text(first_nonempty(row, "competitor_id", "company_id"))
-        if cid:
-            competitors.append({
-                "cid": cid,
-                "name": text(first_nonempty(row, "display_name", "legal_name")),
-                "short": text(row.get("short_name")),
-                "threat": text(row.get("threat_level")),
-            })
-    items = []
-    for row in table(database, "serving", "competitive_competitor_moment"):
-        items.append({
-            "id": text(first_nonempty(row, "moment_id", "id")),
-            "cid": text(row.get("competitor_id")),
-            "company": text(row.get("company_display")),
-            "date": text(row.get("movement_date")),
-            "category": text(row.get("category")),
-            "country": text(first_nonempty(row, "country_name", "countries")),
-            "program": text(row.get("program_name")),
-            "title": text(row.get("title")),
-            "description": text(first_nonempty(row, "description", "what_happened")),
-            "analysis": text(row.get("kssl_analysis")),
-            "level": text(row.get("grade")),
-            "source": text(first_nonempty(row, "source_label", "source_domain")),
-        })
-    windows = []
-    for row in table(database, "ui", "competitive_competitor_moment_time_window"):
-        windows.append({"id": text(row.get("time_window_code")), "label": text(row.get("time_window_label")), "days": row.get("day_count")})
-    levels = {}
-    for row in table(database, "ui", "competitive_competitor_moment_level"):
-        code = text(row.get("level_code"))
-        if code:
-            levels[code] = {"label": text(row.get("level_label")), "tagClass": text(row.get("tag_class"))}
-    return {"competitors": competitors, "items": items, "timeWindows": windows, "levels": levels}
-
-
-def build_projects(database, competitors):
-    projects = []
-    for row in table(database, "serving", "competitive_project"):
-        pid = text(first_nonempty(row, "project_id", "id"))
-        if not pid:
-            continue
-        projects.append({
-            "id": pid,
-            "cid": text(row.get("competitor_id")),
-            "company": text(row.get("company_display")) or text(competitors.get(text(row.get("competitor_id")), {}).get("name")),
-            "name": text(row.get("project_title")),
-            "customer": text(row.get("customer")),
-            "location": text(row.get("location")),
-            "kind": text(row.get("kind")),
-            "region": text(row.get("region")),
-            "stage": text(row.get("stage")),
-            "stageNote": text(row.get("stage_note")),
-            "mw": row.get("estimated_value"),
-            "latest": {"date": text(row.get("latest_milestone_date")), "note": text(row.get("latest_milestone"))},
-            "assessment": {"stance": text(row.get("assessment_stance")), "read": text(row.get("assessment_read"))},
-            "ksslPlatform": text(row.get("kssl_platform")),
-            "ksslAdvantage": text(row.get("kssl_advantage")),
-            "overview": [],
-            "specs": [],
-        })
-    filters = [{"f": "all", "l": "All"}]
-    for row in table(database, "ui", "ui_project_filter"):
-        code = text(first_nonempty(row, "filter_code", "filter_id"))
-        if code and code != "all":
-            filters.append({"f": code, "l": text(row.get("filter_label"))})
-    seq = []
-    for row in table(database, "ui", "ui_project_sequence_option"):
-        if row.get("sequence_code"):
-            seq.append([text(row.get("sequence_code")), text(row.get("sequence_label"))])
-    stages = [text(r.get("stage_name")) for r in table(database, "ui", "ui_project_stage_step") if r.get("stage_name")]
-    competitor_rows = [competitors[cid] for cid in sorted({p["cid"] for p in projects if p.get("cid")}) if cid in competitors]
-    return projects, {"competitors": competitor_rows, "filters": filters, "seqOptions": seq, "stageSteps": stages}
-
-
-def build_geo(database):
-    locations = rows_by_id(table(database, "serving", "competitive_geo_location"), "location_id")
-    products = defaultdict(list)
-    for row in table(database, "serving", "competitive_geo_product"):
-        products[text(row.get("presence_id"))].append(row)
-    geo = defaultdict(lambda: defaultdict(list))
-    geo_comps = []
-    for row in table(database, "serving", "competitive_geo_company_presence"):
-        company_id = text(first_nonempty(row, "competitor_id", "client_id"))
-        if not company_id:
-            continue
-        loc = locations.get(text(row.get("location_id")), {})
-        country = text(first_nonempty(loc, "country_name", "map_label"))
-        if not country:
-            continue
-        records = products.get(text(row.get("presence_id")), [])
-        if not records:
-            records = [{}]
-        for product in records:
-            geo[company_id][country].append({
-                "name": text(product.get("product_name")),
-                "c": text(row.get("activity_type")),
-                "stage": text(row.get("presence_status")),
-                "since": text(product.get("since_date")),
-                "note": text(product.get("record_note")),
-                "src": text(row.get("relationship_text")),
-            })
-        if company_id not in {c.get("id") for c in geo_comps}:
-            geo_comps.append({"id": company_id, "name": text(row.get("company_name")) or company_id, "isBf": row.get("company_role") == "client"})
-    countries = sorted({country for by_country in geo.values() for country in by_country})
-    return {k: {country: rows for country, rows in v.items()} for k, v in geo.items()}, geo_comps, countries
-
-
-def build_tenders(database):
-    tenders = []
-    for row in table(database, "serving", "market_tender"):
-        tid = text(first_nonempty(row, "tender_id", "tender_number"))
-        if not tid:
-            continue
-        tenders.append({
-            "id": tid,
-            "title": text(first_nonempty(row, "title", "title_localized")),
-            "issuer": text(first_nonempty(row, "issuer_display", "buyer_name")),
-            "country": text(row.get("country_name")),
-            "cat": text(first_nonempty(row, "category_text", "category_id")),
-            "description": text(row.get("description")),
-            "closingDate": text(row.get("closing_date")),
-            "deadline": text(row.get("deadline_text")),
-            "dl": row.get("days_remaining"),
-            "isLive": row.get("is_live"),
-            "value": text(row.get("value_text")),
-            "expectedRevenue": text(row.get("expected_revenue_text")),
-            "lean": text(row.get("lean_code")),
-            "leanTxt": text(row.get("lean_text")),
-            "ksslFit": text(row.get("kssl_fit")),
-            "ksslModel": text(row.get("kssl_model")),
-            "rank": row.get("rank_position"),
-            "url": text(row.get("source_url")),
-            "urlKind": text(row.get("url_kind")),
-            "status": text(row.get("status")),
-        })
-    return tenders
-
-
-def build_requirements(database):
-    result = []
-    for row in table(database, "serving", "market_global_requirement"):
-        rid = text(first_nonempty(row, "requirement_id", "id"))
-        if not rid:
-            continue
-        specs = [
-            [text(s.get("spec_label")), text(s.get("spec_value"))]
-            for s in table(database, "serving", "market_global_requirement_specification")
-            if text(s.get("requirement_id")) == rid
-        ]
-        result.append({
-            "id": rid,
-            "title": text(row.get("title")),
-            "buyer": text(row.get("buyer_name")),
-            "country": text(row.get("country_name")),
-            "cat": text(row.get("category")),
-            "value": text(row.get("value_text")),
-            "dl": row.get("days_remaining"),
-            "deadline": text(row.get("deadline")),
-            "desc": text(row.get("description")),
-            "ksslFit": text(row.get("kssl_fit")),
-            "ksslModel": text(row.get("kssl_model")),
-            "strategicAssessment": text(row.get("strategic_assessment")),
-            "specs": specs,
-        })
-    return result
-
-
-def build_innovations(database):
-    grouped = defaultdict(list)
-    for row in table(database, "serving", "technology_innovation"):
-        item = {
-            "id": text(first_nonempty(row, "innovation_id", "external_id")),
-            "t": text(row.get("title")),
-            "s": text(row.get("list_description")),
-            "summary": text(row.get("summary")),
-            "driver": text(row.get("client_position")),
-            "impact": text(row.get("why_matters_to_kssl")),
-            "compNote": text(row.get("competitive_note")),
-            "status": text(first_nonempty(row, "list_status_label", "status")),
-            "maturity": text(row.get("maturity")),
-        }
-        grouped[text(first_nonempty(row, "category_id", "pillar_id"))].append(item)
-    return dict(grouped)
-
-
-def build_technology_categories(database):
-    rows = table(database, "ui", "technology_category") or table(database, "serving", "technology_category")
-    cats = []
-    meta = {}
-    for row in rows:
-        category_id = text(first_nonempty(row, "category_id", "category_code"))
-        if not category_id:
-            continue
-        name = text(first_nonempty(row, "category_name", "canonical_name"))
-        cats.append({"id": category_id, "name": name})
-        meta[category_id] = {"area": name, "description": text(row.get("category_description"))}
-    return cats, meta
-
-
-def build_matchups(database):
-    advantages: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"client": [], "competitor": []})
-    for row in table(database, "serving", "competitive_matchup_advantage"):
-        mid = text(row.get("matchup_id"))
-        side = text(row.get("side")).lower()
-        if mid and side in ("client", "kssl", "bf", "competitor", "rival", "comp"):
-            key = "client" if side in ("client", "kssl", "bf") else "competitor"
-            advantages[mid][key].append(text(row.get("advantage_text")))
-
-    specs: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in table(database, "serving", "competitive_matchup_specification"):
-        mid = text(row.get("matchup_id"))
-        if not mid:
-            continue
-        specs[mid].append({
-            "l": text(row.get("spec_label")),
-            "u": text(row.get("unit")),
-            "cv": first_nonempty(row, "competitor_value_text", "competitor_value_numeric"),
-            "kv": first_nonempty(row, "client_value_text", "client_value_numeric"),
-            "hi": None,
-            "gap": row.get("gap_value"),
-            "win": text(row.get("better_side")),
-        })
-
-    matchups = {}
-    categories = {}
-    for row in table(database, "serving", "competitive_matchup"):
-        mid = text(first_nonempty(row, "matchup_id", "evaluation_id"))
-        if not mid:
-            continue
-        category = text(row.get("category_code"))
-        category_key = slug(category) or "uncategorised"
-        categories[category_key] = category
-        adv = advantages.get(mid, {"client": [], "competitor": []})
-        matchups[mid] = {
-            "id": mid,
-            "comp": text(row.get("competitor_name")) + (f" · {text(row.get('competitor_product_name'))}" if row.get("competitor_product_name") else ""),
-            "bf": text(row.get("client_product_name")),
-            "anchor": text(row.get("client_product_name")),
-            "compBy": text(row.get("competitor_name")),
-            "cat": category,
-            "country": text(row.get("competitor_country")),
-            "specs": sorted(specs.get(mid, []), key=lambda s: s.get("l", "")),
-            "advBf": adv["client"],
-            "advComp": adv["competitor"],
-            "verdict": text(first_nonempty(row, "verdict_headline", "verdict")),
-            "edge": row.get("edge_score"),
-            "global": False,
-        }
-    pos_cats = [[key, label] for key, label in sorted(categories.items(), key=lambda item: item[1].lower())]
-    return matchups, pos_cats, categories
-
-
-def build_dataset(database):
-    account_rows = table(database, "serving", "client_account")
-    account = account_rows[0] if account_rows else {}
-    client_id = text(account.get("client_id"))
-    client_name = text(first_nonempty(account, "client_name", "legal_name", "brand_name"))
-    client_short = text(first_nonempty(account, "brand_name", "client_name"))
-
-    competitors, comp_order = build_competitors(database)
-    products_by_company, client_products = build_products(database)
-    stocks = build_stocks(database)
-    for company_id, products in products_by_company.items():
-        if company_id in competitors:
-            competitors[company_id]["products"] = products
-    details = {}
-    lanes = build_signals(database, details)
-    geo_data, geo_comps, geo_countries = build_geo(database)
-    projects, projects_config = build_projects(database, competitors)
-    tenders = build_tenders(database)
-    requirements = build_requirements(database)
-    innovations = build_innovations(database)
-    tech_cats, tech_area_meta = build_technology_categories(database)
-    matchups, pos_cats, cat_key = build_matchups(database)
-
-    client = {"id": client_id, "name": client_name, "short": client_short}
-    if client_id and client_id not in competitors:
-        competitors[client_id] = {"id": client_id, "cid": client_id, "name": client_name, "short": client_short, "dir": "client", "partners": [], "products": []}
-    if client_id:
-        competitors.setdefault(client_id, {}).setdefault("products", [])
-        competitors[client_id]["products"].extend(
-            product for owner_id, product in client_products if owner_id == client_id
-        )
-
-    empty_config = {"title": "", "cnt": "", "filters": [], "groups": [], "cards": [], "metrics": [], "dirWord": {}, "badgeClass": {}}
-    overview = {"competitive": {**empty_config, "cards": lanes["competitive"]}, "market": {**empty_config, "cards": lanes["market"]}, "technology": {**empty_config, "cards": lanes["technology"]}}
-
-    top_tenders = []
-    for row in table(database, "serving", "market_top_opportunity_tender"):
-        top_tenders.append({
-            "id": text(first_nonempty(row, "top_opportunity_tender_id", "tender_id")),
-            "title": text(row.get("tender_id")), "decides": text(row.get("decides")),
-            "ksslFit": text(row.get("kssl_fit")), "ksslModel": text(row.get("kssl_model")),
-            "rival": text(row.get("rival_to_beat")), "revenue": text(row.get("revenue_text")),
-            "status": text(row.get("status")),
-        })
-    top_projects = []
-    for row in table(database, "serving", "market_top_opportunity_project"):
-        top_projects.append({
-            "id": text(first_nonempty(row, "top_opportunity_project_id", "opportunity_id")),
-            "title": text(row.get("opportunity_id")), "country": text(row.get("country_name")),
-            "stage": text(row.get("where_it_stands")), "revenue": text(row.get("revenue_text")),
-            "ksslFit": text(row.get("kssl_fit")), "ksslModel": text(row.get("kssl_model")),
-        })
-    next_moves = []
-    for row in table(database, "serving", "market_next_move"):
-        next_moves.append({
-            "id": text(row.get("next_move_id")), "action": text(row.get("action_text")),
-            "days": row.get("days_remaining"), "tenderTitle": text(row.get("tender_title")),
-        })
-
-    return {
-        "client": client,
-        "database": database,
-        "overviewConfig": overview,
-        "geoCountries": geo_countries,
-        "geoData": geo_data,
-        "geoComps": geo_comps,
-        "competitors": competitors,
-        "compOrder": comp_order,
-        "competitorNews": build_competitor_news(database),
-        "competitiveCards": lanes["competitive"],
-        "marketCards": lanes["market"],
-        "techCards": lanes["technology"],
-        "details": details,
-        "matchups": matchups,
-        "POS_CATS": pos_cats,
-        "CAT_KEY": cat_key,
-        "tenders": tenders,
-        "globalRequirements": requirements,
-        "topOpportunities": {"topTenders": top_tenders, "projectsBeforeTender": top_projects, "nextMoves": next_moves},
-        "PATENTS": {"byArea": {}, "byAssignee": {}, "_meta": {"total": 0}},
-        "innovations": innovations,
-        "techCats": tech_cats,
-        "techAreaMeta": tech_area_meta,
-        "KSSL_PARTNERS": [],
-        "sourceRegistry": {},
-        "companySources": {},
-        "competitorStructure": {},
-        "competitorMetrics": {},
-        "projects": projects,
-        "projectsConfig": projects_config,
-        "competitorMoment": build_competitor_moment(database),
-        "stocks": stocks,
-    }
-
-
 @app.get("/api/health")
 def health():
     try:
@@ -753,7 +117,7 @@ def health():
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
-        return {"ok": True, "database": "kssl_frontend", "schemas": ["ui", "serving"]}
+        return {"ok": True, "view": "review" if REVIEW else "live", "schemas": list(SOURCE_SCHEMA.values())}
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
 
@@ -764,6 +128,9 @@ def dataset():
         database = load_all_tables()
         payload = build_dataset(database)
         payload["databaseSchema"] = load_schema_manifest()
+        if REVIEW:
+            with review.session() as (st, sv):
+                payload["review"] = review.statuses(st, sv)
         return payload
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={"error": f"PostgreSQL dataset unavailable: {exc}"})
@@ -776,3 +143,54 @@ def manifest():
         return {"schemas": schema, "read_only": True}
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={"error": str(exc)})
+
+
+# ---- review copy: Approve / Reject / Undo / Unpublish, setup tables, Trace (backend/review.py) ----
+
+def _review_only() -> None:
+    # ponytail: access control is "only the review backend has these routes"; run it on
+    # localhost/VPN. Add a login before exposing the review copy beyond that.
+    if not REVIEW:
+        raise HTTPException(status_code=404, detail="review routes exist only on the review backend")
+
+
+def _run(fn, *args):
+    """fn(staging cursor, serving cursor, *args), committed; then the fresh statuses."""
+    try:
+        with review.session() as (st, sv):
+            fn(st, sv, *args)
+        with review.session() as (st, sv):
+            return review.statuses(st, sv)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except psycopg2.Error as exc:
+        raise HTTPException(status_code=500, detail=(exc.pgerror or str(exc)).strip()) from None
+
+
+@app.post("/api/review")
+def review_decide(table: str, key: str, action: str) -> dict[str, Any]:
+    """Approve / reject / undo / unpublish one card. Returns the fresh statuses."""
+    _review_only()
+    if action not in review.ACTIONS:
+        raise HTTPException(status_code=400, detail=f"action must be one of {sorted(review.ACTIONS)}")
+    return {"table": table, "key": key, "action": action, "review": _run(review.ACTIONS[action], table, key)}
+
+
+@app.post("/api/review/table")
+def review_table(schema: str, table: str, action: str) -> dict[str, Any]:
+    """Approve (replace the whole live table) / unpublish (empty it) one setup table."""
+    _review_only()
+    if schema not in ("ui", "serving") or action not in review.TABLE_ACTIONS:
+        raise HTTPException(status_code=400, detail="schema must be ui|serving, action approve|unpublish")
+    return {"schema": schema, "table": table, "action": action,
+            "review": _run(review.TABLE_ACTIONS[action], schema, table)}
+
+
+@app.get("/api/review/trace")
+def review_trace(table: str, key: str) -> dict[str, Any]:
+    _review_only()
+    try:
+        with review.session() as (st, sv):
+            return json_value(review.trace(st, sv, table, key))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None

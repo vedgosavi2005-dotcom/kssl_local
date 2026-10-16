@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useAppState } from "../../state/AppState";
+import { useAppState, PILLAR_LABEL } from "../../state/AppState";
 import { plainText, rowText } from "../../lib/report";
 
 /* The view heading, its count line, and the report action.
@@ -69,7 +69,7 @@ export default function SubHead({ title, count }) {
   const meta = () => {
     const now = new Date();
     return {
-      pillar,
+      pillar: PILLAR_LABEL[pillar] || pillar,
       pillarKey: pillar,
       view,
       title,

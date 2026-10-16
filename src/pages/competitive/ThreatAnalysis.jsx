@@ -1,18 +1,18 @@
 import { useState, useMemo, useEffect } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
+import { formatDate as fmtDate } from "../../utils/formatDate.js";
+import Thumb from "../../components/thumb/Thumb.jsx";
+import { Review } from "../../components/review/Review.jsx";
 
-// Format date into human-readable string
-function formatDate(dateStr) {
-  if (!dateStr) return "Undated";
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  } catch {
-    return dateStr;
-  }
-}
+// the house date format; "Undated" (chrome) when the move carries no date
+const formatDate = (v) => (v ? fmtDate(String(v)) : "Undated");
+
+/* The dot beside a competitor: its stored threat_level (threat | watch | fav). Any other
+   stored value has no colour; the stored text is the tooltip. */
+const DOT = { threat: "threat", watch: "watch", fav: "fav" };
+/* Drawer header colour from the level's stored tag_class (ui.competitive_competitor_moment_level). */
+const HEAD_CLASS = { threat: "threat", opportunity: "fav", fav: "fav", kssl: "fav", watch: "watch" };
 
 export default function ThreatAnalysis() {
   const { setScope } = useAppState();
@@ -24,7 +24,11 @@ export default function ThreatAnalysis() {
 
   const [selectedCid, setSelectedCid] = useState("__all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [timeFilter, setTimeFilter] = useState("all");
+  // the window the ui table marks as default (is_default); none marked = no window
+  const [timeFilter, setTimeFilter] = useState(() => {
+    const def = (data.competitorMoment?.timeWindows || []).find((w) => w.isDefault);
+    return def ? def.id : "";
+  });
   const [customRange, setCustomRange] = useState({ from: "", to: "" });
   const [selectedMoveId, setSelectedMoveId] = useState(null);
 
@@ -36,7 +40,7 @@ export default function ThreatAnalysis() {
   // Compute active date boundaries
   const activeDateRange = useMemo(() => {
     if (timeFilter === "custom") return customRange;
-    const windowDef = momentData.timeWindows.find((w) => w.id === timeFilter);
+    const windowDef = (momentData.timeWindows || []).find((w) => w.id === timeFilter);
     const days = windowDef ? windowDef.days : null;
     if (days == null || !newestTimestamp) {
       return { from: "", to: "" };
@@ -74,7 +78,7 @@ export default function ThreatAnalysis() {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return competitorStats;
     return competitorStats.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.short.toLowerCase().includes(q)
+      (c) => c.name.toLowerCase().includes(q) || (c.short || "").toLowerCase().includes(q)
     );
   }, [competitorStats, searchQuery]);
 
@@ -84,7 +88,12 @@ export default function ThreatAnalysis() {
     if (selectedCid !== "__all") {
       list = list.filter((m) => m.cid === selectedCid);
     }
-    return list.slice().sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
+    // newest first; equal dates keep their stored display_order
+    return list.slice().sort(
+      (a, b) =>
+        (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0) ||
+        (a.order == null ? Infinity : a.order) - (b.order == null ? Infinity : b.order),
+    );
   }, [allMoves, selectedCid, activeDateRange]);
 
   // Selected competitor metadata
@@ -94,7 +103,10 @@ export default function ThreatAnalysis() {
   }, [selectedCid, competitorsData]);
 
   const activeTitle = selectedCompetitor ? selectedCompetitor.name : "All competitors";
-  const threatCount = displayedMoves.filter((m) => m.level === "THREAT").length;
+  const levelOf = (m) => (momentData.levels || {})[String(m.level || "").toLowerCase()] || { label: m.level, tagClass: "neutral" };
+  // "graded a threat" = moves whose level's stored tag_class is "threat"
+  const threatCount = displayedMoves.filter((m) => levelOf(m).tagClass === "threat").length;
+  const windowedTotal = useMemo(() => allMoves.filter(matchesDate).length, [allMoves, activeDateRange]);
 
   // Selected detail move
   const selectedMove = useMemo(() => {
@@ -102,26 +114,31 @@ export default function ThreatAnalysis() {
     return allMoves.find((m) => m.id === selectedMoveId) || null;
   }, [selectedMoveId, allMoves]);
 
-  // Sync with global header report
-  useHeaderReport({
-    title: `${activeTitle}: competitor moment`,
-    subtitle: `${displayedMoves.length} move${displayedMoves.length === 1 ? "" : "s"} ${
-      activeDateRange.from ? `from ${activeDateRange.from} to ${activeDateRange.to}` : "on record"
-    }`,
-    sections: [
-      {
-        heading: "Moves, newest first",
-        facts: displayedMoves.map((m) => [
-          `${formatDate(m.date)} · ${m.company} [${m.level}]`,
-          `${m.title}. ${m.analysis}`,
-        ]),
+  // Sync with the global header report (memoised: a new object every render re-publishes forever)
+  const report = useMemo(
+    () => ({
+      title: `${activeTitle}: competitor moment`,
+      subtitle: `${displayedMoves.length} move${displayedMoves.length === 1 ? "" : "s"} ${
+        activeDateRange.from ? `from ${activeDateRange.from} to ${activeDateRange.to}` : "on record"
+      }`,
+      sections: [
+        {
+          h: "Moves, newest first",
+          rows: displayedMoves.map((m) => [
+            `${formatDate(m.date)} · ${m.company} [${levelOf(m).label || ""}]`,
+            [m.title, m.summary].filter(Boolean).join(". "),
+          ]),
+        },
+      ],
+      payload: {
+        competitor: selectedCompetitor ? selectedCompetitor.cid : null,
+        moves: displayedMoves,
       },
-    ],
-    payload: {
-      competitor: selectedCompetitor ? selectedCompetitor.cid : null,
-      moves: displayedMoves,
-    },
-  });
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeTitle, displayedMoves, activeDateRange, selectedCompetitor, momentData],
+  );
+  useHeaderReport(report);
 
   // Sync shell scope
   useEffect(() => {
@@ -174,7 +191,7 @@ export default function ThreatAnalysis() {
               <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span>All competitors</span>
               </span>
-              <span className="pli-ct">{displayedMoves.length}</span>
+              <span className="pli-ct">{windowedTotal}</span>
             </span>
           </div>
 
@@ -205,15 +222,14 @@ export default function ThreatAnalysis() {
                   }}
                 >
                   <span
-                    className={`wdot ${
-                      c.threat === "fav" ? "fav" : c.threat === "threat" ? "threat" : "watch"
-                    }`}
+                    className={`wdot ${DOT[String(c.threat).toLowerCase()] || ""}`}
+                    title={c.threat || undefined}
                   />
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {c.name}
                   </span>
                 </span>
-                <span className="pli-ct">{timeFilter === "all" ? c.allCount : c.filteredCount}</span>
+                <span className="pli-ct">{c.filteredCount}</span>
               </span>
             </div>
           ))}
@@ -239,7 +255,7 @@ export default function ThreatAnalysis() {
         {/* Time Window & Date Range Bar */}
         <div className="cm-bar">
           <div className="cm-chips" role="group" aria-label="Time window">
-            {momentData.timeWindows.map((w) => (
+            {(momentData.timeWindows || []).map((w) => (
               <button
                 key={w.id}
                 type="button"
@@ -288,7 +304,7 @@ export default function ThreatAnalysis() {
         {displayedMoves.length > 0 ? (
           <div className="cm-list">
             {displayedMoves.map((m) => {
-              const levelCfg = momentData.levels[m.level] || { label: m.level, tagClass: "neutral" };
+              const levelCfg = levelOf(m);
               const isSelected = selectedMoveId === m.id;
 
               return (
@@ -301,14 +317,14 @@ export default function ThreatAnalysis() {
                   title="Open the strategic analysis"
                 >
                   <div className="cm-left">
-                    <div className="cm-img">
-                      <span style={{ textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                        {m.program.split(" ")[0]}
-                      </span>
-                    </div>
+                    {m.image ? (
+                      <div className="cm-img">
+                        <Thumb src={m.image} alt="" caption="no image" />
+                      </div>
+                    ) : null}
                     <div className="cm-when">
                       <b>{formatDate(m.date)}</b>
-                      <span>{m.category} · {m.country}</span>
+                      <span>{[m.category, m.country].filter(Boolean).join(" · ")}</span>
                     </div>
                   </div>
 
@@ -318,11 +334,12 @@ export default function ThreatAnalysis() {
                       <span className={`proj-tag-pill ${levelCfg.tagClass}`}>
                         {levelCfg.label}
                       </span>
-                      <span className="cm-src">{m.source}</span>
+                      {m.source ? <span className="cm-src">{m.source}</span> : null}
                     </div>
 
                     <div className="cm-title">{m.title}</div>
-                    <div className="cm-desc">{m.description}</div>
+                    {m.summary ? <div className="cm-desc">{m.summary}</div> : null}
+                    <Review src={m._src} />
                   </div>
                 </div>
               );
@@ -339,7 +356,11 @@ export default function ThreatAnalysis() {
                       type="button"
                       className="cm-chip on"
                       style={{ display: "inline-block", marginLeft: "8px", verticalAlign: "middle" }}
-                      onClick={() => setTimeFilter("all")}
+                      onClick={() => {
+                        // every date: an open custom range
+                        setCustomRange({ from: "", to: "" });
+                        setTimeFilter("custom");
+                      }}
                     >
                       Show all dates
                     </button>
@@ -355,16 +376,8 @@ export default function ThreatAnalysis() {
       {selectedMove && (
         <div className="ctx v-overview revealed">
           <div className="ctx-scroll">
-            {/* Header */}
-            <div
-              className={`ctx-h dir-${
-                selectedMove.level === "THREAT"
-                  ? "threat"
-                  : selectedMove.level === "OPPORTUNITY"
-                  ? "fav"
-                  : "watch"
-              }`}
-            >
+            {/* Header: colour from the level's stored tag_class */}
+            <div className={`ctx-h dir-${HEAD_CLASS[levelOf(selectedMove).tagClass] || "none"}`}>
               <div className="ctx-h-actions">
                 <button
                   type="button"
@@ -380,97 +393,112 @@ export default function ThreatAnalysis() {
                 {selectedMove.title}
               </div>
               <div className="sub" style={{ marginTop: "8px" }}>
-                {selectedMove.company} · {formatDate(selectedMove.date)}
+                {[selectedMove.company, selectedMove.date ? formatDate(selectedMove.date) : ""].filter(Boolean).join(" · ")}
               </div>
+              <Review src={selectedMove._src} />
             </div>
 
-            {/* At a Glance Facts */}
+            {/* At a glance: only the columns the move carries */}
             <div className="ctx-sec">
               <span className="eyebrow">At a glance</span>
               <div className="cd-facts">
                 {[
                   ["Company", selectedMove.company],
-                  ["Date", formatDate(selectedMove.date)],
+                  ["Date", selectedMove.date ? formatDate(selectedMove.date) : ""],
                   ["Category", selectedMove.category],
-                  ["Country / Region", selectedMove.country],
+                  ["Country", selectedMove.country],
+                  ["Region", selectedMove.region],
                   ["Strategic Program", selectedMove.program],
                   ["Source", selectedMove.source],
-                ].map(([label, val]) => (
-                  <div key={label} className="cd-frow">
-                    <span className="cd-fline">
-                      <span className="cd-fk">{label}</span>
-                      <span className="cd-fv">{val}</span>
-                    </span>
-                  </div>
-                ))}
+                ]
+                  .filter(([, val]) => val)
+                  .map(([label, val]) => (
+                    <div key={label} className="cd-frow">
+                      <span className="cd-fline">
+                        <span className="cd-fk">{label}</span>
+                        <span className="cd-fv">{val}</span>
+                      </span>
+                    </div>
+                  ))}
               </div>
             </div>
 
-            {/* What Happened */}
-            <div className="ctx-sec">
-              <span className="eyebrow">What happened</span>
-              <div className="cd-prose">{selectedMove.whatHappened || selectedMove.description}</div>
-            </div>
+            {selectedMove.whatHappened ? (
+              <div className="ctx-sec">
+                <span className="eyebrow">What happened</span>
+                <div className="cd-prose">{selectedMove.whatHappened}</div>
+              </div>
+            ) : null}
 
-            {/* Analysis · what it means for KSSL */}
-            <div className="ctx-sec">
-              <span className="eyebrow">Analysis · what it means for KSSL</span>
-              <div className="cd-prose">{selectedMove.ksslAnalysis || selectedMove.analysis}</div>
-            </div>
+            {selectedMove.analysis ? (
+              <div className="ctx-sec">
+                <span className="eyebrow">Analysis · what it means for KSSL</span>
+                <div className="cd-prose">{selectedMove.analysis}</div>
+              </div>
+            ) : null}
 
-            {/* Deeper analysis · by view */}
-            {((selectedMove.deeperAnalysis?.lenses) || (Array.isArray(selectedMove.deeperAnalysis) ? selectedMove.deeperAnalysis : null))?.length > 0 && (
+            {/* Deeper analysis · by view (competitive_competitor_moment_analysis) */}
+            {(selectedMove.deeper || []).filter((l) => l.text).length > 0 && (
               <div className="ctx-sec">
                 <span className="eyebrow">Deeper analysis · by view</span>
-                {((selectedMove.deeperAnalysis?.lenses) || selectedMove.deeperAnalysis).map((lens) => (
-                  <div key={lens.view} style={{ marginTop: "14px" }}>
-                    <div
-                      style={{
-                        fontFamily: "var(--mono)",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        letterSpacing: ".08em",
-                        textTransform: "uppercase",
-                        color: "var(--l-txt-2)",
-                        marginBottom: "4px",
-                      }}
-                    >
-                      {lens.view}
-                    </div>
+                {selectedMove.deeper.filter((l) => l.text).map((lens, i) => (
+                  <div key={`${lens.view}-${i}`} style={{ marginTop: "14px" }}>
+                    {lens.view ? (
+                      <div
+                        style={{
+                          fontFamily: "var(--mono)",
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          letterSpacing: ".08em",
+                          textTransform: "uppercase",
+                          color: "var(--l-txt-2)",
+                          marginBottom: "4px",
+                        }}
+                      >
+                        {lens.view}
+                      </div>
+                    ) : null}
                     <div className="cd-prose">{lens.text}</div>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Source */}
-            {(selectedMove.url || selectedMove.source) && (
-              <div className="ctx-sec">
-                <span className="eyebrow">Source</span>
-                <div style={{ marginTop: "6px" }}>
-                  {selectedMove.url ? (
-                    <a
-                      href={selectedMove.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        color: "var(--brand)",
-                        fontFamily: "var(--mono)",
-                        fontSize: "12px",
-                        textDecoration: "underline",
-                        wordBreak: "break-all",
-                      }}
-                    >
-                      {selectedMove.source || "Source"} ↗
-                    </a>
-                  ) : (
-                    <span style={{ color: "var(--l-txt-2)", fontSize: "12px" }}>
-                      {selectedMove.source}
-                    </span>
-                  )}
+            {/* Sources: the move's own source link, then competitive_competitor_moment_source rows */}
+            {(() => {
+              const links = [];
+              if (selectedMove.url) links.push({ label: selectedMove.source || selectedMove.url, url: selectedMove.url });
+              (selectedMove.sources || []).forEach((x) => {
+                if (x.url && !links.some((l) => l.url === x.url)) links.push({ label: x.publisher || x.url, url: x.url });
+              });
+              if (!links.length && !selectedMove.source) return null;
+              return (
+                <div className="ctx-sec">
+                  <span className="eyebrow">Source</span>
+                  <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {links.length ? links.map((l) => (
+                      <a
+                        key={l.url}
+                        href={l.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          color: "var(--brand)",
+                          fontFamily: "var(--mono)",
+                          fontSize: "12px",
+                          textDecoration: "underline",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {l.label} ↗
+                      </a>
+                    )) : (
+                      <span style={{ color: "var(--l-txt-2)", fontSize: "12px" }}>{selectedMove.source}</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}

@@ -1,0 +1,33 @@
+-- The docx schema gives the same reference two types in a few places, so joins can never match
+-- (e.g. competitive_project.competitor_id bigint vs competitive_competitor.competitor_id uuid).
+-- Rule: the referencing column takes the type of the record it points to.
+-- Same logic as db/migrations/002_fix_id_types.sql, for the freshly created `serving` schema only
+-- (db/make_databases.sh runs it before the staging DB renames its schemas). Refuses to touch a
+-- table that has data: a non-empty column makes it fail rather than guess values.
+BEGIN;
+
+DO $$
+DECLARE
+    c record;
+    n bigint;
+BEGIN
+    FOR c IN SELECT * FROM (VALUES
+        -- table                              column                   new type  points to
+        ('competitive_competitor_moment',     'competitor_id',         'uuid'),   -- competitive_competitor
+        ('competitive_geo_company_presence',  'competitor_id',         'uuid'),   -- competitive_competitor
+        ('competitive_project',               'competitor_id',         'uuid'),   -- competitive_competitor
+        ('competitive_matchup',               'competitor_product_id', 'uuid'),   -- competitive_product
+        ('market_tender_competitor_fit',      'competitor_product_id', 'uuid'),   -- competitive_product
+        ('competitive_product_news',          'matchup_id',            'bigint'), -- competitive_matchup
+        ('technology_overview_article',       'category_id',           'bigint'), -- technology_category
+        ('market_global_requirement',         'requirement_id',        'bigint')  -- its _source / _specification rows
+    ) AS v(tbl, col, typ) LOOP
+        EXECUTE format('SELECT count(*) FROM serving.%I WHERE %I IS NOT NULL', c.tbl, c.col) INTO n;
+        IF n > 0 THEN
+            RAISE EXCEPTION 'serving.%.% has % value(s); convert them by hand first', c.tbl, c.col, n;
+        END IF;
+        EXECUTE format('ALTER TABLE serving.%I ALTER COLUMN %I TYPE %s USING NULL', c.tbl, c.col, c.typ);
+    END LOOP;
+END $$;
+
+COMMIT;

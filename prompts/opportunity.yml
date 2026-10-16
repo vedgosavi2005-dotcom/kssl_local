@@ -1,0 +1,149 @@
+id: opportunity
+title: Market opportunity from a demand article
+version: 2
+fills: [market_opportunity, market_opportunity_fit_assessment, market_opportunity_source, market_opportunity_update]
+shows_on: Top opportunity ("projects to win before they tender"), opportunity detail
+cadence: weekly                  # every news article of the last 45 days not yet run
+# HOW ARTICLES ARE FED. Articles come from staging.competitive_news_article (the news job). To feed one by hand,
+# insert a row there (headline, article_url, published_date, publisher; competitor_id may be NULL). Runs
+# are per article; the relevance gate in the task skips articles that are not demand.
+# No web search: the article is the only document.
+
+subject:
+  key: article_id
+  query: |
+    SELECT n.article_id, n.headline, n.article_url, n.publisher, n.published_date
+    FROM staging.competitive_news_article n
+    WHERE n.article_url IS NOT NULL AND n.published_date >= current_date - 45
+      AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business')
+    ORDER BY n.published_date DESC
+  documents:
+    - from: url
+      field: article_url
+    - from: sql                  # opportunities already on record, so one demand is not stored twice
+      query: |
+        SELECT 'KNOWN OPPORTUNITY' AS doc, o.title, o.buyer_name, o.stage, o.as_of_date
+        FROM staging.market_opportunity o
+        WHERE o.as_of_date >= current_date - 180
+          AND o.opportunity_id::text NOT IN (   -- not this article's own earlier result (a re-run replaces it)
+            SELECT e->>'id' FROM staging.prompt_run r, jsonb_array_elements(r.loaded) e
+            WHERE r.prompt_id = 'opportunity' AND r.subject_key = {{subject.article_id}}::text AND r.status = 'loaded'
+              AND e->>'table' = 'market_opportunity')
+        ORDER BY o.as_of_date DESC
+
+context: [client, client_products, competitors, competitor_products, categories]
+
+task: |
+  TASK opportunity — decide whether one article reports a demand {{client.name}} could sell into,
+  and if so fill one opportunity card.
+
+  ARTICLE: "{{subject.headline}}" — {{subject.publisher}}, {{subject.published_date}}
+  URL: {{subject.article_url}}
+
+  STEP 1 — RELEVANCE. It is an opportunity only if all three hold:
+   a) it reports DEMAND: a buyer (armed force, defence ministry, government agency, or a prime
+      contractor seeking suppliers) plans, budgets, approves, requests or tenders for defence
+      equipment, or an induction creates a stated follow-on need (ammunition, spares, upgrades);
+   b) the demand falls in one of the CATEGORIES;
+   c) it is not only a report that a company won or delivered a contract (a competitive signal) and
+      not only a technology development (a technology article).
+  If any test fails: "records": [] and "skip_reason" = one sentence naming the failed test.
+  If the same demand (same buyer and system) is already in KNOWN OPPORTUNITY: set ref_opportunity to
+  that title; then give only the new market_opportunity_update and market_opportunity_source rows,
+  and leave the other market_opportunity fields null.
+
+  STEP 2 — one record, table market_opportunity:
+   - title: the demand as a headline, max 120 characters, in the article's words
+   - opportunity_kind: planned_purchase (buyer plans or approves a purchase), solicitation (RFI, RFP,
+     pre-tender notice), follow_on_need (need created by an induction), capability_gap (a stated
+     gap with no purchase yet). Allowed: planned_purchase | solicitation | follow_on_need | capability_gap
+   - ref_category: the single best CATEGORIES name, exactly as written
+   - buyer_name: the buyer as written; contractor_name: a prime or contractor the article names, else null
+   - description: 2-4 sentences, only what the article states
+   - scope_text: the system, quantity and conditions demanded (local content, timeline), as stated
+   - location_text: where, as stated; stage: the stage as the article describes it, max 32
+     characters (e.g. approved, RFP expected); current_status: max 40 characters, as stated;
+     latest_milestone: the latest dated step the article states; as_of_date: the date of the
+     demand event as stated (else the article date, say so in _precision)
+   - country: the buyer's country, English short name (the loader stores its code)
+   children:
+   market_opportunity_fit_assessment (exactly one row when a CLIENT PRODUCTS product fits, else none):
+   - ref_client_product: the best-fitting client product, exactly as written
+   - fit_grade: JUDGEMENT. strong, partial or weak, against the demand as stated
+   - rationale: JUDGEMENT. 2-3 sentences: which product, which stated conditions it meets or not
+   - ref_competitor and ref_product: JUDGEMENT. The tracked competitor and its COMPETITOR PRODUCTS
+     product most likely to compete in this category; null if none is in the category
+   market_opportunity_update (1-3 rows, one per dated development the article states):
+   - update_type: announced | approved | funded | solicitation | delayed | cancelled
+   - update_date, headline (max 120 characters), narrative (1-2 sentences, as stated)
+   market_opportunity_source (exactly one row, the article):
+   - source_title, publisher, source_type (news | official | company), source_date
+     (no url field: the loader stores the article url itself)
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+  COMPETITORS:
+  {{context.competitors}}
+  COMPETITOR PRODUCTS:
+  {{context.competitor_products}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENTS (article text, then opportunities on record):
+  {{documents}}
+
+output:
+  market_opportunity:
+    card: true
+    key: [prompt_id, subject]    # a ref_opportunity, when given, replaces the key: that opportunity is extended
+    refs: {ref_opportunity: market_opportunity.title}
+    transient: {country: {max: 100}}      # English short name; the loader turns it into country_code
+    columns:
+      title: {max: 120}
+      opportunity_kind: {enum: [planned_purchase, solicitation, follow_on_need, capability_gap]}
+      category_id: {from_ref: ref_category, judgement: true}
+      buyer_name: {}
+      contractor_name: {}
+      description: {}
+      scope_text: {}
+      location_text: {}
+      stage: {max: 32}
+      current_status: {max: 40}
+      latest_milestone: {}
+      as_of_date: {type: date}
+    loader:
+      opportunity_id: new_id_or_ref_opportunity
+      country_code: country_reference_table_of_country
+      created_at: run_time
+      updated_at: run_time
+    children:
+      market_opportunity_fit_assessment:
+        columns: [fit_grade, rationale]
+        refs: {ref_client_product: client_product, ref_competitor: competitive_competitor, ref_product: competitive_product}
+        required: [fit_grade]
+        judgement: [fit_grade, rationale]
+        enum: {fit_grade: [strong, partial, weak]}
+        loader:
+          assessment_id: new_id
+          opportunity_id: parent_id
+          assessed_at: run_time
+          client_product_id: resolved_ref_client_product_id
+          client_model_display: resolved_ref_client_product_name
+          rival_name: resolved_ref_competitor_display_name
+          rival_product_display: resolved_ref_product_name
+          # revenue_*, fit_score are NOT filled: no source states the client's revenue
+      market_opportunity_update:
+        columns: [update_type, update_date, headline, narrative]
+        required: [update_type]
+        enum: {update_type: [announced, approved, funded, solicitation, delayed, cancelled]}
+        max: {headline: 120}
+        loader: {update_id: new_id, opportunity_id: parent_id, source_id: sibling_source_id, confidence: copy_of_source_confidence}
+      market_opportunity_source:
+        columns: [source_title, publisher, source_type, source_date]
+        enum: {source_type: [news, official, company]}
+        loader:
+          source_id: new_id
+          opportunity_id: parent_id
+          source_url: subject.article_url
+          confidence: single_source_unless_publisher_is_official

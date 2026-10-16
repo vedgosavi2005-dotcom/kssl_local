@@ -1,28 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import HtmlBlock from "../../components/htmlBlock/HtmlBlock";
+import { ReviewList } from "../../components/review/Review";
 import { useData } from "../../state/DataProvider";
 import { useAppState, useHeaderReport } from "../../state/AppState";
-import {
-  searchPatents,
-  patCompBody,
-  patTechBody,
-  patLoadingHtml,
-  patentAreas,
-} from "../../lib/patents";
-/* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. This page
-   persisted to localStorage, which survives the tab, the browser and the machine's
-   next reboot -- so a company opened once was still the landing selection weeks
-   later, on a dashboard whose job is "what is new". Same key/value shape, held in
-   memory, cleared on a pillar change. See lib/viewState. */
+import { patCompBody, patTechBody, patentAreas, inCategory } from "../../lib/patents";
+/* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
 
-/* Both patent lenses live in the Competitive pillar. The field lens used to sit
-   under Technology; it is the same patent set read a different way, and a rival
-   fencing a field is competitive intelligence — so one view with a lens toggle. */
+/* Both patent lenses live in the Competitive pillar: the same filings read two ways, by the
+   rival that holds them and by the technology category they are classified under. */
 export default function Patents() {
   const { data } = useData();
-  const { setScope, takePending } = useAppState();
-  const clientName = (data.client && (data.client.short || data.client.name)) || "";
+  const { takePending } = useAppState();
   const getSavedPat = () => {
     try {
       const s = viewState.getItem("kssl_pat_state");
@@ -30,13 +19,15 @@ export default function Patents() {
     } catch (e) { return {}; }
   };
   const savedPat = getSavedPat();
+  const pat = data.PATENTS || {};
+  const byCompetitor = pat.byCompetitor || {};
+  const byTechnology = pat.byTechnology || {};
 
   const [lens, setLens] = useState(savedPat.lens || "rival");
   const [compQuery, setCompQuery] = useState("");
   const [techQuery, setTechQuery] = useState("");
-  const [cid, setCid] = useState(savedPat.cid || data.compOrder[0]);
+  const [cid, setCid] = useState(savedPat.cid && data.competitors[savedPat.cid] ? savedPat.cid : data.compOrder[0]);
   const [catFilter, setCatFilter] = useState(savedPat.catFilter || "");
-  const [compRes, setCompRes] = useState(null);
 
   useEffect(() => {
     const pend = takePending("patents-comp");
@@ -45,14 +36,9 @@ export default function Patents() {
     }
   }, [takePending]);
 
-  /* The fields the filings are INDEXED under, most-filed first (lib/patents.js). This
-     listed PATENTS.techAreas -- the ui_config vocabulary -- which on the reference
-     dataset shares no name with the harvest's areas, so the lens showed nine fields
-     all reading 0 while 21 filings sat under the rival lens. The configured areas,
-     then the tracked categories, remain the fallbacks when nothing is indexed. */
-  const areas = useMemo(() => patentAreas(data.PATENTS, data.techCats), [data]);
-  const [area, setArea] = useState(savedPat.area || areas[0] || null);
-  const [techRes, setTechRes] = useState(null);
+  /* The categories the filings are classified under, most-filed first. */
+  const areas = useMemo(() => patentAreas(pat), [data]);
+  const [area, setArea] = useState(savedPat.area && byTechnology[savedPat.area] ? savedPat.area : areas[0] || null);
 
   useEffect(() => {
     try {
@@ -60,67 +46,29 @@ export default function Patents() {
     } catch (e) {}
   }, [lens, cid, area, catFilter]);
 
-  /* Selection triggers the search, through the same seam a live backend would use. */
-  useEffect(() => {
-    let live = true;
-    setCompRes(null);
-    searchPatents(data, { competitor: cid }).then((r) => {
-      if (live) setCompRes(r);
-    });
-    return () => {
-      live = false;
-    };
-  }, [data, cid]);
-
-  useEffect(() => {
-    let live = true;
-    setTechRes(null);
-    searchPatents(data, { technology: area }).then((r) => {
-      if (live) setTechRes(r);
-    });
-    return () => {
-      live = false;
-    };
-  }, [data, area]);
-
-  // the category filter belongs to the selected competitor's filings
-  const compRecs = compRes ? compRes.results || [] : [];
-  const cats = useMemo(
-    () => [...new Set(compRecs.map((r) => r.techArea).filter(Boolean))].sort(),
-    [compRecs],
-  );
+  const portfolio = byCompetitor[cid] || null;
+  const cats = portfolio ? portfolio.categories || [] : [];
   useEffect(() => {
     setCatFilter("");
   }, [cid]);
 
-  /* What the header's Copy / Export / Print act on: the filings the open lens lists,
-     under the category filter in force, with the search status stated -- an empty
-     list says whether it is empty or still loading. */
+  /* What the header's Copy / Export / Print act on: the filings the open lens lists, under the
+     category filter in force. */
   const report = useMemo(() => {
-    /* THE EXPORT READS LIKE THE CARD. The card leads with the English title where the
-       translation step has produced one; a Copy/Export that pasted the German original
-       instead would put a different filing in front of the reader than the one they were
-       looking at. The office's own title travels in the second column, because that is
-       the string that finds the record again in its register. */
     const recRow = (r) => [
-      r.title_en || r.title || r.id || "untitled",
-      [r.assignee, r.title_en && r.title_en !== r.title ? r.title : "", r.status,
-       r.grant_no ? `Grant ${r.grant_no}` : "", r.granted || r.filed, r.jurisdiction]
-        .filter(Boolean)
-        .join(" · "),
+      r.title || r.id,
+      [r.id, r.status, r.filed, r.jurisdiction].filter(Boolean).join(" · "),
     ];
-    const res = lens === "rival" ? compRes : techRes;
-    const recs = res ? res.results || [] : [];
-    const shown = lens === "rival" && catFilter ? recs.filter((r) => r.techArea === catFilter) : recs;
+    const recs = lens === "rival" ? (portfolio ? portfolio.records : []) : (byTechnology[area] || {}).records || [];
+    const shown = lens === "rival" ? recs.filter((r) => inCategory(r, catFilter)) : recs;
     const subject = lens === "rival" ? (data.competitors[cid] || {}).name || cid : area || "";
-    const status = res ? res.status : "loading";
     return {
       title: `Patents · ${subject}`,
-      subtitle: `${shown.length} filing${shown.length === 1 ? "" : "s"}${catFilter ? ` · ${catFilter}` : ""} · ${status}`,
+      subtitle: `${shown.length} filing${shown.length === 1 ? "" : "s"}${catFilter && lens === "rival" ? ` · ${catFilter}` : ""}`,
       sections: [
         {
           h: lens === "rival" ? `Filings by ${subject}` : `Filings in ${subject}`,
-          rows: shown.length ? shown.map(recRow) : [`No filings on record (${status}).`],
+          rows: shown.length ? shown.map(recRow) : ["No filings on record."],
         },
       ],
       payload: {
@@ -128,11 +76,10 @@ export default function Patents() {
         competitor: lens === "rival" ? cid : null,
         technology: lens === "rival" ? null : area,
         filter: catFilter || null,
-        status,
         filings: shown,
       },
     };
-  }, [lens, cid, area, catFilter, compRes, techRes, data.competitors]);
+  }, [lens, cid, area, catFilter, portfolio, byTechnology, data.competitors]);
   useHeaderReport(report);
 
   const compList = data.compOrder.filter(
@@ -145,55 +92,12 @@ export default function Patents() {
     (a) => !techQuery.trim() || a.toLowerCase().includes(techQuery.trim().toLowerCase()),
   );
 
-  /* Filtering hides rows rather than re-searching — the filings are already in hand,
-     and the section count above them follows the filter. */
-  const applyCatFilter = (node) => {
-    if (!node) return;
-    let shown = 0;
-    node.querySelectorAll(".pat-rec").forEach((rec) => {
-      const match = !catFilter || rec.dataset.cat === catFilter;
-      rec.style.display = match ? "" : "none";
-      if (match) shown++;
-    });
-    const secl = node.querySelector(".ws-sec-l");
-    if (secl)
-      secl.textContent = `▸ ${shown} filing${shown !== 1 ? "s" : ""}${catFilter ? ` · ${catFilter}` : ""}`;
-  };
-
-  /* Zero filings are indexed, so both lenses are scaffolding around nothing: the rival
-     rail lists 178 competitors each reading 0, and the field rail lists technology areas
-     that come from ui_config and match no row. A reader has to click a competitor to
-     discover the emptiness, which is why this page reads as broken rather than empty.
-     Say it once, at the top, before drawing either lens.
-
-     serving.patent does hold 26 rows, and they stay withheld on purpose: 22 of the 26
-     carry estimated numbers ("IN-2024-EST01 (est, grant verified)") rather than published
-     ones. They are origin='reference', which serving_live does not serve. Showing an
-     invented patent number is worse than showing none. */
-  const pat = data.PATENTS || {};
-  const noFilings =
-    !Object.keys(pat.byAssignee || {}).length && !Object.keys(pat.byArea || {}).length;
-
-  if (noFilings)
+  if (!Object.keys(byCompetitor).length)
     return (
       <div className="pat-view v-patents-comp">
         <div className="pat-state" style={{ padding: "48px 32px" }}>
           <div className="ps-ic">⊟</div>
-          <div className="ps-t">No patent filings are indexed</div>
-          <div className="ps-s">
-            The patent harvest has not landed any filings for this client, so there is
-            nothing to compare. This is a pipeline step that has not run - not a
-            failure of this page.
-            <br />
-            <br />
-            26 records do exist from an earlier pass and are deliberately withheld: 22 of
-            them carry estimated rather than published patent numbers. Nothing is shown
-            here in preference to something unverified.
-            <br />
-            <br />
-            Once the harvest runs, rival portfolios and technology-field crowding appear
-            in this view.
-          </div>
+          <div className="ps-t">No patent portfolios on record</div>
         </div>
       </div>
     );
@@ -219,19 +123,6 @@ export default function Patents() {
       </div>
 
       <div className="pat-pane" data-lens="rival" style={{ display: lens === "rival" ? "" : "none" }}>
-        {!data.compOrder.length ? (
-          /* Honest empty state: an empty compOrder means the pipeline has served no
-             competitors, not that a lookup should be attempted and crash. */
-          <div className="pat-state" style={{ padding: "24px" }}>
-            <div className="ps-ic">⊡</div>
-            <div className="ps-t">No competitors indexed yet</div>
-            <div className="ps-s">
-              The served dataset carries no competitor records, so there are no patent
-              portfolios to show. Once the pipeline serves competitors, they appear here.
-            </div>
-          </div>
-        ) : (
-        <>
         <div className="mu-list">
           <div className="mu-list-h">
             <span className="eyebrow">Competitors</span>
@@ -248,7 +139,7 @@ export default function Patents() {
           <div id="patc-list">
             {compList.length ? (
               compList.map((k) => {
-                const pd = ((data.PATENTS || {}).byCompetitor || {})[k];
+                const pd = byCompetitor[k];
                 return (
                   <div
                     className={`pat-li${cid === k ? " active" : ""}`}
@@ -264,7 +155,7 @@ export default function Patents() {
                     }}
                   >
                     <span className="pli-n">{data.competitors[k].name}</span>
-                    <span className="pli-c">{pd ? pd.records.length : 0}</span>
+                    <span className="pli-c">{pd ? (pd.filingCount != null ? pd.filingCount : pd.records.length) : ""}</span>
                   </div>
                 );
               })
@@ -284,28 +175,23 @@ export default function Patents() {
                 value={catFilter}
               >
                 <option value="">
-                  All product categories{compRecs.length ? ` (${compRecs.length})` : ""}
+                  All product categories{portfolio && portfolio.filingCount != null ? ` (${portfolio.filingCount})` : ""}
                 </option>
                 {cats.map((c) => (
-                  <option key={c} value={c}>
-                    {c} ({compRecs.filter((r) => r.techArea === c).length})
+                  <option key={c.label} value={c.label}>
+                    {c.label}{c.count != null ? ` (${c.count})` : ""}
                   </option>
                 ))}
               </select>
             ) : null}
           </div>
-          <HtmlBlock
-            html={
-              compRes
-                ? patCompBody(data, cid, compRes)
-                : patLoadingHtml(((data.competitors[cid] || {}).name) || cid || "")
-            }
-            id="patc-body"
-            onMount={applyCatFilter}
+          <HtmlBlock html={patCompBody(data, cid, catFilter)} id="patc-body" />
+          {/* review copy only: the filings above are drawn as HTML, so the same records are listed here */}
+          <ReviewList
+            title="Patent filings"
+            items={(portfolio ? portfolio.records : []).filter((r) => inCategory(r, catFilter)).map((r) => ({ src: r._src, label: r.title || r.id }))}
           />
         </div>
-        </>
-        )}
       </div>
 
       <div className="pat-pane" data-lens="field" style={{ display: lens === "field" ? "" : "none" }}>
@@ -325,7 +211,7 @@ export default function Patents() {
           <div id="patt-list">
             {areaList.length ? (
               areaList.map((a) => {
-                const td = ((data.PATENTS || {}).byTechnology || {})[a];
+                const td = byTechnology[a];
                 return (
                   <div
                     className={`pat-li${area === a ? " active" : ""}`}
@@ -341,22 +227,23 @@ export default function Patents() {
                     }}
                   >
                     <span className="pli-n">{a}</span>
-                    <span className="pli-c">{td ? td.records.length : 0}</span>
+                    <span className="pli-c">{td ? td.count : ""}</span>
                   </div>
                 );
               })
             ) : (
-              <div className="pat-li-none">No match for “{techQuery.trim()}”</div>
+              <div className="pat-li-none">{areas.length ? `No match for “${techQuery.trim()}”` : "No technology fields on record"}</div>
             )}
           </div>
         </div>
         <div className="pat-canvas">
           <div className="pat-head">
-            <span className="eyebrow">{`${area} · field analysis`}</span>
+            <span className="eyebrow">{area ? `${area} · field analysis` : "Field analysis"}</span>
           </div>
-          <HtmlBlock
-            html={techRes ? patTechBody(data, area, techRes) : patLoadingHtml(area)}
-            id="patt-body"
+          {area ? <HtmlBlock html={patTechBody(data, area)} id="patt-body" /> : null}
+          <ReviewList
+            title="Patent filings"
+            items={((byTechnology[area] || {}).records || []).map((r) => ({ src: r._src, label: r.title || r.id }))}
           />
         </div>
       </div>

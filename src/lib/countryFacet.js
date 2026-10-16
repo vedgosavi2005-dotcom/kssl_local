@@ -102,7 +102,7 @@ export function hqParts(raw) {
    never quietly filed under someone else's flag. */
 export function companyOrigin(d, cid) {
   const co = ((d && d.competitors) || {})[cid] || {};
-  const v = clean(co.country);
+  const v = clean(co.origin);
   return v || null;
 }
 
@@ -181,6 +181,8 @@ function rawCountries(d, cid) {
     }
     countriesNamedIn(v, vocab).forEach((c) => out.add(c));
   });
+  // the stored location rows (competitive_competitor_location.country)
+  (Array.isArray(co.locations) ? co.locations : []).forEach((l) => l && l.country && out.add(clean(l.country)));
   clean(co.hq)
     .split(",")
     .map(clean)

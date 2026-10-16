@@ -1,36 +1,15 @@
 /* THE FIXED PARAMETER SET OF A TENDER ROW.
  *
- * REPORTED: "many have a small basic title, no understanding ... fix per tender row
- * parameters, resolve from each tender and show a consistent flow".
- *
- * Measured on the served corpus (136 tenders, 2026-09-05): the median title is 29
- * characters, 40 titles are 20 characters or fewer, 50 are three words or fewer --
- * "Ammunition", "Firearms", "Eb Tuba", "Vane,Large". The card under such a title used
- * to print whichever of six fields happened to be filled, so one row read six parts and
- * the next three, and a reader could not tell a field the notice does not publish from
- * one the card forgot. The title is not rewritten (a composed title is an invented one);
- * instead the SAME nine parameters are resolved for EVERY tender, in the same order,
- * and each one either carries a stored value or says, in its own visual state, that
- * the record does not hold it.
- *
- * What the served record can fill (origin=pipeline, n=136):
- *   issuer / country / cat / status / url / srcs   136   always
- *   deadline                                         79   "d Mon yyyy" strings
- *   value                                            23
- *   qty                                               7
- *   req / stage / dl / matches                        0   only the 22 reference rows
- *
- * So Value, Quantity and Closing date are unresolved on most rows. That is the fact the
- * row must state, not hide: "not on record" is data; a blank is not.
- *
- * Each parameter names the field it was resolved FROM (`from`), so a reader of the
- * report, a test, or the next engineer can see which link of the chain fired.
+ * The same nine parameters are resolved for every tender, in the same order. Each is a
+ * stored column or null (the record does not hold it); nothing is guessed from other text.
+ *   buyer    issuer_display / buyer_name     country  country_name     category  category_text
+ *   value    value_text                      quantity quantity + unit  posted    published_date
+ *   closing  closing_date                    status   status           source    primary source's portal / publisher
  */
 import { formatDate } from "../utils/formatDate.js";
 
 export const NOT_ON_RECORD = "not on record";
 
-/* The fixed set, in display order. `label` is what the row prints. */
 export const TENDER_PARAMS = [
   { key: "buyer", label: "Buyer" },
   { key: "country", label: "Country" },
@@ -45,180 +24,42 @@ export const TENDER_PARAMS = [
 
 const has = (v) => v != null && String(v).trim() !== "";
 const str = (v) => String(v).trim();
-
-/* A requirement row whose LABEL matches -- the reference rows carry [label, value]
-   pairs like ["Closing date", "12 Mar 2027"]. The pipeline rows carry none (0/136),
-   so this link is documented and tested but idle in production today. */
-const reqRow = (t, re) => {
-  if (!t || !Array.isArray(t.req)) return null;
-  const pair = t.req.find((r) => Array.isArray(r) && has(r[0]) && re.test(str(r[0])) && has(r[1]));
-  return pair ? str(pair[1]) : null;
-};
-
-/* wireTendersWithRealDays overwrites `deadline` with a countdown and keeps the served
-   string on `closingDate`. Before wiring there is no closingDate key and `deadline` IS
-   the served string. Read whichever holds the record, and refuse anything that is a
-   computation: a countdown, the "no deadline on record" placeholder, or the stage text
-   the wiring copies into the deadline slot. */
-const COMPUTED_DEADLINE = /days?\s+left|closes in|no deadline on record|closed \/ expired|awarded \/ settled/i;
-const servedDeadline = (t) => {
-  if (Object.prototype.hasOwnProperty.call(t, "closingDate")) return has(t.closingDate) ? str(t.closingDate) : null;
-  if (!has(t.deadline)) return null;
-  const d = str(t.deadline);
-  if (COMPUTED_DEADLINE.test(d)) return null;
-  if (has(t.stage) && d === str(t.stage)) return null;
-  return d;
-};
-
-const urlHost = (u) => {
-  if (!has(u)) return null;
-  const h = str(u).replace(/^https?:\/\/(www\.)?/i, "").split("/")[0];
-  return h || null;
-};
-
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const one = (v, fmt = str) => (has(v) ? fmt(v) : null);
 
-/* ------------------------------------------------------------- resolvers ----
-   Each returns { value, from } -- value null when nothing on the record fills it. A
-   resolver reads STORED fields only; the one computation allowed is "the served closing
-   date has passed", which tenderCalc already makes and the Closed tab already relies on.
-   The chain order is the documentation. */
 const RESOLVE = {
-  buyer: (t) =>
-    has(t.issuer) ? { value: str(t.issuer), from: "issuer" }
-    : first(reqRow(t, /buyer|issuer|contracting authority|purchaser|procuring/i), "req"),
-  country: (t) =>
-    has(t.country) ? { value: str(t.country), from: "country" }
-    : first(reqRow(t, /^country/i), "req"),
-  category: (t) => (has(t.cat) ? { value: str(t.cat), from: "cat" } : none()),
-  value: (t) =>
-    has(t.value) ? { value: str(t.value), from: "value" }
-    : first(reqRow(t, /value|budget|estimated cost/i), "req"),
-  quantity: (t) =>
-    has(t.qty) ? { value: str(t.qty), from: "qty" }
-    : first(reqRow(t, /quantity|qty/i), "req"),
-  posted: (t) => {
-    if (has(t.posted)) return { value: formatDate(str(t.posted)), from: "posted" };
-    // Anchored at the label start: the reference rows also carry
-    // ["Title, as published", "Vane,Large"], and an unanchored /published/ matched
-    // it -- printing the raw title in the Published (date) slot. A publication-date
-    // label BEGINS with published/posted, never "Title, as ...".
-    const r = reqRow(t, /^(date\s+)?(published|posted)\b|^publication date/i);
-    return r ? { value: formatDate(r), from: "req" } : none();
-  },
-  closing: (t) => {
-    const d = servedDeadline(t);
-    if (d) return { value: formatDate(d), from: "deadline" };
-    const r = reqRow(t, /closing date|due date|deadline|submission/i);
-    if (r) return { value: formatDate(r), from: "req" };
-    if (has(t.stage)) return { value: str(t.stage), from: "stage" };
-    return none();
-  },
-  status: (t) => {
-    const s = has(t.status) ? str(t.status).toLowerCase() : "";
-    if (s === "awarded") return { value: "Awarded", from: "status" };
-    if (t.urlKind === "award") return { value: "Awarded", from: "urlKind" };
-    if (s === "closed") return { value: "Closed", from: "status" };
-    /* the served date has passed: tenderCalc set isLive=false from closingDate */
-    if (t.isLive === false && servedDeadline(t)) return { value: "Closed", from: "deadline" };
-    if (s) return { value: cap(s), from: "status" };
-    return none();
-  },
+  buyer: (t) => one(t.issuer),
+  country: (t) => one(t.country),
+  category: (t) => one(t.cat),
+  value: (t) => one(t.value),
+  quantity: (t) => one(t.qty),
+  posted: (t) => one(t.posted, (v) => formatDate(str(v))),
+  closing: (t) => one(t.closingDate, (v) => formatDate(str(v))),
+  status: (t) => one(t.status, (v) => cap(str(v))),
   source: (t) => {
-    const lbl = Array.isArray(t.srcs) && t.srcs[0] && has(t.srcs[0].label) ? str(t.srcs[0].label) : null;
-    if (lbl) return { value: lbl, from: "srcs" };
-    const h = urlHost(t.url) || urlHost(Array.isArray(t.srcs) && t.srcs[0] && t.srcs[0].url);
-    return h ? { value: h, from: "url" } : none();
+    const s = Array.isArray(t.srcs) && t.srcs[0];
+    return s ? one(s.label) : null;
   },
 };
-const none = () => ({ value: null, from: null });
-const first = (v, from) => (v ? { value: v, from } : none());
 
 /**
  * Resolve one tender to its fixed row shape.
  *
- * @returns {{ title: string, params: Array<{key, label, value: string|null, from: string|null, text: string}> }}
- *   `value` is the resolved string or null; `text` is what to print -- the value, or
- *   NOT_ON_RECORD. `title` is the stored title, untouched.
+ * @returns {{ title: string, params: Array<{key, label, value: string|null, text: string}> }}
+ *   `value` is the stored string or null; `text` is what to print: the value, or NOT_ON_RECORD.
  */
 export function resolveTenderRow(t) {
   const rec = t && typeof t === "object" ? t : {};
   return {
     title: has(rec.title) ? str(rec.title) : "",
     params: TENDER_PARAMS.map(({ key, label }) => {
-      const { value, from } = RESOLVE[key](rec);
-      return { key, label, value, from, text: value == null ? NOT_ON_RECORD : value };
+      const value = RESOLVE[key](rec);
+      return { key, label, value, text: value == null ? NOT_ON_RECORD : value };
     }),
   };
 }
 
-/* The same nine, as [label, text, resolved] rows -- for report tables and any surface
-   that prints facts as pairs. Never filtered: the unresolved ones are the point. */
+/* The same nine, as [label, text, resolved] rows. Never filtered: the caller decides. */
 export function tenderFactRows(t) {
   return resolveTenderRow(t).params.map((p) => [p.label, p.text, p.value != null]);
-}
-
-/* A READABLE GIST, not an invented title.
- *
- * REPORTED: "the tender title are very short not understandable ... decide a format of
- * keep a title which will act as a gist and quickly understand". SAM/GePNIC titles are
- * procurement nomenclature -- "Vane Large", "Bristle Disc", "Eb Tuba" -- that names a
- * part without saying what class of thing it is or who wants it. The gist adds exactly
- * two facts the record already holds, in a fixed order, so it reads as a class and a
- * place at a glance:  <item> — <category> · <country>.
- *
- * Nothing here is composed from outside the record: category is the graded t.cat, country
- * is t.country, item is the stored title verbatim. A field the notice omits is dropped, so
- * a bare "Ammunition" tender with no country simply stays "Ammunition". The redundancy
- * guard keeps a title that already NAMES its category ("...Armoured Vehicles..." in the
- * "Protected & Armoured Vehicles" class) from repeating it. */
-const _tok = (s) => str(s).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
-
-export function tenderGist(t) {
-  const rec = t && typeof t === "object" ? t : {};
-  const item = has(rec.title) ? str(rec.title) : "";
-  if (!item) return "";
-  const titleToks = new Set(_tok(item));
-  const catToks = _tok(rec.cat);
-  const catInTitle = catToks.length > 0 && catToks.some((w) => titleToks.has(w));
-  const cat = has(rec.cat) && !catInTitle ? str(rec.cat) : null;
-  const country =
-    has(rec.country) && !titleToks.has(str(rec.country).toLowerCase()) ? str(rec.country) : null;
-  const tail = [cat, country].filter(Boolean).join(" · ");
-  return tail ? `${item} — ${tail}` : item;
-}
-
-/* A grounded one-line answer to "what is this tender about", for the At a glance panel,
- * where tenders showed no summary at all. Every clause is a stored field or is omitted --
- * buyer, item, category, country, the pipeline's own fit grade, closing date -- and the
- * value/quantity clause states the RECORD, never a number the notice does not publish. */
-export function tenderSummary(t) {
-  const rec = t && typeof t === "object" ? t : {};
-  const item = has(rec.title) ? str(rec.title) : "this requirement";
-  const buyer = has(rec.issuer) ? str(rec.issuer) : null;
-  const cat = has(rec.cat) ? str(rec.cat) : null;
-  const country = has(rec.country) ? str(rec.country) : null;
-  const where = country ? ` in ${country}` : "";
-  const catClause = cat ? ` (${cat} category)` : "";
-  const lead = buyer
-    ? `${buyer} is procuring ${item}${catClause}${where}.`
-    : `Procurement of ${item}${catClause}${where}.`;
-
-  const lean = str(rec.lean).toLowerCase();
-  const fit =
-    lean === "go" ? " Graded a strong fit for KSSL's portfolio."
-    : lean === "maybe" ? " Graded worth qualifying against KSSL's portfolio."
-    : "";
-
-  const closes = servedDeadline(rec);
-  const closeClause = closes ? ` Closes ${formatDate(closes)}.` : "";
-
-  const bits = [];
-  if (has(rec.value)) bits.push(`published value ${str(rec.value)}`);
-  if (has(rec.qty)) bits.push(`quantity ${str(rec.qty)}`);
-  const recordClause = bits.length
-    ? ` The notice states ${bits.join(" and ")}.`
-    : " Value and quantity are not disclosed in the notice.";
-
-  return `${lead}${fit}${closeClause}${recordClause}`;
 }

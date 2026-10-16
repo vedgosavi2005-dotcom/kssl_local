@@ -7,7 +7,7 @@ export const T2 = "contested";
 export const T3 = "none";
 
 export function footprintCountries(data) {
-  const clientId = (data && data.client && data.client.id) || "";
+  const clientId = (data && data.client && data.client.id) || "KSSL";
   const rows = (data && data.geoData && data.geoData[clientId]) || {};
   return new Set(Object.keys(rows).filter(Boolean));
 }

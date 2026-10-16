@@ -1,20 +1,46 @@
-import { useMemo } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
+import { daysLeft } from "../../lib/tenderCalc";
+import { formatDate } from "../../utils/formatDate";
+import { Review } from "../../components/review/Review";
+
+const has = (v) => v != null && String(v).trim() !== "";
+const cap = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
+/* The stored fit word is shown as stored; its colour class comes from the known words. */
+const fitClass = (v) => {
+  const k = String(v || "").trim().toLowerCase();
+  return k === "weak" ? "poor" : k;
+};
+
+/* "Due": the stored due_text; else a count from the stored due_date. Nothing without either. */
+const dueText = (m) => {
+  if (has(m.due)) return m.due;
+  const n = daysLeft(m.dueDate);
+  if (n === null) return "";
+  if (n === 0) return "today";
+  const d = Math.abs(n);
+  return n > 0 ? `in ${d} day${d === 1 ? "" : "s"}` : `${d} day${d === 1 ? "" : "s"} overdue`;
+};
 
 export default function TopOpportunity() {
   const { jumpTo } = useAppState();
   const { data } = useData();
+  const [openProject, setOpenProject] = useState(null);
 
   const topOpp = data.topOpportunities || {};
   const topTenders = topOpp.topTenders || [];
   const projectsBeforeTender = topOpp.projectsBeforeTender || [];
   const nextMoves = topOpp.nextMoves || [];
+  const notes = topOpp.notes || {};
 
-  const handleOpenTender = (item) => {
-    const title = item.title || item.tenderTitle;
-    if (title) {
-      jumpTo("market", "tender", { tenderTitle: title });
+  const openTender = (tenderId) => {
+    if (has(tenderId)) jumpTo("market", "tender", { tenderId });
+  };
+  const rowKeys = (fn) => (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fn();
     }
   };
 
@@ -24,33 +50,32 @@ export default function TopOpportunity() {
     if (topTenders.length) {
       sections.push({
         heading: "Top Tenders",
-        facts: topTenders.map((t, i) => [
-          `#${i + 1} ${t.title}`,
-          `${t.country || ""} · ${t.issuer || ""} · Revenue: ${t.revenue} · KSSL Fit: ${t.ksslFit} (${t.ksslModel})`,
+        facts: topTenders.map((t) => [
+          `#${t.rank ?? ""} ${t.title}`,
+          [t.country, t.issuer, t.revenue && `Revenue: ${t.revenue}`, t.ksslFit && `KSSL Fit: ${t.ksslFit}${t.ksslModel ? ` (${t.ksslModel})` : ""}`]
+            .filter(has).join(" · "),
         ]),
       });
     }
     if (projectsBeforeTender.length) {
       sections.push({
         heading: "Projects to Win Before They Tender",
-        facts: projectsBeforeTender.map((p, i) => [
-          `#${i + 1} ${p.title}`,
-          `${p.country || ""} · Stage: ${p.stage} · Revenue: ${p.revenue} · KSSL Fit: ${p.ksslFit}`,
+        facts: projectsBeforeTender.map((p) => [
+          `#${p.rank ?? ""} ${p.title}`,
+          [p.country, p.stage && `Stage: ${p.stage}`, p.revenue && `Revenue: ${p.revenue}`, p.ksslFit && `KSSL Fit: ${p.ksslFit}`]
+            .filter(has).join(" · "),
         ]),
       });
     }
     if (nextMoves.length) {
       sections.push({
         heading: "Next Moves",
-        facts: nextMoves.map((m) => [
-          m.days === 0 ? "Today" : `In ${m.days} days`,
-          `${m.action} — ${m.tenderTitle}`,
-        ]),
+        facts: nextMoves.map((m) => [dueText(m), [m.action, m.tenderTitle].filter(has).join(" - ")]),
       });
     }
     return {
       title: "Top Opportunity Intelligence",
-      subtitle: `${topTenders.length} top tenders · ${projectsBeforeTender.length} pre-tender projects · ${nextMoves.length} tactical actions`,
+      subtitle: `${topTenders.length} top tenders · ${projectsBeforeTender.length} pre-tender projects · ${nextMoves.length} next moves`,
       sections,
       payload: { topTenders, projectsBeforeTender, nextMoves },
     };
@@ -73,6 +98,8 @@ export default function TopOpportunity() {
     );
   }
 
+  const fitCell = (v) => (has(v) ? <span className={`ti-fit ${fitClass(v)}`}>{cap(v)}</span> : "—");
+
   return (
     <div className="ti-simple" aria-label="Tender intelligence">
       {/* 1. Top tenders */}
@@ -80,9 +107,7 @@ export default function TopOpportunity() {
         <div className="ovt">
           <div className="ovc-h">
             <span className="eyebrow">Top tenders</span>
-            <span className="ovc-note">
-              ranked by revenue KSSL can win × how well a KSSL model fits · revenue is an estimate
-            </span>
+            {has(notes.topTenders) ? <span className="ovc-note">{notes.topTenders}</span> : null}
           </div>
           <div className="ovt-scroll">
             <table>
@@ -103,15 +128,10 @@ export default function TopOpportunity() {
                     key={t.id || idx}
                     className="ti-row-link"
                     tabIndex={0}
-                    onClick={() => handleOpenTender(t)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleOpenTender(t);
-                      }
-                    }}
+                    onClick={() => openTender(t.tenderId)}
+                    onKeyDown={rowKeys(() => openTender(t.tenderId))}
                   >
-                    <td className="num">{idx + 1}</td>
+                    <td className="num">{t.rank ?? "—"}</td>
                     <td className="ovt-t">
                       <span className="ti-title" title={t.title}>
                         {t.title}
@@ -119,19 +139,10 @@ export default function TopOpportunity() {
                       <span className="ovt-buyer" title={t.issuer}>
                         {[t.country, t.issuer].filter(Boolean).join(" · ")}
                       </span>
+                      <Review src={t._src} />
                     </td>
-                    <td className="num">
-                      {t.status === "evaluation" ? "award pending" : t.decides || "—"}
-                    </td>
-                    <td>
-                      <span className={`ti-fit ${t.ksslFit}`}>
-                        {t.ksslFit === "strong"
-                          ? "Good"
-                          : t.ksslFit === "partial"
-                            ? "Partial"
-                            : "Not a fit"}
-                      </span>
-                    </td>
+                    <td className="num">{t.decides || "—"}</td>
+                    <td>{fitCell(t.ksslFit)}</td>
                     <td>{t.ksslModel || "—"}</td>
                     <td>{t.rivalToBeat || "—"}</td>
                     <td className="num">{t.revenue || "—"}</td>
@@ -143,14 +154,12 @@ export default function TopOpportunity() {
         </div>
       )}
 
-      {/* 2. Projects to win before they tender */}
+      {/* 2. Projects to win before they tender. A row opens the stored opportunity record. */}
       {projectsBeforeTender.length > 0 && (
         <div className="ovt">
           <div className="ovc-h">
             <span className="eyebrow">Projects to win before they tender</span>
-            <span className="ovc-note">
-              no defense procurement tender yet: armed forces spec drafting stage · revenue is an estimate
-            </span>
+            {has(notes.projects) ? <span className="ovc-note">{notes.projects}</span> : null}
           </div>
           <div className="ovt-scroll">
             <table>
@@ -166,47 +175,78 @@ export default function TopOpportunity() {
                 </tr>
               </thead>
               <tbody>
-                {projectsBeforeTender.map((p, idx) => (
-                  <tr
-                    key={p.id || idx}
-                    className="ti-row-link"
-                    tabIndex={0}
-                    onClick={() => handleOpenTender(p)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleOpenTender(p);
-                      }
-                    }}
-                  >
-                    <td className="num">{idx + 1}</td>
-                    <td className="ovt-t">
-                      <span className="ti-title" title={p.title}>
-                        {p.title}
-                      </span>
-                      <span className="ovt-buyer" title={p.issuer}>
-                        {[p.country, p.issuer].filter(Boolean).join(" · ")}
-                      </span>
-                    </td>
-                    <td className="ovt-t ti-stage">
-                      <span className="ti-title" title={p.stage}>
-                        {p.stage}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`ti-fit ${p.ksslFit}`}>
-                        {p.ksslFit === "strong"
-                          ? "Good"
-                          : p.ksslFit === "partial"
-                            ? "Partial"
-                            : "Not a fit"}
-                      </span>
-                    </td>
-                    <td>{p.ksslModel || "—"}</td>
-                    <td>{p.rivalToBeat || "—"}</td>
-                    <td className="num">{p.revenue || "—"}</td>
-                  </tr>
-                ))}
+                {projectsBeforeTender.map((p, idx) => {
+                  const isOpen = openProject === p.id;
+                  const toggle = () => setOpenProject(isOpen ? null : p.id);
+                  const o = p.opportunity;
+                  return (
+                    <Fragment key={p.id || idx}>
+                      <tr
+                        className="ti-row-link"
+                        tabIndex={0}
+                        aria-expanded={isOpen}
+                        onClick={toggle}
+                        onKeyDown={rowKeys(toggle)}
+                      >
+                        <td className="num">{p.rank ?? "—"}</td>
+                        <td className="ovt-t">
+                          <span className="ti-title" title={p.title}>
+                            {p.title}
+                          </span>
+                          <span className="ovt-buyer" title={p.issuer}>
+                            {[p.country, p.issuer].filter(Boolean).join(" · ")}
+                          </span>
+                          <Review src={p._src} />
+                        </td>
+                        <td className="ovt-t ti-stage">
+                          <span className="ti-title" title={p.stage}>
+                            {p.stage}
+                          </span>
+                        </td>
+                        <td>{fitCell(p.ksslFit)}</td>
+                        <td>{p.ksslModel || "—"}</td>
+                        <td>{p.rivalToBeat || "—"}</td>
+                        <td className="num">{p.revenue || "—"}</td>
+                      </tr>
+                      {isOpen ? (
+                        <tr>
+                          <td colSpan={7} style={{ padding: "12px 16px", background: "var(--d-bg-2)", whiteSpace: "normal" }}>
+                            {o ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "12px", lineHeight: 1.5 }}>
+                                <Review src={o._src} />
+                                {[
+                                  ["Kind", o.kind],
+                                  ["Description", o.description],
+                                  ["Scope", o.scope],
+                                  ["Contractor", o.contractor],
+                                  ["Location", o.location],
+                                  ["Latest milestone", o.milestone],
+                                  ["Fit rationale", o.rationale],
+                                  ["Rival product", o.rivalProduct],
+                                ].filter(([, v]) => has(v)).map(([k, v]) => (
+                                  <div key={k}><span className="tpk">{k}</span> {v}</div>
+                                ))}
+                                {(p.updates || []).map((u, i) => (
+                                  <div key={`u${i}`}>
+                                    <span className="tpk">{[u.type, u.date && formatDate(u.date)].filter(has).join(" · ")}</span>{" "}
+                                    {[u.headline, u.narrative].filter(has).join(" - ")}
+                                  </div>
+                                ))}
+                                {(p.sources || []).filter((s) => has(s.url)).map((s, i) => (
+                                  <div key={`s${i}`}>
+                                    <a href={s.url} rel="noopener noreferrer" target="_blank">↗ {s.label || s.url}</a>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="ovt-none">No opportunity record on file for this project</span>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -218,7 +258,7 @@ export default function TopOpportunity() {
         <div className="ovt">
           <div className="ovc-h">
             <span className="eyebrow">Next moves</span>
-            <span className="ovc-note">what to do this week, soonest first</span>
+            {has(notes.nextMoves) ? <span className="ovc-note">{notes.nextMoves}</span> : null}
           </div>
           <div className="ovt-scroll">
             <table>
@@ -230,30 +270,29 @@ export default function TopOpportunity() {
                 </tr>
               </thead>
               <tbody>
-                {nextMoves.map((m, idx) => (
-                  <tr
-                    key={idx}
-                    className="ti-row-link"
-                    tabIndex={0}
-                    onClick={() => handleOpenTender({ title: m.tenderTitle })}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleOpenTender({ title: m.tenderTitle });
-                      }
-                    }}
-                  >
-                    <td className="num">
-                      {m.days === 0 ? "today" : `in ${m.days} day${m.days === 1 ? "" : "s"}`}
-                    </td>
-                    <td>{m.action}</td>
-                    <td className="ovt-t">
-                      <span className="ti-title" title={m.tenderTitle}>
-                        {m.tenderTitle}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {nextMoves.map((m, idx) => {
+                  const go = has(m.tenderId) ? () => openTender(m.tenderId) : undefined;
+                  return (
+                    <tr
+                      key={m.id || idx}
+                      className={go ? "ti-row-link" : undefined}
+                      tabIndex={go ? 0 : undefined}
+                      onClick={go}
+                      onKeyDown={go ? rowKeys(go) : undefined}
+                    >
+                      <td className="num">{dueText(m) || "—"}</td>
+                      <td>
+                        {m.action}
+                        <Review src={m._src} />
+                      </td>
+                      <td className="ovt-t">
+                        <span className="ti-title" title={m.tenderTitle}>
+                          {m.tenderTitle}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

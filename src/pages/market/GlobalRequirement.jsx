@@ -2,11 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { smartTitleCase } from "../../lib/profile";
+import { Review } from "../../components/review/Review";
+
+const has = (v) => v != null && String(v).trim() !== "";
+const cap = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
+/* The fit word is shown as stored; its CSS class is the stored word, lower-cased. */
+const fitClass = (v) => (has(v) ? String(v).trim().toLowerCase() : "");
 
 export default function GlobalRequirement() {
   const { data } = useData();
   const { setScope } = useAppState();
-  const clientName = (data?.client && (data.client.short || data.client.name)) || "";
+  const clientName = (data?.client && (data.client.short || data.client.name)) || "KSSL";
 
   const reqList = useMemo(() => {
     return data?.globalRequirements || [];
@@ -38,7 +44,7 @@ export default function GlobalRequirement() {
     return reqList
       .filter((r) => !country || r.country === country)
       .filter((r) => !cat || r.cat === cat)
-      .sort((a, b) => (Number(a.dl) || 999) - (Number(b.dl) || 999));
+      .sort((a, b) => (a.dl == null) - (b.dl == null) || (a.dl || 0) - (b.dl || 0));
   }, [reqList, country, cat]);
 
   // Selected requirement record
@@ -65,13 +71,16 @@ export default function GlobalRequirement() {
         h: "Selected Requirement",
         rows: [
           ["Title", selectedReq.title],
-          ["Buyer", selectedReq.buyer || "—"],
-          ["Country", selectedReq.country || "—"],
-          ["Category", selectedReq.cat || "—"],
-          ["Estimated Value", selectedReq.value || "—"],
-          ["KSSL Fit", `${selectedReq.ksslFit || "—"} (${selectedReq.ksslModel || "—"})`],
-          ["Description", selectedReq.desc || "—"],
-        ],
+          ["Buyer", selectedReq.buyer],
+          ["Country", selectedReq.country],
+          ["Region", selectedReq.region],
+          ["Category", selectedReq.cat],
+          ["Estimated Value", selectedReq.value],
+          ["Deadline", selectedReq.deadline],
+          ["Status", selectedReq.status],
+          ["KSSL Fit", [selectedReq.ksslFit, selectedReq.ksslModel].filter(has).join(" · ")],
+          ["Description", selectedReq.desc],
+        ].filter(([, v]) => has(v)),
       });
       if (Array.isArray(selectedReq.specs) && selectedReq.specs.length) {
         sections.push({ h: "Technical Specifications", rows: selectedReq.specs });
@@ -84,7 +93,7 @@ export default function GlobalRequirement() {
       h: `Requirements List (${filteredList.length})`,
       rows: filteredList.map((r) => [
         r.title,
-        `${r.country} · ${r.buyer} · ${r.cat} · ${r.value} · Fit: ${r.ksslFit} (${r.ksslModel})`,
+        [r.country, r.buyer, r.cat, r.value, has(r.ksslFit) ? `Fit: ${r.ksslFit}${has(r.ksslModel) ? ` (${r.ksslModel})` : ""}` : ""].filter(has).join(" · "),
       ]),
     });
     return {
@@ -201,28 +210,8 @@ export default function GlobalRequirement() {
         <div id="tp-cards">
           {filteredList.length ? (
             filteredList.map((row) => {
-              const rawFit = row.ksslFit || row.fit || "strong";
-              const s = String(rawFit).toLowerCase().trim();
-              const fitLevel =
-                s === "strong" || s === "high" || s === "good"
-                  ? "strong"
-                  : s === "partial" || s === "mid"
-                    ? "partial"
-                    : "weak";
-              const barWidth = fitLevel === "strong" ? "100%" : fitLevel === "partial" ? "65%" : "30%";
-              const fitLabel = fitLevel;
-
-              const dlNum = Number(row.dl);
-              const isUrgent = !isNaN(dlNum) && dlNum <= 7;
-              const isSoon = !isNaN(dlNum) && dlNum <= 14 && dlNum > 7;
-              const dlCls = isUrgent ? "urgent" : isSoon ? "soon" : "normal";
-
-              const countdownText =
-                row.dl != null && !isNaN(dlNum)
-                  ? dlNum === 0
-                    ? "today"
-                    : `${dlNum} day${dlNum === 1 ? "" : "s"} left`
-                  : row.deadline || "Draft Stage";
+              /* the stored fit word, as stored; no word stored, no fit line */
+              const fit = row.ksslFit;
 
               return (
                 <div
@@ -240,39 +229,31 @@ export default function GlobalRequirement() {
                 >
                   <div className="trow1">
                     <div className="ttl">{smartTitleCase(row.title)}</div>
-                    <span className={`ddl ${dlCls}`}>{countdownText}</span>
+                    {has(row.deadline) ? <span className="ddl normal">{row.deadline}</span> : null}
                   </div>
 
                   <div className="tpgrid">
-                    <div className="tpp">
-                      <span className="tpk">Buyer</span>
-                      <span className="tpv" title={row.buyer}>{row.buyer || "—"}</span>
-                    </div>
-                    <div className="tpp">
-                      <span className="tpk">Country</span>
-                      <span className="tpv">{row.country || "—"}</span>
-                    </div>
-                    <div className="tpp">
-                      <span className="tpk">Category</span>
-                      <span className="tpv" title={row.cat}>{row.cat || "—"}</span>
-                    </div>
-                    <div className="tpp">
-                      <span className="tpk">Value</span>
-                      <span className="tpv">{row.value || "not disclosed"}</span>
-                    </div>
-                    <div className="tpp">
-                      <span className="tpk">Status</span>
-                      <span className="tpv">{row.status || "Requirement Draft"}</span>
-                    </div>
+                    {[
+                      ["Buyer", row.buyer],
+                      ["Country", row.country],
+                      ["Category", row.cat],
+                      ["Value", row.value],
+                      ["Status", row.status],
+                    ].filter(([, v]) => has(v)).map(([k, v]) => (
+                      <div className="tpp" key={k}>
+                        <span className="tpk">{k}</span>
+                        <span className="tpv" title={v}>{v}</span>
+                      </div>
+                    ))}
                   </div>
 
-                  <div className="fitbar">
-                    <span className="fitlab">{clientName} fit</span>
-                    <span className="fittrack">
-                      <i className={fitLevel} style={{ width: barWidth }} />
-                    </span>
-                    <span className={`fitpct grade ${fitLevel}`}>{fitLabel}</span>
-                  </div>
+                  {has(fit) ? (
+                    <div className="fitbar">
+                      <span className="fitlab">{clientName} fit</span>
+                      <span className={`fitpct grade ${fitClass(fit)}`}>{cap(fit)}</span>
+                    </div>
+                  ) : null}
+                  <Review src={row._src} />
                 </div>
               );
             })
@@ -303,9 +284,10 @@ export default function GlobalRequirement() {
                 </div>
                 <span className="eyebrow">Requirement Intelligence</span>
                 <div className="ct">{smartTitleCase(selectedReq.title)}</div>
+                <Review src={selectedReq._src} />
                 <div className="sub" style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "8px" }}>
                   <div>{[selectedReq.buyer, selectedReq.country, selectedReq.value].filter(Boolean).join(" · ")}</div>
-                  <div>{[selectedReq.cat, selectedReq.deadline || selectedReq.status].filter(Boolean).join(" · ")}</div>
+                  <div>{[selectedReq.region, selectedReq.cat, selectedReq.deadline, selectedReq.status].filter(Boolean).join(" · ")}</div>
                 </div>
               </div>
 
@@ -321,33 +303,32 @@ export default function GlobalRequirement() {
               {Array.isArray(selectedReq.specs) && selectedReq.specs.length > 0 && (
                 <div className="tp-asmt-sec">
                   <span className="eyebrow">Target Specifications</span>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px", marginTop: "8px" }}>
+                  <div style={{ marginTop: "8px" }}>
                     {selectedReq.specs.map(([label, val], idx) => (
-                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--d-line)", paddingBottom: "6px" }}>
-                        <span style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-4)" }}>{label}</span>
-                        <span style={{ fontFamily: "var(--sans)", fontSize: "12px", color: "var(--d-txt)", fontWeight: 500, textAlign: "right" }}>{val}</span>
+                      <div className="kv" key={idx}>
+                        <span className="k">{label}</span>
+                        <span className="v">{val}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* Strategic Fit */}
-              <div className="tp-asmt-sec">
-                <span className="eyebrow">{clientName} Platform Match</span>
-                <div className="tp-fit-verdict" style={{ textTransform: "capitalize" }}>
-                  {[selectedReq.ksslFit, selectedReq.ksslModel].filter(Boolean).join(" Fit · ")}
+              {/* Strategic Fit: stored fit word and model only */}
+              {has(selectedReq.ksslFit) || has(selectedReq.ksslModel) ? (
+                <div className="tp-asmt-sec">
+                  <span className="eyebrow">{clientName} Platform Match</span>
+                  <div className="tp-fit-verdict">
+                    {[has(selectedReq.ksslFit) ? `${cap(selectedReq.ksslFit)} fit` : "", selectedReq.ksslModel].filter(has).join(" · ")}
+                  </div>
                 </div>
-              </div>
+              ) : null}
 
               {/* Strategic Assessment */}
               {selectedReq.strategicAssessment && (
                 <div className="tp-asmt-sec">
                   <span className="eyebrow">Strategic Assessment</span>
                   <div className="cd-prose">{selectedReq.strategicAssessment}</div>
-                  <div className="pj-note" style={{ marginTop: "8px", fontSize: "11px", color: "var(--d-txt-4)", fontStyle: "italic" }}>
-                    The analyst's read for {clientName}, from the dataset's record of this requirement.
-                  </div>
                 </div>
               )}
 
@@ -356,11 +337,11 @@ export default function GlobalRequirement() {
                 <div className="tp-asmt-sec">
                   <span className="eyebrow">Source</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "6px" }}>
-                    {selectedReq.sources.map((src, i) => (
+                    {selectedReq.sources.filter((src) => has(src.url)).map((src, i) => (
                       <a
                         key={i}
                         className="ovt-host"
-                        href={src.url || "#"}
+                        href={src.url}
                         rel="noreferrer"
                         style={{ color: "var(--fav-badge)", textDecoration: "none", fontSize: "11px", fontFamily: "var(--mono)" }}
                         target="_blank"

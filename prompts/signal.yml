@@ -1,0 +1,106 @@
+id: signal
+title: Competitive signal from a news article
+version: 1
+fills: [competitive_signal, competitive_signal_detail, competitive_signal_evidence]
+shows_on: Competitive Overview cards + signal drawer
+cadence: daily                   # routine: run for every new article since the last run
+# model / web_search: inherit from _shared.yml (the article is the only document)
+
+subject:                         # one run per row; key = what makes a run unique
+  # company news only: prompts/news_merge.py also writes every product story to the company table, so reading
+  # competitive_product_news here would signal the same story twice. Stories the news prompt categorised as
+  # Stock & market / Non-defence business / Other are not signals.
+  key: article_id
+  query: |
+    SELECT n.article_id, n.headline, n.article_url, n.publisher, n.published_date,
+           c.display_name AS competitor
+    FROM staging.competitive_news_article n
+    JOIN staging.competitive_competitor c ON c.competitor_id = n.competitor_id
+    WHERE n.article_url IS NOT NULL
+      AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business', 'Other')
+    ORDER BY n.published_date DESC NULLS LAST
+  documents:
+    - from: url                  # the runner fetches the article text
+      field: article_url
+
+context: [client, client_products, competitors, categories]
+
+task: |
+  TASK signal — decide whether one news article is a competitive signal for {{client.name}}, and
+  if so fill one signal card.
+
+  ARTICLE: "{{subject.headline}}" — {{subject.publisher}}, {{subject.published_date}}
+  URL: {{subject.article_url}}
+  The article was found while tracking: {{subject.competitor}}
+
+  STEP 1 — RELEVANCE. It is a signal only if all three hold:
+   a) it reports a concrete event: contract, order, selection, delivery, induction, test or
+      trial, product launch, partnership or joint venture, acquisition, new facility or capacity,
+      export approval. Opinion, forecasts and market commentary are not events;
+   b) the company that acts is one of the COMPETITORS below (match name or short name).
+      An article about {{client.name}} itself is not a competitive signal;
+   c) the event falls in one of the CATEGORIES below.
+  If any test fails: "records": [] and "skip_reason" = one sentence naming the failed test.
+
+  STEP 2 — one record, table competitive_signal:
+   - ref_competitor: the competitor that acts, exactly as in the COMPETITORS list
+   - title: the event as a headline, max 120 characters, in the article's words
+   - summary: JUDGEMENT. 1-2 sentences, max 300 characters: what happened and what it means
+     for {{client.name}} in that category
+   - classification: JUDGEMENT. "threat" if the event directly strengthens the competitor with
+     customers {{client.name}} sells to in a category where {{client.name}} has a product
+     (CLIENT PRODUCTS); "watch" if relevant but indirect (test, launch, R&D, partnership, new
+     capacity, a market {{client.name}} does not serve). Allowed: threat | watch
+   - event_date: the date the event happened as the article states it; else the published date
+     (say so in _precision)
+   - ref_category: one name from CATEGORIES, exactly as written
+   children:
+   competitive_signal_detail (exactly one):
+   - drawer_title: the title, may be longer (max 200 characters)
+   - impact_eyebrow: JUDGEMENT. 2-5 words naming the impact, e.g. "Order won in artillery"
+   - why_it_matters: JUDGEMENT. 2-3 sentences: how this affects {{client.name}}, naming the
+     {{client.name}} product(s) from CLIENT PRODUCTS it touches, if any
+   - what_article_says: 2-3 sentences summarising only what the article states
+   - source_name: the publisher; source_url: the article URL
+   competitive_signal_evidence (3-8 rows):
+   - evidence_group: "fact" (a figure or named detail stated in the article: quantity, value,
+     customer, date, place) or "key_point" (a sentence-level takeaway stated in the article).
+     Allowed: fact | key_point
+   - label: 1-4 words ("Customer", "Order value", "Quantity", "Delivery")
+   - value: the stated value, as written
+   - quote: the verbatim sentence that states it; source_url: the article URL
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS:
+  {{context.client_products}}
+  COMPETITORS:
+  {{context.competitors}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENT (article text):
+  {{documents}}
+
+output:                          # what the loader accepts; anything else is rejected
+  competitive_signal:
+    card: true                   # one review card per record
+    key: [prompt_id, subject]    # same article -> same signal id (a re-run updates it)
+    columns:
+      title: {required: true, max: 120}
+      summary: {judgement: true, max: 300}
+      classification: {required: true, judgement: true, enum: [threat, watch]}
+      event_date: {type: date}
+      category: {from_ref: ref_category}
+      company_id: {from_ref: ref_competitor}
+    loader:                      # columns the loader fills (bookkeeping, not data)
+      sequence_no: rank_by_event_date_desc
+    children:
+      competitive_signal_detail:
+        columns: [drawer_title, impact_eyebrow, why_it_matters, what_article_says, source_name, source_url]
+        required: [drawer_title]
+        judgement: [impact_eyebrow, why_it_matters]
+      competitive_signal_evidence:
+        columns: [evidence_group, label, value, quote, source_url]
+        required: [evidence_group, label]
+        enum: {evidence_group: [fact, key_point]}
+        loader: {evidence_id: new_id, display_order: index}

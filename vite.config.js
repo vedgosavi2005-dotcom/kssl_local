@@ -1,14 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fetchTrending } from "./src/lib/pulseFetch.js";
 
 const apiTarget = process.env.KSSL_API_TARGET || "http://127.0.0.1:8600";
+const reviewApiTarget = process.env.KSSL_API_TARGET || "http://127.0.0.1:8601";
 
 /* KSSL_Deploy frontend. Dev proxies /api to the FastAPI backend on :8600;
    the production build fetches /api relative to its own origin, so any static
    server that also routes /api to the backend serves it unchanged. */
 
-/* The dataset always comes from the PostgreSQL-backed API; a checked-in snapshot or
-   external enrichment endpoint would make an empty database look populated. */
+/* Serve only the live company-pulse endpoint from the dev and preview servers. The
+   dataset always comes from the PostgreSQL-backed API; a checked-in snapshot would
+   make an empty database look populated. */
 async function apiMiddleware(req, res, next) {
   if (req.url && req.url.startsWith("/api/img")) {
     /* Image proxy: many publishers block hotlinking (Referer/UA checks), so an
@@ -34,10 +37,34 @@ async function apiMiddleware(req, res, next) {
       return res.end("img fetch failed");
     }
   }
+  if (req.url && req.url.startsWith("/api/pulse")) {
+    try {
+      const q = new URL(req.url, "http://localhost").searchParams;
+      const cid = q.get("cid") || "";
+      const name = q.get("name") || "";
+      const product = q.get("product") || "";
+      /* Decision: live Google News headlines stay (not from the DB, not reviewed); stock
+         is hidden, so no quote is fetched. */
+      const data = { stock: null, trending: await fetchTrending(name, product), fetchedAt: new Date().toISOString() };
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "public, max-age=300"); // 5 min
+      return res.end(JSON.stringify(data));
+    } catch (e) {
+      res.statusCode = 200; // never break the page on a data-source hiccup
+      res.setHeader("Content-Type", "application/json");
+      return res.end(JSON.stringify({ stock: null, trending: [], error: String((e && e.message) || e) }));
+    }
+  }
   return next();
 }
 
-export default defineConfig({
+/* `vite --mode review` (npm run dev:review): the review copy on 127.0.0.1:5180, proxying /api to
+   the review backend (KSSL_VIEW=review, :8601). VITE_REVIEW=1 is defined here (no .env file), so
+   src/components/review/Review.jsx renders its controls; every other mode renders nothing there. */
+export default defineConfig(({ mode }) => {
+  const review = mode === "review";
+  return {
+  define: review ? { "import.meta.env.VITE_REVIEW": JSON.stringify("1") } : {},
   plugins: [
     react(),
     {
@@ -59,14 +86,15 @@ export default defineConfig({
     proxy: { "/api": { target: apiTarget, changeOrigin: true } },
   },
   server: {
-    port: 5178,
-    host: true,
+    port: review ? 5180 : 5178,
+    host: review ? "127.0.0.1" : true,
     strictPort: true,
     proxy: {
       "/api": {
-        target: apiTarget,
+        target: review ? reviewApiTarget : apiTarget,
         changeOrigin: true,
       },
     },
   },
+  };
 });

@@ -3,7 +3,7 @@ import SignalCard from "../../components/signalCard/SignalCard";
 import DetailPanel from "../../components/detailPanel/DetailPanel";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import FeedFilters from "../../components/subHead/FeedFilters";
-import { useAppState, useHeaderReport } from "../../state/AppState";
+import { useAppState, useHeaderReport, PILLAR_LABEL } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { OVERVIEW_VIEW } from "../../lib/route";
 import {
@@ -17,6 +17,7 @@ import {
   writeFeedPage,
   SEQ_LABEL,
   TILE_LABELS,
+  DIR_WORD,
 } from "../../lib/overview";
 
 /* sessionStorage, guarded: a private window throws on the property itself */
@@ -61,17 +62,15 @@ export default function Overview({
   }, [selected, onSelectionChange]);
 
   const cfg = data.overviewConfig[pillarKey] || data.overviewConfig.competitive;
-  const shortlist = cfg.shortlist || null;
-  /* The card's status word. Technology cards are grouped by kind (rival/adopt), not by
-     dir, so a flat dir->word map stamped the same "Advancement" on every card; read the
-     tag word when the config carries one. Every other pillar keeps the dir map. */
-  /* A tag word that is present but empty means "no badge for this kind" -- it must not
-     fall through to the dir word. */
-  const labelFor = (c) =>
-    cfg.tagWord && c.kind && c.kind in cfg.tagWord ? cfg.tagWord[c.kind] : cfg.dirWord[c.dir] || c.dir;
+  /* The card's status word. A Technology card's stream (kind) may carry its own word (an empty
+     word = no badge). Otherwise the stored direction code's word, or -- for a code not listed
+     -- the stored classification as it is. */
+  const labelFor = (c) => {
+    if (cfg.tagWord && c.kind && c.kind in cfg.tagWord) return cfg.tagWord[c.kind];
+    return (cfg.dirWord && cfg.dirWord[c.dir]) || c.classification || c.dir || "";
+  };
   // the badge's colour class: a config may repaint a dir without changing the dir itself
   const badgeFor = (c) => (cfg.badgeClass && cfg.badgeClass[c.dir]) || c.dir;
-  const clientLabel = (data.client && (data.client.short || data.client.name)) || "";
   // `data` is a dependency because the sort now reads the same date the card prints,
   // which lives in data.details, not on the card
   const feed = useMemo(() => buildFeed(cfg, seqMode, data), [cfg, seqMode, data]);
@@ -119,7 +118,9 @@ export default function Overview({
     if (activeQ) {
       const qTokens = activeQ.split(/\s+/).filter(Boolean);
       const detail = (data.details && data.details[card.id]) || {};
-      const fullText = `${card.title || ""} ${card.company || ""} ${card.tags || ""} ${card.sowhat || ""} ${card.ago || ""} ${detail.facts || ""} ${detail.what || ""} ${detail.why || ""}`.toLowerCase();
+      const factText = (detail.facts || []).map((f) => `${f[0]} ${f[1]}`).join(" ");
+      const pointText = (detail.points || []).map((p) => p.text).join(" ");
+      const fullText = `${card.title || ""} ${card.company || ""} ${card.tags || ""} ${card.sowhat || ""} ${card.ago || ""} ${factText} ${pointText} ${detail.what || ""} ${detail.why || ""}`.toLowerCase();
       if (!qTokens.every((tok) => fullText.includes(tok))) return false;
     }
     return true;
@@ -138,7 +139,7 @@ export default function Overview({
        said "Competitive / Overview" on all three pillars, so a technology signal was
        announced under a page it is not listed on (FE 18). */
     setScope("signal", { type: "signal", data: detail }, {
-      pillar: pillarKey,
+      pillar: PILLAR_LABEL[pillarKey] || "Competitive",
       view: cfg.title || "Overview",
       selection: detail.title,
     });
@@ -225,15 +226,10 @@ export default function Overview({
           id: c.id,
           title: c.title || null,
           company: c.company || null,
-          direction: c.dir || null,
-          /* The feed is sequenced by these, so an exported report that omitted them
-             could not be checked against the order it was exported from. null severity
-             is the "not assessed" state, not a missing field. */
-          severity: c.severity || null,
-          impact: c.impact || null,
-          date: signalDate(c, data) || null,
+          direction: c.classification || c.dir || null,
+          sequence: c.seq != null ? c.seq : null,
+          date: signalDate(c) || null,
           sowhat: c.sowhat || null,
-          url: c.url || null,
         })),
       },
     };
@@ -322,14 +318,6 @@ export default function Overview({
         />
       </div>
 
-      {/* The "30 of 82 ... from 1,212 served" line is OFF at the operator's request: it
-          is delivered to a client, and a page explaining its own arithmetic reads as
-          working notes. The honesty it was carrying has moved somewhere better -- the
-          rail's Overview badge now counts what the overview SHOWS (lib/overview.navCounts)
-          instead of the whole served lane, so a 30-card overview says 30 rather than
-          1,212. A number that is simply correct beats a sentence apologising for one that
-          was not. `cfg.shortlist` is still on the config and still tested. */}
-
       <div className={`ov-body${selected ? " has-sel" : ""}`}>
         <div className="feed v-overview" id="feed">
           {isFiltered ? (
@@ -342,7 +330,7 @@ export default function Overview({
                   fresh={c.id === firstVisibleId}
                   key={c.id}
                   onSelect={select}
-                  when={signalDate(c, data)}
+                  when={signalDate(c)}
                   selected={selected === c.id}
                 />
               ))}
@@ -365,7 +353,7 @@ export default function Overview({
                     fresh={c.id === firstVisibleId}
                     key={c.id}
                     onSelect={select}
-                    when={signalDate(c, data)}
+                    when={signalDate(c)}
                     selected={selected === c.id}
                   />
                 ))}
@@ -432,12 +420,13 @@ export default function Overview({
             <DetailPanel
               detail={data.details[selected]}
               onClose={() => setSelected(null)}
-              /* a pillar that labels rows by kind (Technology) gives the panel the same label */
+              /* the panel says what the row says: the same word, and the direction's colour
+                 (a Technology adoptable row reads green, a competitor advance has no pill) */
               badge={(() => {
-                if (!cfg.tagWord) return undefined;
                 const card = (cfg.cards || []).find((c) => c.id === selected);
-                if (!card || !card.kind) return undefined;
-                return { word: labelFor(card), cls: card.kind === "adopt" ? "fav" : null };
+                if (!card) return undefined;
+                if (card.kind) return { word: labelFor(card), cls: card.kind === "adopt" ? "fav" : null };
+                return { word: DIR_WORD[card.dir] || card.classification || "", cls: card.dir };
               })()}
             />
           </ErrorBoundary>
