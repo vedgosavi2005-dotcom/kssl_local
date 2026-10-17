@@ -1,23 +1,26 @@
-"""Area D: Market (tenders, top opportunity, global requirements) and Technology (innovations).
+"""Area D: Market (tenders, top opportunity, global requirements, awards, market cards) and Technology
+(innovations, categories, patent-field meta).
 
-Audit: docs/audit_v2/D_market_technology.md. Every value is a stored column; nothing is defaulted.
-Numbers are served as numbers, dates as ISO strings, missing values as "" / None.
+Shapes follow docs/ui_port/MAPPING.md section A (tenders, tpAllCountries, tpAllCats, topOpportunities, awards,
+marketCards + details, globalRequirements, innovations, techCats, techAreaMeta). Every value is a stored column;
+nothing is defaulted. Numbers are served as numbers, dates as ISO strings, missing values as None. No currency is
+ever converted (ruling R9): a tender / award value ships as its stored amount, currency and text.
 
 Enumerations the UI expects (stored text, compared case-insensitively; unknown values are shown as stored):
   market_tender.status          open | closing | awarded | closed   (awarded / closed decide the Awarded / Closed
                                 tabs; every other value is an open tender)
   market_tender.lean_code       go | maybe | pass | won | closed    (colour of the bid-assessment band only)
-  market_tender.kssl_fit,       strong | partial | weak             (bar colour only; the word shown is the stored text)
+  market_tender.kssl_fit,       strong | partial | weak             (shipped as stored, fields fit and clientFit)
    *.kssl_fit, fit_grade, fit_label
   market_tender.url_kind        notice | portal | award             (label of the "open the tender" button)
+  market_tender_product_match_line.line_label   up | down           (loader convention)
   technology_innovation.maturity           free text; lab | dev | prod | fielded only pick a chip colour
   technology_innovation.client_position    behind | parity | ahead (chip colour; the words shown are position_label)
-  technology_innovation.status             free text (record state, not shown)
 """
 
 from collections import defaultdict
 
-from backend.common import first_nonempty, table, text
+from backend.common import first_nonempty, slug, table, text
 
 
 def group(rows, key):
@@ -48,6 +51,10 @@ def clean(values):
     return [v for v in values if v not in (None, "")]
 
 
+def _latest(rows, key):
+    return sorted(rows, key=lambda r: text(r.get(key)))[-1:] or [{}]
+
+
 # ---------------------------------------------------------------- tenders
 
 def build_tenders(database):
@@ -59,59 +66,57 @@ def build_tenders(database):
     lines = group(table(database, s, "market_tender_product_match_line"), "tender_match_id")
     reqs = group(table(database, s, "market_tender_requirement"), "tender_id")
     sources = group(table(database, s, "market_tender_source"), "tender_id")
-    portals = {text(p.get("portal_name")).lower(): p for p in table(database, s, "market_tender_portal")}
+    moves = group(table(database, s, "market_next_move"), "tender_id")
 
     tenders = []
     for row in table(database, s, "market_tender"):
         tid = text(row.get("tender_id"))
         if not tid:
             continue
-        window = sorted(windows.get(tid, []), key=lambda w: text(w.get("as_of_date")))[-1:] or [{}]
-        window = window[0]
-        fit = sorted(fits.get(tid, []), key=lambda f: text(f.get("assessed_at")))[-1:] or [{}]
-        fit = fit[0]
+        window = _latest(windows.get(tid, []), "as_of_date")[0]
+        fit = _latest(fits.get(tid, []), "assessed_at")[0]
 
-        requirements = []
+        req = []
         for r in ordered(reqs.get(tid, []), "display_order"):
             quantity = r.get("quantity")
-            rows = clean([
-                ("Description", text(r.get("description"))),
-                ("Scope", text(r.get("scope_text"))),
-                ("Note", text(r.get("requirement_note"))),
-                ("Equipment", text(r.get("equipment_scope"))),
-                ("Rating", text(r.get("rating_band"))),
-                ("Use case", text(r.get("use_case"))),
-                ("Quantity", " ".join(clean([text(quantity) if quantity is not None else "", text(r.get("quantity_unit"))]))),
-                (text(r.get("scope_bullet_label")) or "Detail", text(r.get("scope_bullet_value"))),
-                ("Category", text(r.get("category_text"))),
-                ("Stated in", text(r.get("source_text"))),
-            ])
-            requirements.append({
-                "type": text(r.get("requirement_type")),
-                "rows": [list(p) for p in rows if p[1]],
-                "_src": src("market_tender_requirement", "requirement_id", r.get("requirement_id")),
-            })
+            # row key = the source column name (a code the UI maps to its chrome words), or the stored
+            # scope_bullet_label; the backend writes no English label (ruling R12)
+            req.extend([list(p) for p in [
+                ("description", r.get("description")),
+                ("scope_text", r.get("scope_text")),
+                ("requirement_note", r.get("requirement_note")),
+                ("equipment_scope", r.get("equipment_scope")),
+                ("rating_band", r.get("rating_band")),
+                ("use_case", r.get("use_case")),
+                ("quantity", " ".join(clean([text(quantity) if quantity is not None else "", r.get("quantity_unit")])) or None),
+                (r.get("scope_bullet_label"), r.get("scope_bullet_value")),
+                ("category_text", r.get("category_text")),
+                ("source_text", r.get("source_text")),
+            ] if p[1]])
+        closing = first_nonempty(row, "closing_date") or window.get("closing_date")
+        if row.get("published_date"):
+            req.append(["published_date", row.get("published_date")])
+        if closing:
+            req.append(["closing_date", closing])
 
         product_matches = []
         for m in ordered(matches.get(tid, []), "display_order"):
+            pct = m.get("fit_percent")
             product_matches.append({
-                "n": text(m.get("match_label")),
-                "fit": text(m.get("fit_grade")),
-                "percent": m.get("fit_percent"),
-                "lines": [
-                    {"label": text(l.get("line_label")), "value": text(l.get("line_value"))}
-                    for l in ordered(lines.get(text(m.get("tender_match_id")), []), "display_order")
-                ],
+                "n": m.get("match_label"),
+                "fit": m.get("fit_grade"),
+                "pct": None if pct is None else f"{int(pct) if pct == int(pct) else pct}%",
+                "lines": [[l.get("line_label"), l.get("line_value")]
+                          for l in ordered(lines.get(text(m.get("tender_match_id")), []), "display_order")],
                 "_src": src("market_tender_product_match", "tender_match_id", m.get("tender_match_id")),
             })
 
         competitor_fit = [
             {
-                "name": text(c.get("competitor_name")),
-                "fit": text(c.get("fit_label")),
-                "products": text(first_nonempty(c, "competitor_product_display", "competitor_products_text")),
-                "rationale": text(c.get("fit_rationale")),
-                "rank": c.get("rank_position"),
+                "company": c.get("competitor_name"),
+                "products": clean([first_nonempty(c, "competitor_product_display", "competitor_products_text")]),
+                "fit": c.get("fit_label"),
+                "why": c.get("fit_rationale"),
                 "_src": src("market_tender_competitor_fit", "competitor_fit_id", c.get("competitor_fit_id")),
             }
             for c in ordered(comps.get(tid, []), "rank_position")
@@ -119,64 +124,49 @@ def build_tenders(database):
 
         srcs = []
         for sr in sorted(sources.get(tid, []), key=lambda x: not x.get("is_primary")):
-            portal = portals.get(text(sr.get("portal_name")).lower())
             srcs.append({
-                "label": text(first_nonempty(sr, "portal_name", "publisher")),
-                "url": text(sr.get("source_url")),
-                "publisher": text(sr.get("publisher")),
-                "portal": text(sr.get("portal_name")),
-                "kind": text(sr.get("source_type")),
-                "primary": bool(sr.get("is_primary")),
-                "note": text(sr.get("access_note")),
-                "retrievedAt": text(sr.get("retrieved_at")),
-                "portalAccess": text(portal.get("access_status")) if portal else "",
-                "portalRegistration": portal.get("registration_required") if portal else None,
-                "portalSubmission": text(portal.get("submission_method")) if portal else "",
+                "label": first_nonempty(sr, "portal_name", "publisher"),
+                "url": sr.get("source_url"),
                 "_src": src("market_tender_source", "source_id", sr.get("source_id")),
             })
 
+        actions = [{"do": m.get("action_text"), "due": m.get("due_date")} for m in ordered(moves.get(tid, []), "sequence")]
+        lo, hi = fit.get("revenue_estimate_min"), fit.get("revenue_estimate_max")
+        kssl_fit = first_nonempty(row, "kssl_fit") or fit.get("kssl_fit")
+        revenue_text = first_nonempty(row, "expected_revenue_text") or fit.get("revenue_estimate_text")
         quantity = row.get("quantity")
         tenders.append({
             "id": tid,
             "_src": src("market_tender", "tender_id", tid),
-            "title": text(first_nonempty(row, "title", "title_localized")),
-            "issuer": text(first_nonempty(row, "issuer_display", "buyer_name")),
-            "country": text(row.get("country_name")),
-            "cat": text(row.get("category_text")),
-            "desc": text(row.get("description")),
-            "closingDate": text(first_nonempty(row, "closing_date") or window.get("closing_date")),
-            "deadline": text(row.get("deadline_text")),
-            "isLive": row.get("is_live"),
-            "value": text(row.get("value_text")),
+            "title": first_nonempty(row, "title", "title_localized"),
+            "issuer": first_nonempty(row, "issuer_display", "buyer_name"),
+            "country": row.get("country_name"),
+            "cat": row.get("category_text"),
+            "value": row.get("value_text"),
             "valueAmount": row.get("value_amount"),
-            "valueCurrency": text(row.get("value_currency")).strip(),
-            "expectedRevenue": text(first_nonempty(row, "expected_revenue_text") or fit.get("revenue_estimate_text")),
-            "lean": text(row.get("lean_code")),
-            "leanTxt": text(row.get("lean_text")),
-            "ksslFit": text(first_nonempty(row, "kssl_fit") or fit.get("kssl_fit")),
-            "ksslModel": text(first_nonempty(row, "kssl_model") or fit.get("kssl_model")),
-            "rank": row.get("rank_position"),
-            "url": text(row.get("source_url")),
-            "urlKind": text(row.get("url_kind")),
-            "status": text(row.get("status")),
-            "posted": text(row.get("published_date")),
-            "qty": " ".join(clean([text(quantity) if quantity is not None else "", text(row.get("quantity_unit"))])),
-            "noticeRef": text(first_nonempty(row, "notice_reference", "tender_number")),
-            "milestone": text(first_nonempty(window, "milestone_text") or row.get("latest_milestone")),
-            "extension": window.get("is_extension_confirmed"),
-            "submissionMethod": text(row.get("submission_method")),
-            "registration": text(row.get("registration_requirement")),
-            "localPresence": text(row.get("local_presence_requirement")),
-            "frequency": text(row.get("frequency")),
-            "fitGrade": text(fit.get("fit_grade")),
-            "fitScore": fit.get("fit_score"),
-            "fitRank": first_nonempty(fit, "kssl_fit_rank", "fit_rank"),
-            "fitNote": text(first_nonempty(fit, "kssl_fit_rationale", "assessment_rationale", "match_summary")),
-            "revenueTier": text(fit.get("revenue_tier")),
-            "requirements": requirements,
-            "matches": product_matches,
-            "competitorFit": competitor_fit,
+            "valueCurrency": str(row.get("value_currency")).strip() if row.get("value_currency") else None,
+            "qty": " ".join(clean([text(quantity) if quantity is not None else "", row.get("quantity_unit")])) or None,
+            "deadline": closing,
+            "closingDate": closing,
+            "posted": row.get("published_date"),
+            "status": row.get("status"),
+            "urlKind": row.get("url_kind"),
+            "url": row.get("source_url"),
             "srcs": srcs,
+            "desc": row.get("description"),
+            "req": req,
+            "matches": product_matches,
+            "rank": row.get("rank_position"),
+            "fit": kssl_fit,
+            "clientFit": kssl_fit,
+            "revenueEstimate": revenue_text,
+            "expectedRevenue": revenue_text,
+            "revenueMid": (lo + hi) / 2 if lo is not None and hi is not None else None,
+            "lean": row.get("lean_code"),
+            "leanTxt": row.get("lean_text"),
+            "competitorFit": competitor_fit,
+            "actions": actions,
+            "milestone": first_nonempty(window, "milestone_text") or row.get("latest_milestone"),
         })
     return tenders
 
@@ -194,26 +184,122 @@ def build_requirements(database):
         result.append({
             "id": rid,
             "_src": src("market_global_requirement", "requirement_id", rid),
-            "title": text(row.get("title")),
-            "buyer": text(row.get("buyer_name")),
-            "country": text(row.get("country_name")),
-            "region": text(row.get("region")),
-            "cat": text(row.get("category")),
-            "value": text(row.get("value_text")),
+            "title": row.get("title"),
+            "buyer": row.get("buyer_name"),
+            "country": row.get("country_name"),
+            "region": row.get("region"),
+            "cat": row.get("category"),
+            "value": row.get("value_text"),
             "dl": row.get("days_remaining"),
-            "deadline": text(row.get("deadline")),
-            "status": text(row.get("status")),
-            "desc": text(row.get("description")),
-            "ksslFit": text(row.get("kssl_fit")),
-            "ksslModel": text(row.get("kssl_model")),
-            "strategicAssessment": text(row.get("strategic_assessment")),
-            "specs": [[text(s.get("spec_label")), text(s.get("spec_value"))] for s in ordered(specs.get(rid, []), "display_order")],
+            "deadline": row.get("deadline"),
+            "status": row.get("status"),
+            "desc": row.get("description"),
+            "ksslFit": row.get("kssl_fit"),
+            "ksslModel": row.get("kssl_model"),
+            "strategicAssessment": row.get("strategic_assessment"),
+            "specs": [[s.get("spec_label"), s.get("spec_value")] for s in ordered(specs.get(rid, []), "display_order")],
             "sources": [
-                {"label": text(s.get("source_label")), "url": text(s.get("source_url")), "type": text(s.get("source_type"))}
+                {"label": s.get("source_label"), "url": s.get("source_url"), "type": s.get("source_type")}
                 for s in ordered(sources.get(rid, []), "display_order")
             ],
         })
     return result
+
+
+def _join(parts, sep=" · "):
+    return sep.join(str(p) for p in parts if p not in (None, "")) or None
+
+
+def build_market_cards(database, requirements, details):
+    """marketCards: one card per global requirement + one per pipeline / demand update (tender cards are built in
+    the browser from tenders). Detail panels land in details[card id]."""
+    cards = []
+    for r in requirements:
+        srcs = [{"label": s["label"], "url": s["url"]} for s in r["sources"] if s["url"]]
+        cid = "req-" + r["id"]   # card / details id: prefixed per source table; _src.id stays the raw key
+        cards.append({
+            "id": cid,
+            "dir": None,
+            "title": r["title"],
+            "meta": _join([r["cat"], r["region"], r["deadline"]]),
+            "sowhat": r["strategicAssessment"],
+            "ago": r["deadline"],
+            "url": srcs[0]["url"] if srcs else None,
+            "_src": r["_src"],
+        })
+        details[cid] = {
+            "id": cid, "dir": None, "title": r["title"],
+            "facts": [list(s) for s in r["specs"]],
+            "what": r["desc"], "why": r["strategicAssessment"], "lens": [],
+            "url": srcs[0]["url"] if srcs else None, "srcs": srcs, "provenance": None, "image": None,
+            "ksslImpact": None, "ksslImpactKind": None, "eyebrow": None, "suggest": [],
+            "_src": r["_src"],
+        }
+    opps = {text(o.get("opportunity_id")): o for o in table(database, "serving", "market_opportunity")}
+    opp_sources = group(table(database, "serving", "market_opportunity_source"), "opportunity_id")
+    categories = {text(o.get("option_code")): o.get("option_label")
+                  for o in table(database, "serving", "market_filter_option") if text(o.get("filter_type")).lower() == "category"}
+    for u in ordered(table(database, "serving", "market_opportunity_update"), "update_date"):
+        raw_uid = text(u.get("update_id"))
+        uid = "upd-" + raw_uid if raw_uid else ""
+        oid = text(u.get("opportunity_id"))
+        opp = opps.get(oid)
+        if not uid or opp is None:
+            continue
+        card_src = src("market_opportunity", "opportunity_id", oid)
+        srcs = [{"label": first_nonempty(x, "source_title", "publisher"), "url": x.get("source_url")}
+                for x in opp_sources.get(oid, []) if x.get("source_url")]
+        cards.append({
+            "id": uid,
+            "dir": None,
+            # what the card IS (it comes from the opportunity pipeline), not a stance; the Perceived
+            # Opportunities tile and lane select on it. tags: the stored category label.
+            "kind": "opportunity",
+            "tags": categories.get(text(opp.get("category_id"))),
+            "title": u.get("headline"),
+            "meta": _join([u.get("update_type"), opp.get("location_text"), categories.get(text(opp.get("category_id"))),
+                           u.get("update_date")]),
+            "sowhat": u.get("narrative"),
+            "ago": u.get("update_date"),
+            "url": srcs[0]["url"] if srcs else None,
+            "_src": card_src,
+        })
+        details[uid] = {
+            "id": uid, "dir": None, "title": u.get("headline"), "facts": [],
+            "what": u.get("narrative"), "why": None, "lens": [],
+            "url": srcs[0]["url"] if srcs else None, "srcs": srcs, "provenance": None, "image": None,
+            "ksslImpact": None, "ksslImpactKind": None, "eyebrow": None, "suggest": [],
+            "_src": card_src,
+        }
+    return cards
+
+
+# ---------------------------------------------------------------- awards
+
+def build_awards(database):
+    return [{
+        "id": text(r.get("award_id")),
+        "segment": r.get("segment"),
+        "winner": r.get("winner"),
+        "brand": r.get("brand"),
+        "buyer": r.get("buyer"),
+        "site": r.get("site"),
+        "title": r.get("title"),
+        "title_ar": r.get("title_local"),
+        "programme": r.get("programme"),
+        "tender_no": r.get("tender_number"),
+        "date": r.get("award_date"),
+        "year": r.get("award_year"),
+        "value": r.get("value_amount"),
+        "currency": r.get("value_currency"),
+        "value_text": r.get("value_text"),
+        "bids": r.get("bids"),
+        "country": r.get("country_name"),
+        "url": r.get("source_url"),
+        "source": r.get("source_tier"),
+        "_src": src("market_award", "award_id", r.get("award_id")),
+    } for r in sorted(table(database, "serving", "market_award"),
+                    key=lambda r: (r.get("award_date") is None, r.get("award_date") or "", r.get("award_id") or 0))]
 
 
 # ---------------------------------------------------------------- top opportunity
@@ -232,60 +318,44 @@ def build_top_opportunities(database, tenders):
         top_tenders.append({
             "id": text(row.get("top_opportunity_tender_id")),
             "_src": src("market_top_opportunity_tender", "top_opportunity_tender_id", row.get("top_opportunity_tender_id")),
-            "tenderId": text(row.get("tender_id")),
+            "tenderId": text(row.get("tender_id")) or None,
             "rank": row.get("rank_position"),
-            "title": tender.get("title", ""),
-            "issuer": tender.get("issuer", ""),
-            "country": tender.get("country", ""),
-            "decides": text(row.get("decides")),
-            "ksslFit": text(row.get("kssl_fit")),
-            "ksslModel": text(row.get("kssl_model")),
-            "rivalToBeat": text(row.get("rival_to_beat")),
-            "revenue": text(row.get("revenue_text")),
+            "title": tender.get("title"),
+            "issuer": tender.get("issuer"),
+            "country": tender.get("country"),
+            "decides": row.get("decides"),
+            "ksslFit": row.get("kssl_fit"),
+            "ksslModel": row.get("kssl_model"),
+            "rivalToBeat": row.get("rival_to_beat"),
+            "revenue": row.get("revenue_text"),
         })
 
     projects = []
     for row in ordered(table(database, s, "market_top_opportunity_project"), "rank_position"):
         oid = text(row.get("opportunity_id"))
         opp = opps.get(oid, {})
-        fit = sorted(opp_fits.get(oid, []), key=lambda f: text(f.get("assessed_at")))[-1:] or [{}]
-        fit = fit[0]
+        fit = _latest(opp_fits.get(oid, []), "assessed_at")[0]
         projects.append({
             "id": text(row.get("top_opportunity_project_id")),
             "_src": src("market_top_opportunity_project", "top_opportunity_project_id", row.get("top_opportunity_project_id")),
-            "opportunityId": oid,
+            "opportunityId": oid or None,
             "rank": row.get("rank_position"),
-            "title": text(opp.get("title")),
-            "issuer": text(first_nonempty(row, "buyer_name") or opp.get("buyer_name")),
-            "country": text(row.get("country_name")),
-            "stage": text(first_nonempty(row, "where_it_stands") or opp.get("current_status") or opp.get("stage")),
-            "ksslFit": text(first_nonempty(row, "kssl_fit") or fit.get("fit_grade")),
-            "ksslModel": text(first_nonempty(row, "kssl_model") or fit.get("client_model_display")),
-            "rivalToBeat": text(first_nonempty(row, "rival_to_beat") or fit.get("rival_name")),
-            "revenue": text(first_nonempty(row, "revenue_text") or fit.get("revenue_display")),
-            "opportunity": {
-                "_src": src("market_opportunity", "opportunity_id", oid),
-                "kind": text(opp.get("opportunity_kind")),
-                "description": text(opp.get("description")),
-                "scope": text(opp.get("scope_text")),
-                "contractor": text(opp.get("contractor_name")),
-                "location": text(opp.get("location_text")),
-                "milestone": text(opp.get("latest_milestone")),
-                "asOf": text(opp.get("as_of_date")),
-                "rationale": text(fit.get("rationale")),
-                "rivalProduct": text(fit.get("rival_product_display")),
-            } if opp else None,
+            "title": opp.get("title"),
+            "issuer": first_nonempty(row, "buyer_name") or opp.get("buyer_name"),
+            "country": row.get("country_name"),
+            "stage": first_nonempty(row, "where_it_stands") or opp.get("current_status") or opp.get("stage"),
+            "ksslFit": first_nonempty(row, "kssl_fit") or fit.get("fit_grade"),
+            "ksslModel": first_nonempty(row, "kssl_model") or fit.get("client_model_display"),
+            "rivalToBeat": first_nonempty(row, "rival_to_beat") or fit.get("rival_name"),
+            "revenue": first_nonempty(row, "revenue_text") or fit.get("revenue_display"),
             "updates": [
-                {
-                    "date": text(u.get("update_date")), "type": text(u.get("update_type")),
-                    "headline": text(u.get("headline")), "narrative": text(u.get("narrative")),
-                    "_src": src("market_opportunity_update", "update_id", u.get("update_id")),
-                }
+                {"date": u.get("update_date"), "type": u.get("update_type"), "headline": u.get("headline"),
+                 "narrative": u.get("narrative"), "_src": src("market_opportunity_update", "update_id", u.get("update_id"))}
                 for u in sorted(opp_updates.get(oid, []), key=lambda u: text(u.get("update_date")), reverse=True)
             ],
             "sources": [
-                {"label": text(first_nonempty(sr, "source_title", "publisher")), "url": text(sr.get("source_url")),
-                 "date": text(sr.get("source_date")), "type": text(sr.get("source_type"))}
+                {"label": first_nonempty(sr, "source_title", "publisher"), "url": sr.get("source_url"),
+                 "date": sr.get("source_date"), "type": sr.get("source_type")}
                 for sr in sorted(opp_sources.get(oid, []), key=lambda x: text(x.get("source_date")), reverse=True)
             ],
         })
@@ -296,33 +366,33 @@ def build_top_opportunities(database, tenders):
         moves.append({
             "id": text(row.get("next_move_id")),
             "_src": src("market_next_move", "next_move_id", row.get("next_move_id")),
-            "action": text(row.get("action_text")),
-            "due": text(row.get("due_text")),
-            "dueDate": text(row.get("due_date")),
-            "tenderId": text(row.get("tender_id")),
-            "tenderTitle": text(first_nonempty(row, "tender_title") or tender.get("title")),
-            "opportunityId": text(row.get("opportunity_id")),
-            "priority": text(row.get("priority")),
-            "status": text(row.get("status")),
+            "action": row.get("action_text"),
+            "due": first_nonempty(row, "due_text", "due_date"),
+            "dueDate": row.get("due_date"),
+            "tenderId": text(row.get("tender_id")) or None,
+            "tenderTitle": first_nonempty(row, "tender_title") or tender.get("title"),
+            "opportunityId": text(row.get("opportunity_id")) or None,
+            "priority": row.get("priority"),
+            "status": row.get("status"),
         })
 
     metrics = [
         {
-            "key": text(m.get("metric_key")),
+            "key": m.get("metric_key"),
             "_src": src("market_top_opportunity_metric", "metric_id", m.get("metric_id")),
-            "label": text(m.get("metric_label")),
-            "value": text(m.get("formatted_value")),
+            "label": m.get("metric_label"),
+            "value": m.get("formatted_value"),
             "amount": first_nonempty(m, "amount_value", "numeric_value"),
-            "currency": text(m.get("currency_code")).strip(),
-            "note": text(m.get("note")),
+            "currency": str(m.get("currency_code")).strip() if m.get("currency_code") else None,
+            "note": m.get("note"),
         }
         for m in table(database, s, "market_top_opportunity_metric")
     ]
     view = (table(database, "ui", "market_top_opportunity_view") or [{}])[0]
     notes = {
-        "topTenders": text(view.get("top_tenders_description")),
-        "projects": text(view.get("projects_description")),
-        "nextMoves": text(view.get("next_moves_description")),
+        "topTenders": view.get("top_tenders_description"),
+        "projects": view.get("projects_description"),
+        "nextMoves": view.get("next_moves_description"),
     }
     return {"topTenders": top_tenders, "projectsBeforeTender": projects, "nextMoves": moves, "metrics": metrics, "notes": notes}
 
@@ -336,7 +406,6 @@ def build_innovations(database):
     inno_companies = group(table(database, s, "technology_innovation_company"), "innovation_id")
     inno_sources = group(table(database, s, "technology_innovation_source"), "innovation_id")
     sources = {text(x.get("source_id")): x for x in table(database, s, "technology_source")}
-    analysis = group(table(database, s, "technology_innovation_analysis"), "innovation_id")
 
     grouped = defaultdict(list)
     for row in ordered(table(database, s, "technology_innovation"), "sequence_no"):
@@ -345,51 +414,36 @@ def build_innovations(database):
         iid = text(row.get("innovation_id"))
         st = status.get(iid, {})
         names = []
-        company_rows = []
         for c in ordered(inno_companies.get(iid, []), "display_order"):
             known = companies.get(text(c.get("company_id")), {})
-            name = text(first_nonempty(c, "display_name") or known.get("display_name"))
+            name = first_nonempty(c, "display_name") or known.get("display_name")
             if name:
-                names.append(name)
-                company_rows.append({"name": name, "relationship": text(c.get("relationship")), "type": text(c.get("relationship_type"))})
+                names.append(str(name))
         srcs = []
         for link in sorted(inno_sources.get(iid, []), key=lambda x: not x.get("is_primary")):
             source = sources.get(text(link.get("source_id")))
             if source:
-                srcs.append({
-                    "label": text(first_nonempty(source, "label", "publisher")),
-                    "url": text(first_nonempty(source, "url", "source_url")),
-                    "publisher": text(source.get("publisher")),
-                    "kind": text(first_nonempty(source, "source_type", "source_kind")),
-                })
-        horizon_year = row.get("horizon_year")
-        item = {
+                srcs.append({"label": first_nonempty(source, "label", "publisher"),
+                             "url": first_nonempty(source, "url", "source_url")})
+        grouped[text(row.get("category_id"))].append({
             "id": iid,
             "_src": src("technology_innovation", "innovation_id", iid),
-            "t": text(row.get("title")),
-            "s": text(row.get("list_description")),
-            "summary": text(row.get("summary")),
-            "body": text(row.get("background_what_it_is")),
-            "whatsNew": text(row.get("whats_new")),
-            "impact": text(row.get("why_matters_to_kssl")),
-            "compNote": text(row.get("competitive_note")),
-            "mat": text(row.get("maturity")),
-            "matLabel": text(first_nonempty(st, "maturity_label") or row.get("maturity")),
-            "gap": text(row.get("client_position")),
-            "gapLabel": text(first_nonempty(st, "position_label") or row.get("client_position")),
-            "badge": text(st.get("assessment_badge")),
-            "horizon": text(first_nonempty(st, "horizon_text") or (horizon_year if horizon_year is not None else "")),
-            "listStatus": text(row.get("list_status_label")),
-            "driver": ", ".join(names),
-            "companies": company_rows,
-            "srcs": srcs,
-            "analysis": [
-                {"code": text(a.get("section_code")), "label": text(a.get("section_label")), "text": text(a.get("narrative")),
-                 "isClient": bool(a.get("is_client_assessment"))}
-                for a in ordered(analysis.get(iid, []), "display_order")
-            ],
-        }
-        grouped[text(row.get("category_id"))].append(item)
+            "t": row.get("title"),
+            "s": row.get("list_description"),
+            "mat": row.get("maturity"),
+            "matLabel": st.get("maturity_label"),
+            "gap": row.get("client_position"),
+            "gapLabel": st.get("position_label"),
+            "driver": ", ".join(names) or None,
+            "horizon": first_nonempty(st, "horizon_text") or row.get("horizon_year"),
+            "body": row.get("background_what_it_is"),
+            "impact": row.get("why_matters_to_kssl"),
+            "whatsNew": row.get("whats_new"),
+            "compNote": row.get("competitive_note"),
+            "sources": ", ".join(str(x["label"]) for x in srcs if x["label"]) or None,
+            "url": next((x["url"] for x in srcs if x["url"]), None),
+            "srcs": [x for x in srcs if x["url"]],
+        })
     return dict(grouped)
 
 
@@ -404,9 +458,16 @@ def build_technology_categories(database):
         category_id = text(row.get("category_id"))
         if not category_id:
             continue
-        name = text(first_nonempty(labels.get(category_id, {}), "ui_name", "label_text") or first_nonempty(row, "category_name", "canonical_name"))
+        name = first_nonempty(labels.get(category_id, {}), "ui_name", "label_text") or first_nonempty(row, "category_name", "canonical_name")
         cats.append({"id": category_id, "name": name, "num": row.get("tab_number")})
-        meta[category_id] = {"area": name, "description": text(row.get("category_description"))}
+        meta[category_id] = {"area": name, "desc": row.get("category_description")}
+    # patent fields (the filing's own area_label) carry the client-position note and the crowding grade
+    for row in table(database, "serving", "patent_field_assessment"):
+        label = row.get("area_label")
+        if label:
+            meta["patent-field-" + slug(label)] = {"area": label, "reason": row.get("client_position_note"),
+                                                   "crowding": row.get("crowding"),
+                                                   "_src": src("patent_field_assessment", "area_label", label)}
     return cats, meta
 
 
@@ -416,12 +477,18 @@ def build(database, d):
     options = defaultdict(list)
     for o in ordered(table(database, "serving", "market_filter_option"), "sort_order"):
         if o.get("is_active") is not False:
-            options[text(o.get("filter_type")).lower()].append(text(o.get("option_label")))
+            options[text(o.get("filter_type")).lower()].append(o.get("option_label"))
+    requirements = build_requirements(database)
+    # the segment recommendation is read straight from database.serving (lib/marketOutlook); each row carries its card key
+    for r in table(database, "serving", "market_segment_assessment"):
+        r["_src"] = src("market_segment_assessment", "segment", r.get("segment"))
     d.update({
         "tenders": tenders,
         "tpAllCountries": options.get("country", []),
         "tpAllCats": options.get("category", []),
-        "globalRequirements": build_requirements(database),
+        "globalRequirements": requirements,
+        "marketCards": build_market_cards(database, requirements, d["details"]),
+        "awards": build_awards(database),
         "topOpportunities": build_top_opportunities(database, tenders),
         "innovations": build_innovations(database),
         "techCats": tech_cats,

@@ -1,86 +1,188 @@
 id: tech_article
-title: Technology overview article from a news article
-version: 1
+title: Technology overview article from a harvested document
+version: 2
 fills: [technology_overview_article, technology_overview_fact, technology_overview_key_point, technology_overview_company, technology_overview_source, technology_source, technology_company]
 shows_on: "Technology Overview feed (card, badge, filters) and article drawer (at a glance, what the article says, key points, sources)"
-cadence: weekly                  # every news article of the last 60 days not yet run
-# HOW ARTICLES ARE FED. Articles come from staging.competitive_news_article (the news job). To feed one by hand,
-# insert a row there (headline, article_url, published_date, publisher, image_url). The relevance gate below skips
-# articles that are not technology developments.
-# No web search: the article is the only document.
+cadence: weekly
+# v2 (prompt rebuild, step 4; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.3.1, F.3). Same pattern as signal v2:
+#  - the model SCORES maturity (1-5) and relevance (1-5), picks the classification (4 classes), states a horizon only from dates in the
+#    article and a KSSL position only when a spec row exists; it writes NO direction label. derive.tech_direction computes threat / watch / fav
+#    and, when no horizon is stated, derives it from the maturity (horizon_source = rule).
+#  - AT A GLANCE is built by derive.tech_glance as technology_overview_fact rows (What . Who . Maturity . Horizon . Touches . KSSL position):
+#    only "What" is written by the model (transient glance_what); the rest comes from the scores, the company rows and the code lists.
+#  - key points 3-6 with a restatement check; plain English checked by the loader; the card is one step of a technology story
+#    (derive.story_link; transient story_thread names the technology so one programme is one story).
+# HOW DOCUMENTS ARE FED. Subjects are the raw layer (staging.source_document): DC-corpus pages with a high p_tech triage signal, pages the
+# triage routed to "tech" (triage->'route'), and trade-press / newsroom / government pages about the client's technology domains
+# (artillery, ammunition and energetics, fuzes, armour and protection, propulsion, forging and manufacturing, autonomy). Tier 1 first
+# (a domain word AND a technology-event word in the title), then newest first.
 
 subject:
-  key: article_id
+  key: doc_id
   query: |
-    SELECT n.article_id, n.headline, n.article_url, n.publisher, n.published_date, n.image_url
-    FROM staging.competitive_news_article n
-    WHERE n.article_url IS NOT NULL AND n.published_date >= current_date - 60
-      AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business')
-    ORDER BY n.published_date DESC
+    WITH d AS (
+      SELECT s.doc_id, s.title AS headline, s.url AS article_url, s.source_name AS publisher, s.published_at AS published_date,
+             s.source_kind, (s.triage->'signals'->>'tech')::float AS p_tech,
+             COALESCE((s.triage->'route') @> '"tech"'::jsonb, false) AS routed,
+             (COALESCE(s.title, '') || ' ' || left(s.body_text, 4000)) ~* '(howitzer|artillery|self-propelled gun|towed gun|155 ?mm|105 ?mm|120 ?mm|mortar|gun barrel|barrel|ammunition|munition|shell|projectile|propellant|explosive|energetic|fuze|fuse|warhead|armou?r|protection system|composite|ceramic|propulsion|powerpack|engine|transmission|forging|forged|casting|machining|additive manufactur|3d.print|autonomous|unmanned ground|ugv|robotic|loitering|counter-drone|active protection)' AS dom,
+             COALESCE(s.title, '') ~* '(howitzer|artillery|gun|ammunition|munition|shell|propellant|explosive|fuze|armou?r|protection|composite|propulsion|engine|forging|barrel|autonomous|unmanned ground|robot|3d|additive|warhead|mortar|vehicle)' AS tdom,
+             COALESCE(s.title, '') ~* '(test|trial|unveil|develop|prototype|qualif|demonstrat|first|new |advanced|launch|reveal|fire|firing|certif|integrat|upgrade|introduc|deliver|produc)' AS tev
+      FROM staging.source_document s
+      WHERE s.url IS NOT NULL AND length(s.body_text) BETWEEN 600 AND 20000 AND s.published_at >= current_date - 300
+        AND COALESCE(s.title, '') !~* '(latest .* news|updates|archives?\s*-|\| news$|^news$)'
+    )
+    SELECT d.doc_id, d.headline, d.article_url, d.publisher, d.published_date, current_date AS today
+    FROM d
+    WHERE d.routed OR (d.dom AND (d.tdom OR d.tev OR d.p_tech >= 0.5))
+    ORDER BY (CASE WHEN d.routed OR (d.dom AND d.tdom AND d.tev) THEN 1 WHEN d.dom AND d.tdom THEN 2 ELSE 3 END),
+             d.published_date DESC NULLS LAST, d.doc_id
   documents:
-    - from: url
+    - from: source_document
       field: article_url
+      min_chars: 600
+      cap: 12000
 
-context: [client, client_products, competitors, categories]
+context: [client, client_products, client_portfolio, client_capabilities, competitors, categories]
 
 task: |
-  TASK tech_article — decide whether one article reports a technology development in a client
-  category, and if so fill one technology-overview card.
+  TASK tech_article - decide whether one document reports a technology development in a client category, and if so fill one
+  technology-overview card: scores, plain-English text, key points. You score; the loader labels. Do NOT write threat / watch /
+  fav anywhere. Every judgement is made from {{client.name}}'s point of view, using only the blocks at the end of this task for
+  facts about {{client.name}}. Today is {{subject.today}}.
 
-  ARTICLE: "{{subject.headline}}" — {{subject.publisher}}, {{subject.published_date}}
+  ARTICLE: "{{subject.headline}}" - {{subject.publisher}}, {{subject.published_date}}
   URL: {{subject.article_url}}
 
-  STEP 1 — RELEVANCE. It is relevant only if both hold:
-   a) it reports a TECHNOLOGY DEVELOPMENT: a new technology, material or process, an R&D result, a
-      prototype, a test or trial, a qualification or certification, first production, or a fielded
-      capability with stated technical content. Contract, order and budget news without technical
-      content is not one; nor are opinion pieces;
-   b) the technology falls in one of the CATEGORIES.
-  If either fails: "records": [] and "skip_reason" = one sentence naming the failed test.
+  STEP 1 - RELEVANCE. It is relevant only if all three hold:
+   a) it reports a TECHNOLOGY DEVELOPMENT: a new technology, material or process, an R&D result, a prototype, a test or trial, a
+      qualification or certification, first production, or a fielded capability with stated technical content (a figure, a
+      method, a material, a test result). A contract, order or budget item with no technical content is not one. Opinion,
+      market forecasts, company results and pages that only list headlines are not one;
+   b) the technology falls in one of the CATEGORIES, or it is an enabling technology (a material, process, energetic, fuze,
+      propulsion, sensor, autonomy or software function) that a product in CLIENT PORTFOLIO or a line in CLIENT CAPABILITIES would use;
+   c) it is a development of the last 2 years, not a history or a background piece.
+  If any test fails: "records": [] and "skip_reason" = one sentence naming the failed test. If the page reports several
+  developments, card the main one and use the others as key points.
 
-  STEP 2 — one record, table technology_overview_article:
-   - title: the development as a headline, max 120 characters, in the article's words
-   - card_summary: JUDGEMENT. 1-2 sentences, max 300 characters: what was developed or tested
-     (article facts) and what it changes in that category
-   - article_says: neutral summary, 3-6 sentences, max 900 characters, plain text, only what the
-     article states
-   - client_narrative: JUDGEMENT. 2-4 sentences: how the development bears on {{client.name}},
-     naming the product(s) from CLIENT PRODUCTS in the same category and whether the technology
-     could compete with, or be adopted into, them; say so if none fits. State the fit; do not
-     recommend an action
-   - classification: JUDGEMENT. competitor_advance if the developer is one of COMPETITORS (match
-     name or short name); adoptable if the developer is anyone else and {{client.name}} could adopt
-     or integrate the technology. Allowed: competitor_advance | adoptable
-   - direction: JUDGEMENT. threat if the development strengthens a competitor against
-     {{client.name}} in a category where {{client.name}} has a product; fav if it is favourable to
-     {{client.name}} (adoptable technology for its products, or a setback for a competitor);
-     watch otherwise (announced, planned, early-stage, or claimed without a demonstrated result).
-     Allowed: threat | watch | fav
-   - article_date: the date of the development as the article states it; else the published date
-     (say so in _precision)
-   - ref_category: the single CATEGORIES name that fits best, exactly as written
-   children:
-   technology_overview_fact (2-5 rows, "at a glance"):
-   - fact_key: competitor (the developer is in COMPETITORS; fact_value = its name exactly as in the
-     list), company (any other organisation the article names as developer or partner, one row
-     each; fact_value as the article writes it), category (exactly one row; fact_value = the
-     ref_category name; proof_text null). Allowed: company | competitor | category
-   - fact_value; proof_text: the verbatim article sentence that names the organisation and its role
-     (max 300 characters)
-   technology_overview_key_point (3-5 rows):
-   - point_text: one key point, one sentence, max 200 characters, a reported fact (what it is, what was
-     shown, figures stated), not an opinion
+  STEP 2 - one record, table technology_overview_article, with its children.
+
+  record technology_overview_article (values):
+   - title: the development as a headline, max 120 characters, in the article's words, full names not acronyms
+   - card_summary: JUDGEMENT. Two short plain sentences, each 20 words or fewer, max 300 characters in all: what was developed
+     or tested, then the one thing it changes in that category. A sentence over 32 words rejects the whole card.
+   - article_says: 3-6 plain sentences, max 900 characters, only what the article states: who, what, how much, when, where.
+   - classification: JUDGEMENT. One of
+       competitor_advance   the developer is one of COMPETITORS (match name or short name) and gains a capability
+       adoptable            the developer is anyone else (a university, a start-up, a supplier, a foreign firm that is not a
+                            competitor) and {{client.name}} could adopt, license or team on the technology
+       threat_to_position   not a competitor's move, but it would weaken {{client.name}}'s technology position: it makes a
+                            product class less needed or a spec out of date (a drone interceptor against towed guns, a
+                            ceramic that makes steel armour too heavy)
+       industry_trend       an enabling or general development with no named link to a {{client.name}} product
+   - maturity: JUDGEMENT, 1-5. The furthest stage the article REPORTS as done. Take the highest anchor it supports.
+       5 fielded: in service, delivered to a user, used in operations
+       4 production: a production contract, serial or low-rate production has started
+       3 trials: tested, fired, demonstrated or in qualification, with a result
+       2 prototype: a prototype or demonstrator is built or shown, no test result
+       1 concept: research, simulation, a study, a plan
+     "Plans to", "will test" and "is developing" stay at the stage already reached. A first flight or firing counts as trials.
+   - relevance: JUDGEMENT, 1-5. How directly it touches a product or line of {{client.name}} (CLIENT PORTFOLIO, CLIENT CAPABILITIES).
+       5 same sub-type as a {{client.name}} product AND a figure on a spec {{client.name}} competes on (range, accuracy, weight,
+         protection level, rate of fire, reaction time, cost)
+       4 same sub-type without a figure, or an adjacent sub-type with a figure
+       3 same category but another sub-type, or an enabling technology a {{client.name}} line or its suppliers would need
+       2 an adjacent category
+       1 general defence technology
+     Be strict. A score above 3 needs a named product or line in the blocks below. No named link = 3 or lower.
+   - horizon: JUDGEMENT. When the technology reaches service or production, from DATES THE ARTICLE STATES only, counted from
+     today. lt_2y | 2_5y | gt_5y | unknown. "Soon", "in the coming years" and "by the end of the decade" with no year are unknown.
+     The loader fills it from the maturity when you write unknown.
+   - ref_client_product: the {{client.name}} product it touches, written EXACTLY as in CLIENT PRODUCTS; empty if none is touched
+   - spec_touched: the spec that is compared, max 60 characters, e.g. "Maximum range"; empty if none
+   - client_position: JUDGEMENT. behind | parity | ahead | unknown. Allowed other than unknown ONLY when CLIENT PORTFOLIO states a
+     figure for spec_touched on the product you named AND the article states a comparable figure. behind = the article's figure is
+     better; ahead = {{client.name}}'s is better; parity = within a few percent. Otherwise unknown.
+   - client_narrative: JUDGEMENT. 2-4 plain sentences. Name the {{client.name}} product or line it touches and say how: could it
+     fit that product, does it rival it, which spec moves. Give the {{client.name}} figure when CLIENT PORTFOLIO states one. Say plainly
+     what is unknown ("The article gives no accuracy figure."). If nothing is touched, write exactly: "No <product> product line is
+     touched; kept because <reason>." where <reason> names the technology and the category. Do not recommend actions. Never
+     write "{{client.name}} should".
+   - article_date: the date of the development as the article states it; else the published date (say so in _precision)
+   - ref_category: one CATEGORIES name, exactly as written
+   - glance_what (transient, not stored): the technology in 8 words or fewer, max 60 characters, e.g. "Ramjet-assisted 155 mm shell, 85 km"
+   - story_thread (transient, not stored): the technology or programme this development is a step of, 1-4 words, max 40 characters,
+     e.g. "K9 wheeled howitzer". The same thread name is used for later developments of the same technology by the same developer.
+   - _reason (one sentence for EVERY judgement above, including card_summary and client_narrative, each naming the anchor or
+     block line and the article fact it rests on):
+       "card_summary": "Rests on the trial result and the 48 km figure for the MArG in the portfolio."
+       "client_narrative": "ATAGS is a 52-calibre gun in the portfolio; the article names the gun class and a range."
+       "maturity": "3: three trial firings reported, no qualification yet."
+       "relevance": "5: same gun class as the MArG 155/52 and a figure on maximum range."
+       "client_position": "behind: CLIENT PORTFOLIO gives 48 km, the article gives 85 km."   or   "unknown: no figure on record for this spec."
+       "horizon": "2_5y: production stated for 2029."   or   "unknown: no date stated."
+       "classification": "competitor_advance: the developer is a competitor."
+   - _sources: for title and article_date, the verbatim sentence and the URL
+
+  children of technology_overview_article:
+   technology_overview_key_point (3-6 rows):
+   - point_text: one fact worth remembering, one sentence of 20 words or fewer: a figure with its unit, a name that is not in the
+     title, a date, or a condition. Not an opinion and not a repeat of the title or the summary (a row that repeats them is dropped).
+     Fewer than 3 new facts is a failure: read the article again.
    - evidence_text: the verbatim article sentence it rests on (max 300 characters)
-   technology_overview_company (one row per organisation the article names as developer or partner):
-   - display_label: the name as the article writes it; ref_competitor: the COMPETITORS name if the
-     same company, else null
-   - relationship: developer or partner
+   - _sources: for point_text, the same verbatim sentence and the URL
+   technology_overview_company (one row per organisation the article names as developer or partner; developers first):
+   - display_label: the name as the article writes it; ref_competitor: the COMPETITORS name if it is the same company, else null
+   - relationship: developer or partner. At least one developer when the article names one.
    technology_overview_source (exactly one row, the article):
    - source_url, publisher, source_kind (news | official | company); is_primary true
 
+  PLAIN ENGLISH. This is read by managers who are not weapons specialists.
+   - Sentences of 20 words or fewer, one idea each, active voice. Name the company and the thing.
+   - A technical term only when it is the name of the thing. Explain it in a few words the first time:
+     "ramjet (an air-breathing motor that burns fuel after the shell leaves the barrel)". Spell out an acronym the first time unless
+     it is in the headline. Official names (ATAGS, K9) stay as names.
+   - Numbers keep their unit and date. Never convert, round or add "about" unless the article does.
+   - Never use: leverage, synergy, ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end,
+     strategic imperative, capability enhancement, strengthens its position, extends its footprint, poses a threat to,
+     positions itself, unprecedented. No hype the article does not quote.
+   - Say what IS touched. Not "there is no direct overlap".
+   - Never write the names of the blocks (CLIENT PORTFOLIO, CLIENT PRODUCTS...) in the text. Say "KSSL's range".
+   Before: "The platform leverages robust, state-of-the-art propulsion for unprecedented mobility."
+   After:  "The vehicle has a 1,000 horsepower engine. The article gives no range or speed."
+
+  EXAMPLE of the shape and register only. Every name and figure in it is fictional; do not reuse any of them.
+  {"prompt_id": "tech_article", "subject": "Nordvik tests ramjet 155 mm round to 85 km", "skip_reason": null, "records": [
+   {"table": "technology_overview_article", "values": {
+     "title": "Nordvik fires a ramjet-assisted 155 mm shell to 85 km in trials",
+     "card_summary": "Nordvik Defence fired its RJ-155 ramjet shell to 85 km from a 52-calibre gun. That is almost twice the range of today's base-bleed rounds.",
+     "article_says": "Nordvik Defence said its RJ-155 shell reached 85 km in three firings at a Swedish range on 2 October. The shell carries a small ramjet (an air-breathing motor that burns fuel after the shell leaves the barrel). It was fired from a standard 155 mm/52 gun. Accuracy figures were not released. Nordvik plans qualification firings in 2027 and says production could start in 2029.",
+     "classification": "competitor_advance", "maturity": 3, "relevance": 5, "horizon": "2_5y",
+     "ref_client_product": "ATAGS 155 mm/52 cal Advanced Towed Artillery Gun System", "spec_touched": "Maximum range", "client_position": "behind",
+     "client_narrative": "ATAGS is a 52-calibre gun, so it could fire this shell, but KSSL does not make a ramjet round. KSSL's stated maximum range is 48 km. A buyer who gets 85 km from the same gun will ask every bidder for it. The article gives no accuracy figure.",
+     "article_date": "2026-10-02", "ref_category": "Ammunition", "glance_what": "Ramjet-assisted 155 mm shell, 85 km", "story_thread": "RJ-155 ramjet shell",
+     "_reason": {"card_summary": "Rests on the 85 km trial result.", "client_narrative": "ATAGS is a 52-calibre gun in the portfolio and the article names the gun class.",
+                 "maturity": "3: trial firings, no qualification yet.", "relevance": "5: same gun class as ATAGS and a figure on maximum range, a spec KSSL competes on.",
+                 "client_position": "behind: CLIENT PORTFOLIO gives 48 km, the article gives 85 km.", "horizon": "2_5y: production stated for 2029.",
+                 "classification": "competitor_advance: Nordvik Defence is in COMPETITORS."},
+     "_sources": {"title": [{"url": "https://example-defence-news.test/nordvik-rj155", "quote": "reached 85 km in three firings at a Swedish range on 2 October"}]}},
+    "children": {
+     "technology_overview_key_point": [
+       {"point_text": "85 km reached in three firings from a standard 155 mm/52 gun on 2 October.", "evidence_text": "reached 85 km in three firings",
+        "_sources": {"point_text": [{"url": "https://example-defence-news.test/nordvik-rj155", "quote": "reached 85 km in three firings"}]}},
+       {"point_text": "The ramjet burns fuel after launch; the gun needs no change.", "evidence_text": "fired from a standard 155 mm/52 gun"},
+       {"point_text": "No accuracy figure was released.", "evidence_text": "Accuracy figures were not released."},
+       {"point_text": "Qualification firings are planned for 2027; production could start in 2029.", "evidence_text": "plans qualification firings in 2027 and says production could start in 2029"}],
+     "technology_overview_company": [{"display_label": "Nordvik Defence", "ref_competitor": "Nordvik Defence", "relationship": "developer"}],
+     "technology_overview_source": [{"source_url": "https://example-defence-news.test/nordvik-rj155", "publisher": "Example Defence News", "source_kind": "news", "is_primary": true}]}}],
+   "not_found": [], "conflicts": []}
+
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
+  CLIENT PRODUCTS (names for ref_client_product):
   {{context.client_products}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT CAPABILITIES (lines, ventures, capabilities and what partners supply):
+  {{context.client_capabilities}}
   COMPETITORS:
   {{context.competitors}}
   CATEGORIES:
@@ -93,13 +195,21 @@ output:
   technology_overview_article:
     card: true
     key: [prompt_id, subject]
+    transient:                   # read by derive.tech_glance / derive.story_link, not stored on the article
+      glance_what: {required: true, max: 60}
+      story_thread: {max: 40}
     columns:
-      title: {required: true, max: 120}
-      card_summary: {judgement: true, max: 300}
-      article_says: {max: 900}
-      client_narrative: {judgement: true}
-      classification: {required: true, judgement: true, enum: [competitor_advance, adoptable]}
-      direction: {required: true, judgement: true, enum: [threat, watch, fav]}
+      title: {required: true, max: 120, plain: warn}
+      card_summary: {judgement: true, max: 300, plain: strict}
+      article_says: {max: 900, plain: warn}
+      client_narrative: {judgement: true, plain: strict}
+      classification: {required: true, judgement: true, enum_from: code_label.technology_overview_article.classification}
+      maturity: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      relevance: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      horizon: {judgement: true, enum_from: code_label.technology_overview_article.horizon}
+      touches_client_product_id: {from_ref: ref_client_product}
+      spec_touched: {max: 60}
+      client_position: {judgement: true, enum_from: code_label.technology_overview_article.client_position}
       article_date: {type: date}
       category_id: {required: true, from_ref: ref_category}
     loader:
@@ -109,31 +219,21 @@ output:
       lens: technology_pillar_name
       status: constant_active
       sequence_no: rank_by_published_on_desc
-      external_id: subject.article_id
+      external_id: subject.doc_id
       category_text: name_of_category_id
       published_on: subject.published_date
-      image_url: subject.image_url
       primary_company_id: company_id_of_the_developer_row
+      direction: derive.tech_direction        # threat / watch / fav from the scores, by code
       created_at: run_time
       updated_at: run_time
     children:
-      technology_overview_fact:
-        columns: [fact_key, fact_value, proof_text]
-        required: [fact_key, fact_value]
-        enum: {fact_key: [company, competitor, category]}
-        max: {proof_text: 300}
-        loader:
-          overview_fact_id: new_id
-          fact_id: same_as_overview_fact_id
-          overview_article_id: parent_id
-          article_id: parent_id
-          display_order: index
-          fact_label: label_of_fact_key        # Company | Competitor | Category
-          ui_label: label_of_fact_key
       technology_overview_key_point:
         columns: [point_text, evidence_text]
         required: [point_text]
         max: {point_text: 200, evidence_text: 300}
+        plain: {point_text: warn}
+        count: {min: 3, max: 6}
+        dedupe: {column: point_text, against: [title, card_summary]}
         loader:
           key_point_id: new_id
           overview_article_id: parent_id
@@ -176,3 +276,5 @@ output:
               source_kind: transient.source_kind
               label: host_of_url
               retrieved_at: run_time
+
+derive: [tech_direction, tech_glance, story_link]

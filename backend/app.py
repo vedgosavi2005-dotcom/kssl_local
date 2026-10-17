@@ -14,12 +14,13 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
-from backend.areas import a_competitive, b_products, c_network, d_market_tech
+from backend.areas import a_competitive, b_products, c_network, d_market_tech, e_ui_port
 from backend import review
 from backend.common import json_value
 
-AREAS = (a_competitive, b_products, c_network, d_market_tech)  # a first: others read competitors
+AREAS = (a_competitive, b_products, c_network, d_market_tech, e_ui_port)  # a first: others read competitors
 
 
 # Two databases (db/make_databases.sh): the live backend reads the serving DB (KSSL_SERVING_DSN,
@@ -31,6 +32,7 @@ SOURCE_SCHEMA = {"ui": "staging_ui", "serving": "staging"} if REVIEW else {"ui":
 
 app = FastAPI(title="KSSL PostgreSQL Dataset API", docs_url=None, redoc_url=None)
 from backend.news import router as news_router; app.include_router(news_router)  # noqa: E402,E702
+app.add_middleware(GZipMiddleware, minimum_size=1024)      # the dataset JSON compresses ~5x
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,9 +41,18 @@ app.add_middleware(
 )
 
 
+# serving tables the frontend reads straight from data.database (grep src for "serving.<table>")
+UI_SERVING_TABLES = ("technology_metric", "market_segment_assessment")
+
+
 def build_dataset(database):
     """The UI contract. Each area module fills its keys; nothing is defaulted beyond empty."""
-    d = {"database": database, "details": {}, "sourceRegistry": {}, "companySources": {}}
+    # `database` carries only what the UI reads via uiText(): every ui table (labels, filter options,
+    # section visibility) plus the serving tables in UI_SERVING_TABLES. The rest (raw layer, specs,
+    # sources) stays server-side; sending it all made the review payload > 500 MB.
+    sent = {"ui": database.get("ui", {}),
+            "serving": {t: database.get("serving", {}).get(t, []) for t in UI_SERVING_TABLES}}
+    d = {"database": sent, "details": {}}
     for area in AREAS:
         area.build(database, d)
     return d
@@ -66,7 +77,9 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
                     """
                     SELECT table_name FROM information_schema.tables
                     WHERE table_schema = %s AND table_type = 'BASE TABLE'
-                      AND table_name NOT IN ('fact_source', 'review_decision')
+                      AND table_name NOT IN ('fact_source', 'review_decision',
+                                             -- raw layer / bookkeeping: prompt inputs, never displayed
+                                             'tender_raw', 'source_document', 'news_candidate', 'prompt_run', 'spec_dictionary')
                     ORDER BY table_name
                     """,
                     (source,),

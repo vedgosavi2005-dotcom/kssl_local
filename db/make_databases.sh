@@ -27,7 +27,16 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/05_prompt_run.sql   # prompt run log (python -m prompts.run)
 "${PSQL[@]}" -d "$STG" < db/setup/06_news_candidate.sql   # news holding table (python -m backend.news -> prompts.run news)
 "${PSQL[@]}" -d "$STG" < db/setup/07_page_setup.sql   # page-configuration rows the prompts need (project stages, Domestic/Export filter, pillar)
+"${PSQL[@]}" -d "$STG" < db/setup/08_competitor_text_columns.sql   # competitor company-details text columns (starting_year_text, employee_count_text, revenue_text, financial_year)
+"${PSQL[@]}" -d "$STG" < db/setup/09_raw_layer.sql                # raw layer: source_document + tender_raw (harvesters write, prompts read)
+"${PSQL[@]}" -d "$STG" < db/setup/10_spec_dictionary.sql           # spec label -> canonical key dictionary (python -m prompts.matchup_code)
+"${PSQL[@]}" -d "$STG" < db/setup/12_vocabulary.sql              # one category vocabulary (the Excel's 10) in technology_category + stored category texts
+"${PSQL[@]}" -d "$STG" < db/setup/11_foundations.sql              # story tables, score / glance / stage columns, ui.code_label + filter-option tables (+ code_label seed rows)
+"${PSQL[@]}" -d "$STG" < db/setup/09_ui_port_tables.sql        # ui-port tables + columns (docs/ui_port/MAPPING.md C): section_visibility, filter_option, partner legend, synthesis, awards, assessments
 build "$SRV" db/setup/04_serving_db.sql
+"${PSQL[@]}" -d "$SRV" < db/setup/08_competitor_text_columns.sql
+"${PSQL[@]}" -d "$SRV" < db/setup/11_foundations.sql              # same DDL on the serving schemas (Approve copies by column name); no seed rows here
+"${PSQL[@]}" -d "$SRV" < db/setup/09_ui_port_tables.sql        # same ui-port tables in serving.* / ui.*, plus their only_via_approve guard triggers
 for d in "$STG" "$SRV"; do
     "${PSQL[@]}" -d "$d" -At -c "SELECT '$d: ' || string_agg(nspname || '=' || n, ' ') FROM (SELECT nspname, count(*) n FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE relkind = 'r' AND nspname IN ('ui','serving','staging','staging_ui') GROUP BY nspname ORDER BY nspname) t"
 done

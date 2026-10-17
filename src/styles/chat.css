@@ -1,10 +1,10 @@
   /* ===== Cross-pillar Intelligence Assistant ===== */
   .mchat{position:fixed;left:22px;bottom:22px;z-index:200;font-family:var(--sans)}
   .mchat-toggle{display:flex;align-items:center;gap:9px;background:var(--d-bg-2);border:1px solid var(--d-line-2);color:var(--d-txt);padding:11px 16px;cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;box-shadow:0 6px 22px rgba(0,0,0,.45);transition:border-color .15s,background .15s}
-  .mchat-toggle:hover{border-color:var(--fav);background:var(--d-bg-3)}
-  .mchat-spark{color:var(--fav);font-size:11px;animation:mchatPulse 2.4s ease-in-out infinite}
+  .mchat-toggle:hover{border-color:var(--ok);background:var(--d-bg-3)}
+  .mchat-spark{color:var(--ok);font-size:11px;animation:mchatPulse 2.4s ease-in-out infinite}
   @keyframes mchatPulse{0%,100%{opacity:.5}50%{opacity:1}}
-  .mchat-ctx-pill{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;background:var(--fav);color:#fff;padding:2px 7px;border-radius:0;text-transform:none}
+  .mchat-ctx-pill{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;background:var(--ok);color:#fff;padding:2px 7px;border-radius:0;text-transform:none}
   .mchat-window{position:absolute;left:0;bottom:0;width:392px;max-width:calc(100vw - 44px);height:540px;max-height:calc(100vh - 120px);background:var(--l-bg);border:1px solid var(--l-line-2);box-shadow:0 18px 50px rgba(0,0,0,.5);display:flex;flex-direction:column;transform-origin:bottom left;transition:opacity .2s,transform .2s}
   .mchat.collapsed .mchat-window{opacity:0;transform:scale(.92) translateY(10px);pointer-events:none}
   .mchat:not(.collapsed) .mchat-toggle{display:none}
@@ -31,7 +31,7 @@
   @keyframes mchatBlink{0%,60%,100%{opacity:.25}30%{opacity:1}}
   .mchat-suggest{display:flex;flex-wrap:wrap;gap:6px;padding:0 15px 10px;background:var(--l-bg-1)}
   .mchat-chip{font-family:var(--mono);font-size:10px;letter-spacing:.02em;background:var(--l-bg-2);border:1px solid var(--l-line-2);color:var(--l-txt-3);padding:6px 9px;cursor:pointer;transition:.12s}
-  .mchat-chip:hover{border-color:var(--fav);color:var(--l-txt)}
+  .mchat-chip:hover{border-color:var(--ok);color:var(--l-txt)}
   .mchat-input{display:flex;border-top:1px solid var(--l-line);background:var(--l-bg)}
   .mchat-input input{flex:1;border:none;outline:none;background:transparent;padding:13px 15px;font-size:13px;color:var(--l-txt);font-family:var(--sans)}
   .mchat-input input::placeholder{color:var(--l-txt-4)}
@@ -52,7 +52,7 @@
   .sc-a b{color:var(--l-txt);font-weight:600}
   .sc-a.sc-typing{color:var(--l-txt-4);letter-spacing:2px}
   .sc-bar{display:flex;align-items:center;gap:8px;padding:9px 12px}
-  .sc-spark{font-size:12px;color:var(--fav);flex-shrink:0}
+  .sc-spark{font-size:12px;color:var(--ok);flex-shrink:0}
   .sc-input{flex:1;border:1px solid var(--l-line-2);background:var(--l-bg-1);outline:none;color:var(--l-txt);font-family:var(--sans);font-size:12.5px;padding:8px 11px}
   .sc-input:focus{border-color:var(--l-txt-3)}
   .sc-input::placeholder{color:var(--l-txt-4)}

@@ -1,6 +1,10 @@
-/* Ordering helpers for competitor rows served by PostgreSQL.
- * Company membership is data owned by serving.competitive_competitor; this module
- * deliberately contains no built-in roster or fallback rows.
+/* ALPHABETICAL COMPANY ORDER.
+ *
+ * The roster is every competitor row the dataset carries (serving.competitive_competitor);
+ * nothing here chooses who is shown. Every competitive view lists companies in compOrder
+ * (Competitor, Products, Partnerships, Patents) or geoComps order (Geo Footprint), so
+ * sorting those two here orders every one of them at once. The client row stays first in
+ * both; the rest sort by display name, case- and accent-insensitive.
  */
 const byName = (a, b) => String(a || "").localeCompare(String(b || ""), "en", { sensitivity: "base" });
 
@@ -18,4 +22,3 @@ export function sortCompaniesByName(d) {
   return { ...d, compOrder, geoComps };
 }
 
-export default sortCompaniesByName;

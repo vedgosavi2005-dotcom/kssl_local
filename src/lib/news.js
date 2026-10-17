@@ -1,41 +1,205 @@
-/* Per-company news: the stored rows of competitive_news_article,
- * served as data.competitorNews[cid] (backend/areas/a_competitive.py), newest first.
+/* Real per-company news, in the exact shape the news panels already render.
  *
- * Nothing is added, merged, hidden or invented here: every field is the stored column
- * (headline, publisher, article_url, category, published_date, image_url). A column that is
- * empty stays empty and the panels leave the element out. When a company has no news this
- * returns [].
+ * Profile, Products, Geo and Partnerships each carried a hard-coded array of
+ * articles with the company name substituted into a template — five invented
+ * stories repeated for all 119 competitors, attributed to ET, Business Standard,
+ * Moneycontrol, The Hindu BusinessLine and NDTV Profit, illustrated with Unsplash
+ * stock photos. This module returns the same object shape from
+ * `data.competitorNews`, which the pipeline fills from the signal feed, so the
+ * panels render unchanged and every field traces to a real article.
+ *
+ * Nothing here writes prose. `fullText` and `impact` are the pipeline's own
+ * signal_detail.what / .why, reached by joining on the article url — the one key
+ * the card feed and the news table share. A field with no source stays undefined
+ * and the panel's existing `{x && ...}` guard drops it, which is why the render
+ * needed no edit.
+ *
+ * When a company has no news, this returns []. That is the intended behaviour: an
+ * empty panel is honest and a populated one was not.
  */
 
 import { formatDate } from "../utils/formatDate.js";
+import { sourceKind } from "./articleUrl.js";
 
-/* "2026-07-13" -> "13 Jul 2026". One formatter for the whole app (utils/formatDate). */
+/* "2026-07-13" -> "13 Jul 2026". The panels print this in their `ago` slot, which
+   used to hold "2 hours ago" — a freshness the fabricated rows only claimed. A
+   real date is the honest thing to put there, and it is never wrong by a day the
+   way a relative label drifts. One formatter for the whole app (utils/formatDate);
+   this is its ISO face, kept so the call sites read as what they are. */
 export function newsDate(iso) {
   if (!iso) return "";
   return formatDate(String(iso));
 }
 
-function shape(row, i) {
+/* url -> the signal detail behind it, so an article can show what the pipeline
+   read out of it rather than invented prose. Built once per dataset. */
+function detailIndex(data) {
+  if (data.__newsDetailIdx) return data.__newsDetailIdx;
+  const byUrl = {};
+  const lanes = ["competitiveCards", "marketCards", "techCards"];
+  lanes.forEach((lane) => {
+    (data[lane] || []).forEach((c) => {
+      if (c && c.url && !byUrl[c.url]) byUrl[c.url] = (data.details || {})[c.id];
+    });
+  });
+  try {
+    Object.defineProperty(data, "__newsDetailIdx", { value: byUrl });
+  } catch {
+    /* frozen dataset: the index is cheap enough to rebuild */
+  }
+  return byUrl;
+}
+
+function shape(row, byUrl, i) {
+  const d = (row.url && byUrl[row.url]) || null;
   return {
-    id: row.id || `news-${i}`,
-    category: row.category || "",
+    id: row.id != null ? `news-${row.id}` : `news-${i}`,
+    _src: row._src,
+    category: row.category || "—",
     ago: newsDate(row.date),
     date: row.date || null,
     title: row.title,
+    excerpt: row.description || undefined,
+    fullText: (d && d.what) || row.description || undefined,
+    impact: (d && d.why) || undefined,
     source: row.source || undefined,
     sourceUrl: row.url || undefined,
     url: row.url || undefined,
     image: row.image || undefined,
-    _src: row._src,
+    /* DOES THIS LINK GO TO THE STORY, OR TO THE PAGE IT WAS FOUND ON? Shaped here
+       rather than at each render site, because every news surface in the app reads an
+       article through this function -- and the one thing a card must never do is claim
+       a link it has not got. 73 of 1,092 served rows point at a publisher index; see
+       lib/articleUrl for the measurement and why the article cannot be recovered from
+       the url we hold. */
+    sourceKind: sourceKind(row.url),
+    /* The running story this article belongs to, written by news_chain.py from spans
+       the extraction layer typed. Undefined on a backend whose database has not run
+       the migration yet, and undefined on an article that stands alone -- both mean
+       the same thing to every reader below: no trail. */
+    storyKey: row.story_key || undefined,
+    continuesUrl: row.continues_url || undefined,
+    duplicateOfUrl: row.duplicate_of_url || undefined,
+    /* The newest row leads. Nothing in the pipeline measures "trending", so the
+       flag is a position, not a claim about the story. */
+    isTopStory: i === 0,
   };
+}
+
+/* ONE ARTICLE, ONE CARD.
+ *
+ * Adani Defence's panel printed the same press release twice, one card above the other:
+ *
+ *   2026-07-05  Financial  "...to Invest ₹2,500 Crore in South Asia's Largest..."
+ *   2026-07-05  Defence    "...to Build South Asia's Largest Private-Sector..."
+ *
+ * Both rows carry the SAME url -- adanidefence.com/media/media-release/Adani-Defence-
+ * and-Aerospace-to-Invest-2500-Crore... -- so this is not two write-ups of one event, it
+ * is one document ingested twice and headlined differently under two categories.
+ *
+ * The url is the identity, and it is exact: no title similarity, no date window, no
+ * threshold to tune. Two rows pointing at one document are one article.
+ *
+ * NOTHING IS DISCARDED SILENTLY. The survivor keeps the first row's headline (rows
+ * arrive newest first, so the first is the one the panel would have led with anyway)
+ * and takes the UNION of the categories, because an article filed under both Financial
+ * and Defence is both -- picking one would quietly drop a facet the category filter
+ * above the feed is keyed on, and the reader would find the article missing from a tab
+ * it belongs in. Fields absent on the survivor are filled from the row it absorbs.
+ *
+ * `duplicate_of_url` is honoured where the backend has written it (news_chain.py): a
+ * row that names another row in this same feed as its original is that row. It is
+ * undefined on every row today -- the migration has not run on this database -- so the
+ * url rule is what actually fires, and this costs nothing until it does.
+ */
+function dedupeArticles(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const byUrl = new Map();
+  const order = [];
+  list.forEach((r) => {
+    const url = String((r && (r.url || r.link)) || "").trim();
+    if (!url) {
+      order.push({ row: r, url: "" });
+      return;
+    }
+    const seen = byUrl.get(url);
+    if (!seen) {
+      const entry = { row: { ...r }, url };
+      byUrl.set(url, entry);
+      order.push(entry);
+      return;
+    }
+    // fold: categories unioned, holes filled, headline left alone
+    const cats = new Set(
+      []
+        .concat(seen.row.category || [], r.category || [])
+        .flatMap((c) => String(c).split("·"))
+        .map((c) => c.trim())
+        .filter(Boolean),
+    );
+    Object.keys(r || {}).forEach((k) => {
+      if (seen.row[k] == null || seen.row[k] === "") seen.row[k] = r[k];
+    });
+    seen.row.category = Array.from(cats).join(" · ");
+  });
+
+  let out = order.map((e) => e.row);
+  /* SECOND PASS -- near-duplicates the url rule cannot see. Two rows from the SAME
+     publisher on the SAME day whose titles overlap heavily are one story rewritten
+     (e.g. "...Form Strategic Partnership For SkyStriker" vs "...Partner On SkyStriker
+     Loitering Munition"). Kept deliberately narrow: same date AND same source domain
+     AND >=0.55 title-token overlap, so distinct same-day stories are never merged. */
+  const _dom = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+  const _toks = (t) => new Set(String(t || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2));
+  const _jac = (a, b) => { if (!a.size || !b.size) return 0; let i = 0; a.forEach((x) => { if (b.has(x)) i += 1; }); return i / (a.size + b.size - i); };
+  /* generic words two unrelated headlines share (a distinct contract win must NOT merge
+     with another) -- a merge additionally requires a shared DISTINCTIVE token, i.e. a
+     product or proper name like "skystriker", not "contract"/"wins"/"defence". */
+  const _GEN = new Set(("defence defense systems system contract wins secures win announces announce " +
+    "unveils partnership partner strategic company group industries limited million crore billion " +
+    "new first india indian army navy military deal programme program order orders production plant " +
+    "facility technology tech solutions aerospace with over from into their").split(" "));
+  const _distinct = (tk) => new Set([...tk].filter((w) => w.length >= 5 && !_GEN.has(w)));
+  const kept = [];
+  out.forEach((r) => {
+    const dt = String(r.date || "").slice(0, 10);
+    const dm = _dom(r.url || r.link || "");
+    const tk = _toks(r.title);
+    const ds = _distinct(tk);
+    const dup = dt && dm && kept.find((k) => k._dt === dt && k._dm === dm &&
+      [...ds].some((w) => k._ds.has(w)) && _jac(k._tk, tk) >= 0.4);
+    if (dup) {
+      if (!dup.image && r.image) dup.image = r.image;
+      return;
+    }
+    kept.push(Object.assign(r, { _dt: dt, _dm: dm, _tk: tk, _ds: ds }));
+  });
+  out = kept.map((r) => { const { _dt, _dm, _tk, _ds, ...rest } = r; return rest; });
+  /* a row the backend has explicitly marked as a copy of another row PRESENT here */
+  const present = new Set(out.map((r) => String((r && (r.url || r.link)) || "")).filter(Boolean));
+  return out.filter((r) => {
+    const of = String((r && r.duplicate_of_url) || "").trim();
+    return !(of && present.has(of));
+  });
 }
 
 /* Every article for one competitor, newest first. `compId` is the serving key. */
 export function companyNews(data, compId) {
   if (!data || !compId) return [];
-  const rows = ((data.competitorNews || {})[compId] || []).slice();
-  rows.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  return rows.map((r, i) => shape(r, i));
+  const rows = dedupeArticles((data.competitorNews || {})[compId] || []);
+  const byUrl = detailIndex(data);
+  const shaped = rows.map((r, i) => shape(r, byUrl, i));
+  /* One publisher hero (e.g. new.diehl.com's product render) is attached as the
+     og:image to several unrelated articles, so it repeated down the feed. An image
+     used by an earlier card is not specific to a later one -- blank the repeat so the
+     card shows the honest empty-image slot rather than the same stock photo again. */
+  const usedImg = new Set();
+  shaped.forEach((a) => {
+    if (!a.image) return;
+    if (usedImg.has(a.image)) a.image = undefined;
+    else usedImg.add(a.image);
+  });
+  return shaped;
 }
 
 /* Tokens worth matching on: drops the short/generic words that would make any
@@ -52,7 +216,7 @@ const STOP = new Set(["the", "and", "for", "system", "systems", "series", "mark"
 function mentions(article, name) {
   const t = terms(name);
   if (!t.length) return false;
-  const hay = `${article.title || ""}`
+  const hay = `${article.title || ""} ${article.excerpt || ""} ${article.fullText || ""}`
     .toLowerCase();
   /* Every distinctive token has to appear. One shared word is a coincidence; the
      whole designator is a mention. */
@@ -119,6 +283,15 @@ export const NEWS_WINDOWS = [
 
 export const NEWS_WINDOW_DEFAULT = "12m";
 
+/* the date-range menu of the Profile news list */
+export const NEWS_LIST_RANGES = [
+  { key: "7d", label: "Last 7 days", days: 7 },
+  { key: "30d", label: "Last 30 days", days: 30 },
+  { key: "3m", label: "Last 3 months", days: 91 },
+  { key: "6m", label: "Last 6 months", days: 182 },
+  { key: "12m", label: "Last 12 months", days: 365 },
+];
+
 export function windowDays(key) {
   const w = NEWS_WINDOWS.find((x) => x.key === key);
   return w ? w.days : null;
@@ -151,4 +324,109 @@ export const FEED_N = 6;
 export function feedSplit(articles, n = FEED_N) {
   const all = Array.isArray(articles) ? articles : [];
   return { feed: all.slice(0, n), rest: all.slice(n), all, total: all.length };
+}
+
+/* THE TRAIL.
+   A company's articles arrive newest-first and flat, so three PAC-3 stories in a
+   fortnight read as three unrelated events and the same wire piece from four outlets
+   reads as four. news_chain.py says which of them are one running story; this folds
+   that into the shape the feed renders.
+
+   Only the NEWEST article of a story carries the trail -- repeating it on every card
+   would print the same thread three times in one column. The older members leave the
+   feed and stay reachable through it, and the full News section below still lists
+   every one of them, because a reader hunting one article should not have to know
+   which surface it is on.
+
+   A DUPLICATE IS NOT A DEVELOPMENT. A syndicated reprint folds into the article it
+   copies as `alsoIn`; calling it a continuation would invent a development that never
+   happened. */
+export function collapseThreads(articles) {
+  const all = Array.isArray(articles) ? articles : [];
+  const byUrl = {};
+  all.forEach((a) => { if (a.url) byUrl[a.url] = a; });
+
+  // Fold reprints into what they reprint. A duplicate whose original is not in this
+  // list stays a top-level article: hiding it would lose it entirely.
+  const alsoIn = {};
+  const folded = new Set();
+  all.forEach((a) => {
+    const orig = a.duplicateOfUrl;
+    if (orig && byUrl[orig] && orig !== a.url) {
+      (alsoIn[orig] = alsoIn[orig] || []).push(a);
+      folded.add(a.url);
+    }
+  });
+
+  const kept = all.filter((a) => !folded.has(a.url));
+  // Within a story, the first survivor in the incoming (newest-first) order is the
+  // head; the rest become its trail rather than separate cards.
+  const headOf = {};
+  kept.forEach((a) => {
+    if (!a.storyKey) return;
+    if (!(a.storyKey in headOf)) headOf[a.storyKey] = a.url;
+  });
+
+  return kept
+    .filter((a) => !a.storyKey || headOf[a.storyKey] === a.url)
+    .map((a) => {
+      /* A trail member can have reprints of its own, and they have to travel with
+         it: attaching alsoIn only to the head made a reprint of a trailed article
+         unreachable from anywhere in the feed. */
+      const trail = a.storyKey
+        ? kept
+            .filter((b) => b.storyKey === a.storyKey && b.url !== a.url)
+            .map((b) => (alsoIn[b.url] ? { ...b, alsoIn: alsoIn[b.url] } : b))
+        : [];
+      const also = alsoIn[a.url] || [];
+      return (trail.length || also.length) ? { ...a, trail, alsoIn: also } : a;
+    });
+}
+
+export function newsSelfCheck() {
+  const data = {
+    competitorNews: {
+      saab: [
+        { id: 1, title: "Saab receives Carl-Gustaf M4 order", description: "so what",
+          source: "saab.com", date: "2026-07-13", category: "Artillery",
+          url: "https://saab.com/a", image: "https://saab.com/i.jpg" },
+        { id: 2, title: "Saab opens a plant in Brazil", description: "d2",
+          source: "p.com", date: "2026-06-02", category: "Industry",
+          url: "https://p.com/b" },
+      ],
+    },
+    competitiveCards: [{ id: "pl_1", url: "https://saab.com/a" }],
+    details: { pl_1: { what: "the long read", why: "why it matters" } },
+  };
+  const out = [];
+  const t = (name, ok) => { if (!ok) out.push(name); };
+
+  const n = companyNews(data, "saab");
+  t("two rows for the company", n.length === 2);
+  t("newest leads", n[0].id === "news-1" && n[0].isTopStory === true);
+  t("second is not a top story", n[1].isTopStory === false);
+  t("date is rendered, not relative", n[0].ago === "13 Jul 2026");
+  t("publisher survives", n[0].source === "saab.com");
+  t("fullText comes from the joined detail", n[0].fullText === "the long read");
+  t("impact comes from the joined detail", n[0].impact === "why it matters");
+  t("no detail -> excerpt is the body", n[1].fullText === "d2");
+  t("no detail -> no invented impact", n[1].impact === undefined);
+  t("missing image stays undefined", n[1].image === undefined);
+  t("unknown company is empty, not a template",
+    companyNews(data, "nobody").length === 0 && companyNews(data, null).length === 0);
+
+  t("product filter keeps the matching article",
+    productNews(data, "saab", "Carl-Gustaf M4").length === 1);
+  t("product filter drops the other one",
+    productNews(data, "saab", "Gripen").length === 0);
+  t("a generic word alone does not match",
+    productNews(data, "saab", "system").length === 0);
+  t("market filter matches the country named in the story",
+    marketNews(data, "saab", "Brazil").length === 1);
+  t("market filter is empty rather than wrong",
+    marketNews(data, "saab", "Peru").length === 0);
+  t("newsDate passes through what it cannot parse", newsDate("soon") === "soon");
+  t("newsDate on nothing is empty", newsDate(null) === "");
+
+  return out;
 }

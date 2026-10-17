@@ -22,8 +22,8 @@
   .mu-cat .chev{transition:transform .15s;color:var(--d-txt-4);font-style:normal}
   .mu-cat.collapsed .chev{transform:rotate(-90deg)}
   .mu-cat .ccount{font-family:var(--mono);font-size:9px;color:var(--d-txt-4);background:var(--d-bg-3);padding:1px 6px}
-  .mu-anchor{font-family:var(--sans);font-size:13px;font-weight:700;color:#ffffff;padding:10px 18px;background:var(--d-bg-1);border-bottom:1px solid var(--d-line);border-left:3px solid var(--fav);display:flex;align-items:center;gap:7px;letter-spacing:.01em}
-  .mu-anchor .ma-koel{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--fav);border:1px solid var(--fav);padding:1px 5px;border-radius:2px;flex-shrink:0;font-weight:700}
+  .mu-anchor{font-family:var(--sans);font-size:13px;font-weight:700;color:#ffffff;padding:10px 18px;background:var(--d-bg-1);border-bottom:1px solid var(--d-line);border-left:3px solid var(--ok);display:flex;align-items:center;gap:7px;letter-spacing:.01em}
+  .mu-anchor .ma-koel{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--ok);border:1px solid var(--ok);padding:1px 5px;border-radius:2px;flex-shrink:0;font-weight:700}
   .mu-anchor .ma-count{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:#ffffff;font-weight:700;letter-spacing:.04em}
   .mu-group.collapsed{display:none}
 
@@ -41,7 +41,7 @@
      "·" -- the old single flex line ("• Maker · Product") is now two stacked lines. */
   .mu-item .comp-prod{font-size:13px;color:var(--d-txt);font-weight:600;margin-bottom:2px}
   .mu-item .cp-co{font-family:var(--mono);font-size:10.5px;color:var(--d-txt-3);letter-spacing:.02em}
-  .mu-prime{font-family:var(--mono);font-size:8px;letter-spacing:.1em;background:var(--fav);color:#fff;padding:1px 5px;margin-left:7px;vertical-align:middle}
+  .mu-prime{font-family:var(--mono);font-size:8px;letter-spacing:.1em;background:var(--ok);color:#fff;padding:1px 5px;margin-left:7px;vertical-align:middle}
 
   /* spec comparison — paired horizontal bars */
   .spec-head{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--l-txt-3);padding-bottom:10px;border-bottom:1px solid var(--l-line);margin-bottom:14px;position:relative;width:100%;box-sizing:border-box}
@@ -140,7 +140,7 @@
   .spec td{padding:10px 12px;border-bottom:1px solid var(--l-line);font-family:var(--mono);color:var(--l-txt-2)}
   .spec td.metric{font-family:var(--sans);color:var(--l-txt-3);font-size:12px}
   .spec td.bf-col{color:var(--l-txt);background:var(--l-bg);font-weight:500}
-  .spec td .win{color:var(--fav);font-size:10px;margin-left:6px;font-family:var(--sans)}
+  .spec td .win{color:var(--ok);font-size:10px;margin-left:6px;font-family:var(--sans)}
   .spec td .lose{color:var(--threat);font-size:10px;margin-left:6px;font-family:var(--sans)}
 
   /* advantages two-column */
@@ -148,15 +148,15 @@
   .adv-col{background:var(--l-bg);padding:15px 16px}
   .adv-col .ah{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:7px}
   .adv-col.comp .ah{color:var(--threat)}
-  .adv-col.bf .ah{color:var(--fav)}
+  .adv-col.bf .ah{color:var(--ok)}
   .adv-col .ah .dot{width:7px;height:7px;border-radius:50%}
   .adv-col.comp .ah .dot{background:var(--threat)}
-  .adv-col.bf .ah .dot{background:var(--fav)}
+  .adv-col.bf .ah .dot{background:var(--ok)}
   .adv-item{font-size:12px;color:var(--l-txt-2);line-height:1.5;padding:7px 0;border-bottom:1px solid var(--l-bg-2);display:flex;gap:8px}
   .adv-item:last-child{border-bottom:none}
   .adv-item .mk{font-family:var(--mono);font-size:11px;flex-shrink:0}
   .adv-col.comp .adv-item .mk{color:var(--threat)}
-  .adv-col.bf .adv-item .mk{color:var(--fav)}
+  .adv-col.bf .adv-item .mk{color:var(--ok)}
   .adv-item b{color:var(--l-txt);font-weight:600}
   /* the source a KSSL capability bullet cites (the client's own portfolio page) */
   .adv-item .adv-src{font-family:var(--mono);font-size:10px;color:var(--l-txt-3);margin-left:6px;text-decoration:none;border-bottom:1px dotted var(--l-txt-3)}

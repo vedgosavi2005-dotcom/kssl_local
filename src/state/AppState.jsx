@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_ROUTE, PILLARS, PILLAR_LABEL, RAIL, OVERVIEW_VIEW, parseRoute, routeHash } from "../lib/route";
+import { firstVisibleView } from "../lib/visibility";
 import { clearViewState } from "../lib/viewState";
 
 const AppStateContext = createContext(null);
@@ -115,7 +116,7 @@ export function AppStateProvider({ children }) {
       if (prev !== next) clearViewState();
       return next;
     });
-    setViewState(RAIL[next][0].view);
+    setViewState(firstVisibleView(next));
   }, []);
 
   const setView = useCallback((next) => {

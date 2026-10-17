@@ -39,7 +39,7 @@
   .statusbox .v{font-family:var(--mono);font-size:12px;color:var(--d-txt);font-weight:500;display:flex;align-items:center;gap:6px}
   .statusbox.client{justify-content:center}
   .statusbox.client .v{font-family:var(--sans);font-size:14px;font-weight:600;letter-spacing:-.01em}
-  .live{width:6px;height:6px;border-radius:50%;background:var(--fav);box-shadow:0 0 0 0 rgba(46,125,82,.5);animation:pulse 2.4s infinite}
+  .live{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(46,125,82,.5);animation:pulse 2.4s infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(46,125,82,.45)}70%{box-shadow:0 0 0 5px rgba(46,125,82,0)}100%{box-shadow:0 0 0 0 rgba(46,125,82,0)}}
 
   /* ===== LIVENESS CUES ===== */
@@ -65,7 +65,7 @@
   .topbar::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.025),transparent) no-repeat;background-size:120px 100%;animation:scan 7s linear infinite;pointer-events:none}
   @keyframes scan{0%{background-position:-140px 0}100%{background-position:calc(100vw + 140px) 0}}
   /* feed 'new signal' faint tick: a thin bar that breathes on the subhead live count */
-  .subhead .live-tick{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--fav);margin-right:7px;vertical-align:1px;animation:pulse 2.4s infinite}
+  .subhead .live-tick{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--ok);margin-right:7px;vertical-align:1px;animation:pulse 2.4s infinite}
   /* metric value count-up: start slightly dim, settle */
   .mv.counting{color:var(--d-txt-3)}
   /* (removed) the freshest feed item used to grow a green breathing left-edge accent;
@@ -88,7 +88,7 @@
   .subhead-toast {
     font-family: var(--mono);
     font-size: 11px;
-    color: var(--fav-badge);
+    color: var(--ok-badge);
     background: rgba(63, 168, 106, 0.15);
     border: 1px solid rgba(63, 168, 106, 0.3);
     padding: 3px 8px;
@@ -300,15 +300,12 @@
   .fbtn[data-dirf="watch"]{color:var(--watch-badge);border-color:rgba(224,160,32,.55)}
   .fbtn[data-dirf="watch"]:hover{border-color:rgba(224,160,32,.9)}
   .fbtn[data-dirf="watch"].on{color:var(--watch-badge);border-color:var(--watch);background:rgba(224,160,32,.15)}
-  .fbtn[data-dirf="fav"]{color:var(--fav-badge);border-color:rgba(63,168,106,.55)}
-  .fbtn[data-dirf="fav"]:hover{border-color:rgba(63,168,106,.9)}
-  .fbtn[data-dirf="fav"].on{color:var(--fav-badge);border-color:var(--fav);background:rgba(63,168,106,.15)}
   /* New pillar filter pills reuse the three dir hues on their meaning: Latest Tenders
      and Adoptable Advances read as go/green, Perceived Opportunities as watch/amber,
      Competitor Advancements as a rival/red. (market: tenders/opps · technology: rival/adopt) */
-  .fbtn[data-dirf="tenders"],.fbtn[data-dirf="adopt"]{color:var(--fav-badge);border-color:rgba(63,168,106,.55)}
+  .fbtn[data-dirf="tenders"],.fbtn[data-dirf="adopt"]{color:var(--ok-badge);border-color:rgba(63,168,106,.55)}
   .fbtn[data-dirf="tenders"]:hover,.fbtn[data-dirf="adopt"]:hover{border-color:rgba(63,168,106,.9)}
-  .fbtn[data-dirf="tenders"].on,.fbtn[data-dirf="adopt"].on{color:var(--fav-badge);border-color:var(--fav);background:rgba(63,168,106,.15)}
+  .fbtn[data-dirf="tenders"].on,.fbtn[data-dirf="adopt"].on{color:var(--ok-badge);border-color:var(--ok);background:rgba(63,168,106,.15)}
   .fbtn[data-dirf="opps"]{color:var(--watch-badge);border-color:rgba(224,160,32,.55)}
   .fbtn[data-dirf="opps"]:hover{border-color:rgba(224,160,32,.9)}
   .fbtn[data-dirf="opps"].on{color:var(--watch-badge);border-color:var(--watch);background:rgba(224,160,32,.15)}
@@ -345,7 +342,7 @@
   .metric .mv .unit{font-size:11px;color:var(--d-txt-3);margin-left:5px;letter-spacing:.02em}
   .metric .mv .delta{font-size:10px;color:var(--d-txt-3);margin-left:8px;letter-spacing:0}
   .metric .mv .delta.up{color:var(--threat)}
-  .metric .mv .delta.down{color:var(--fav)}
+  .metric .mv .delta.down{color:var(--ok)}
   .metric .msub{font-size:10.5px;color:var(--d-txt-3);font-family:var(--sans);display:flex;align-items:center;gap:5px;margin-top:1px;flex-wrap:wrap;min-width:0;line-height:1.35}
   .metric .msub .arr{font-family:var(--mono);color:var(--d-txt-4);transition:color .12s,transform .12s;display:inline-block}
   .metric:hover .msub{color:var(--d-txt-2)}
@@ -522,8 +519,3 @@
    threats first"); this is the difference between a shortlist and a corpus of thirty. */
 .ov-shortnote{font-family:var(--mono);font-size:11px;color:var(--d-txt-3);
   padding:7px 16px 0;line-height:1.45}
-/* Threat dot beside a company name (Profile, Partnerships, Projects, Moment, Products). */
-.wdot{display:inline-block;width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.wdot.threat{background:var(--threat)}
-.wdot.watch{background:var(--watch)}
-.wdot.fav{background:var(--fav)}

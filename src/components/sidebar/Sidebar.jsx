@@ -1,4 +1,5 @@
-import { useAppState, RAIL } from "../../state/AppState";
+import { useAppState } from "../../state/AppState";
+import { railFor } from "../../lib/route";
 import { useData } from "../../state/DataProvider";
 
 /* The left rail. One section per pillar in the original markup, shown and hidden;
@@ -7,7 +8,7 @@ import { useData } from "../../state/DataProvider";
 export default function Sidebar() {
   const { pillar, view, setView } = useAppState();
   const { counts } = useData();
-  const items = RAIL[pillar];
+  const items = railFor(pillar);
 
   const row = (item) => (
     <div
@@ -41,9 +42,10 @@ export default function Sidebar() {
   return (
     <div className="rail">
       <div className="rail-pillar" data-railpillar={pillar}>
-        <div className="rail-sec svc-sec">{row(items[0])}</div>
+        {/* a view the database has switched off is not drawn, so any item may be missing */}
+        <div className="rail-sec svc-sec">{items.filter((i) => i.overview).map(row)}</div>
         <div className="rail-sec svc-sec" style={{ borderTop: "none" }}>
-          {items.slice(1).map(row)}
+          {items.filter((i) => !i.overview).map(row)}
         </div>
       </div>
     </div>

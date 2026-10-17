@@ -1,119 +1,161 @@
 id: moment
-title: Competitor moment (graded moves by one competitor, last 90 days)
-version: 2
+title: Competitor moment (the dated moves of one competitor, as a timeline)
+version: 3
 fills: [competitive_competitor_moment, competitive_competitor_moment_analysis, competitive_competitor_moment_source]
-shows_on: Competitor Moment page (move list, drawer facts, "Analysis - what it means", "Deeper analysis - by view", source link)
+shows_on: Competitor Moment page (move list as a timeline, drawer facts, "Analysis - what it means", "Deeper analysis - by view", source link)
 cadence: weekly                  # one run per competitor; the runner re-runs a subject when its cadence period has passed
-# web_search: inherits false. Documents = the competitor's news rows of the last 90 days (headlines) PLUS
-# the fetched text of its 5 newest articles. Fetch is on because a headline alone cannot support
-# what_happened or kssl_analysis without inference. Null url_N values are skipped by the runner.
+# v3 (prompt rebuild, docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.1.3, C "moment.yml (v3)"; user brief section 7):
+#  - a moment is a roll-up, not a second reading of the news: the documents are the competitor's STORED SIGNALS (with the steps of their
+#    story) of the last 120 days, then the best-scored harvested documents of the raw layer for moves no signal covers yet. Nothing is fetched.
+#  - the grade is set by code from the label of the signal the moment points at (derive.moment_grade: threat -> high, watch -> watch,
+#    fav -> opportunity). A move with no signal gets the grade the model judges (with a reason).
+#  - change_note = what changed since the previous move of this competitor (the timeline rail).
+#  - "deeper analysis by view" only for views that have stored rows for this competitor (VIEWS WITH ROWS).
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
 subject:
   key: competitor_id
   query: |
-    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country,
-           u.urls[1] AS url_1, u.urls[2] AS url_2, u.urls[3] AS url_3, u.urls[4] AS url_4, u.urls[5] AS url_5
+    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country
     FROM staging.competitive_competitor c
-    CROSS JOIN LATERAL (
-      SELECT array_agg(a.article_url ORDER BY a.published_date DESC) AS urls
-      FROM (SELECT n.article_url, n.published_date
-            FROM staging.competitive_news_article n
-            WHERE n.competitor_id = c.competitor_id AND n.article_url IS NOT NULL
-              AND n.published_date >= current_date - 90
-            ORDER BY n.published_date DESC LIMIT 5) a
-    ) u
-    WHERE u.urls IS NOT NULL
-    ORDER BY c.display_name
+    WHERE EXISTS (SELECT 1 FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND s.event_date >= current_date - 120)
+       OR EXISTS (SELECT 1 FROM staging.source_document d
+                   WHERE c.competitor_id = ANY(d.competitor_ids) AND coalesce(d.published_at, current_date) >= current_date - 120
+                     AND coalesce(d.body_text, '') <> ''
+                     AND (coalesce((d.triage->'info'->>'deal')::numeric, 0) >= 0.6 OR coalesce((d.triage->'info'->>'sales_geo')::numeric, 0) >= 0.6
+                          OR d.triage->'route' ? 'moment'))
+    ORDER BY (SELECT count(*) FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND s.event_date >= current_date - 120) DESC,
+             c.display_name
   documents:
-    - from: sql
+    - from: sql                  # 1. the competitor's stored signals and the steps of their stories
       query: |
-        SELECT n.published_date, n.headline, n.publisher, n.article_url
-        FROM staging.competitive_news_article n
-        WHERE n.competitor_id = '{{subject.competitor_id}}' AND n.published_date >= current_date - 90
-        ORDER BY n.published_date DESC LIMIT 60
-    - {from: url, field: url_1}
-    - {from: url, field: url_2}
-    - {from: url, field: url_3}
-    - {from: url, field: url_4}
-    - {from: url, field: url_5}
+        SELECT 'SIGNAL' AS doc, s.title AS signal_title, s.event_date, s.classification AS label, s.probability, s.impact, s.impact_dimension,
+               d.glance_move, d.glance_where, d.glance_third_party, left(d.what_article_says, 450) AS what_it_says, d.source_url,
+               (SELECT string_agg(t.step_date::text || ' ' || t.step_type || ': ' || coalesce(t.one_line, ''), ' ; ' ORDER BY t.step_no)
+                  FROM staging.story_step t WHERE t.story_id = s.story_id) AS story_steps
+        FROM staging.competitive_signal s
+        JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+        WHERE s.company_id = '{{subject.competitor_id}}' AND s.event_date >= current_date - 120
+        ORDER BY s.event_date DESC, s.title LIMIT 25
+    - from: sql                  # 2. best-scored harvested documents (deal / sales scores of the triage, or routed to moment)
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
+               round(greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0)), 2) AS score,
+               left(d.body_text, 1800) AS text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at, current_date) >= current_date - 120
+          AND coalesce(d.body_text, '') <> ''
+        ORDER BY (CASE WHEN d.triage->'route' ? 'moment' THEN 1 ELSE 0 END) DESC,
+                 greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0)) DESC,
+                 d.published_at DESC NULLS LAST LIMIT 9
+    - from: sql                  # 3. which views have stored rows for this competitor
+      query: |
+        SELECT 'VIEWS WITH ROWS' AS doc,
+               concat_ws(', ',
+                 CASE WHEN EXISTS (SELECT 1 FROM staging.competitive_product p WHERE p.competitor_id = '{{subject.competitor_id}}') THEN 'Products' END,
+                 CASE WHEN EXISTS (SELECT 1 FROM staging.competitive_matchup m WHERE m.competitor_id = '{{subject.competitor_id}}') THEN 'Product Evaluation' END,
+                 CASE WHEN EXISTS (SELECT 1 FROM staging.competitive_partnership p WHERE p.competitor_id = '{{subject.competitor_id}}') THEN 'Partnerships' END,
+                 CASE WHEN EXISTS (SELECT 1 FROM staging.competitive_project p WHERE p.competitor_id = '{{subject.competitor_id}}') THEN 'Projects' END,
+                 CASE WHEN EXISTS (SELECT 1 FROM staging.competitive_geo_company_presence p WHERE p.competitor_id = '{{subject.competitor_id}}') THEN 'Geo Footprint' END,
+                 CASE WHEN EXISTS (SELECT 1 FROM staging.competitive_patent_portfolio p WHERE p.competitor_id = '{{subject.competitor_id}}') THEN 'Patents' END) AS views
 
-context: [client, client_products, competitors, categories, moment_levels]
+context: [client, client_portfolio, client_markets, client_partners, categories, moment_levels]
 
 task: |
-  TASK moment — list the moves {{subject.display_name}} made in the last 90 days, grade each for
-  {{client.name}}, and fill one moment card per move.
+  TASK moment — list the moves {{subject.display_name}} made in the last 120 days, in date order, and fill one moment card per
+  move. The page shows them as a timeline: each card says what happened, what it means for {{client.name}}, and what changed
+  since the competitor's previous move. Every judgement is made from {{client.name}}'s point of view, using only the blocks at the
+  end of this task for facts about {{client.name}}.
 
-  A MOVE is a concrete event the documents report about {{subject.display_name}}: contract, order,
-  selection, delivery, trial, product launch, partnership or joint venture, acquisition, new
-  facility or capacity, export approval, leadership change, financial result. Opinion, forecasts
-  and market commentary are not moves. One event reported by several articles is ONE move (the
-  other articles become its sources). RELEVANCE: keep a move only if it falls in one of the
-  CATEGORIES below (the client's lines of business); a move in an unrelated business of the
-  company (civil construction, chemicals, energy, IT...) is not a move here, and a company-wide
-  event (leadership change, financial result) counts only when the source ties it to those
-  categories. Skip moves older than 90 days. At most 10 moves, newest
-  first. No move found: "records": [] and "skip_reason" = one sentence.
+  A MOVE is a concrete event: contract, order, selection, delivery, trial, product launch, partnership or joint venture,
+  acquisition, new facility or capacity, export approval, a cancellation or failure, a procurement step. Opinion, forecasts and
+  market commentary are not moves. One event reported by several documents is ONE move (the other documents become its sources).
+  KEEP a move only if it falls in one of the CATEGORIES below, or touches something in CLIENT PORTFOLIO, CLIENT MARKETS or
+  CLIENT PARTNERS. A move in an unrelated business of the company (civil construction, chemicals, energy, IT) is not a move here.
+  Skip moves older than 120 days. At most 12 moves, newest first. No move found: "records": [] and "skip_reason" = one sentence.
 
-  For each move, one record, table competitive_competitor_moment:
-   - title: the move as a headline, max 120 characters, in the article's words
+  SOURCES OF MOVES, in this order:
+   1. Each SIGNAL row is already a judged move. Make one moment of it. Copy its title exactly into ref_signal. Do not re-score it;
+      the grade comes from its label by code. Use its story steps for change_note.
+   2. A DOCUMENT row that reports a move no SIGNAL covers is a move too. Leave ref_signal empty and give the grade yourself.
+  Two SIGNAL rows of one story are two steps of one thread: make two moments only if both are dated moves.
+
+  Per move, one record, table competitive_competitor_moment:
+   - ref_signal: the SIGNAL row's signal_title, written exactly; empty when no signal covers the move
+   - title: the move as a headline, at most 110 characters (count them; longer is rejected), with the full company and product names
    - card_summary: one sentence, max 160 characters, what happened (stated facts only)
    - description: 1-2 sentences, max 300 characters, what happened (stated facts only)
-   - what_happened: 2-4 sentences: who, what, where, quantities, values, dates, as stated
-   - kssl_analysis: JUDGEMENT. 1-3 sentences: what the move means for {{client.name}}, naming the
-     {{client.name}} product(s) from CLIENT PRODUCTS it touches, or saying none is touched
-   - movement_date: the date the move happened as the source states it; else the article date
+   - what_happened: 2-4 plain sentences: who, what, where, quantities, values, dates, as stated
+   - kssl_analysis: JUDGEMENT. 1-3 plain sentences: what the move means for {{client.name}}. Name the {{client.name}} product from
+     CLIENT PORTFOLIO, the market from CLIENT MARKETS or the partner from CLIENT PARTNERS that it touches, and say how. If none is
+     touched, write exactly: "No <product> product line is touched; kept because <reason>." where <reason> names why it still matters.
+     Never write "{{client.name}} should".
+   - change_note: JUDGEMENT. One sentence, max 160 characters: what changed since this competitor's previous move on the list
+     (a new customer, a step from trial to order, a value, a new country). For the oldest move on the list: "First move on this list."
+   - movement_date: the date the move happened as the source states it (a SIGNAL row: its event_date); else the document date
      (say so in _precision)
    - ref_category: one name from CATEGORIES, exactly as written; null if none fits
    - country_name: the country where the move happens, English short name; null if none is stated
    - countries: all countries involved, comma-separated; null when only country_name applies
-   - region: a region or group exactly as the source states it (e.g. a bloc or region name);
-     null if none is stated
+   - region: a region or group exactly as the source states it; null if none is stated
    - program_name: the programme the source names for this move; null if none
-   - grade: JUDGEMENT. One level_code from LEVELS (left of the "="). Choose by the level label:
-     the level meaning the move strengthens the competitor against {{client.name}} in a category
-     where {{client.name}} has a product; the level meaning it is relevant but indirect; the level
-     meaning it weakens the competitor or opens ground for {{client.name}}. No level fits: null.
-   - source_url: the most informative article; source_label: its publisher
+   - grade: JUDGEMENT, only when ref_signal is empty. One level_code from LEVELS (left of the "="): the level meaning the move
+     strengthens the competitor against {{client.name}} where {{client.name}} has a product AND in a market of {{client.name}};
+     the level meaning it is relevant but indirect; the level meaning it weakens the competitor or opens ground for {{client.name}}.
+     With ref_signal given, leave grade empty.
+   - source_url: the most informative document URL (a SIGNAL row: its source_url); source_label: its publisher
    children:
-   competitive_competitor_moment_analysis (0-3 rows, only where the documents support a view):
-   - view_name: the dashboard area the analysis speaks to; one of: Products, Product Evaluation,
-     Partnerships, Projects, Geo Footprint, Patents
-   - analysis_text: JUDGEMENT. 1-3 sentences, stated facts plus what they imply for {{client.name}}
-   competitive_competitor_moment_source (1-3 rows, one per article that reports the move):
-   - publisher, source_type (company = the competitor's own site; official = government, ministry,
-     armed forces; news = editorial outlet or trade press), source_url
+   competitive_competitor_moment_analysis (0-3 rows, only for a view named in VIEWS WITH ROWS):
+   - view_name: one of the views listed in VIEWS WITH ROWS, exactly as written; if the list is empty, write no row
+   - analysis_text: JUDGEMENT. 1-3 plain sentences, stated facts plus what they imply for {{client.name}}
+   competitive_competitor_moment_source (1-3 rows, one per document that reports the move):
+   - publisher, source_type (company = the competitor's own site; official = government, ministry, armed forces; news = editorial
+     outlet or trade press), source_url
+
+  REASONS AND SOURCES. For every JUDGEMENT field (kssl_analysis, change_note, grade, each analysis_text) give "_reason": one sentence
+  naming the facts it rests on. For title, movement_date and what_happened give "_sources": the verbatim sentence and its URL.
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented. Say what IS touched, not what is absent. Never write the names of
+  the blocks (CLIENT MARKETS...) in the text; say "KSSL's markets" or "KSSL's range".
+  Example of the register (fictional): "Nordvik will build NV-155 guns in Veland with a local firm. The article gives no start date."
 
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
-  COMPETITORS:
-  {{context.competitors}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
   CATEGORIES:
   {{context.categories}}
   LEVELS:
   {{context.moment_levels}}
 
-  DOCUMENTS (news rows of {{subject.display_name}}, then the text of its newest articles):
+  DOCUMENTS (the competitor's stored signals, then harvested documents, then the views with stored rows):
   {{documents}}
 
 output:
   competitive_competitor_moment:
     card: true
-    key: [prompt_id, subject, source_url]     # same article -> same moment id; other moments are left alone
+    key: [prompt_id, subject, source_url]     # same document -> same moment id; other moments are left alone
     columns:
-      title: {required: true, max: 120}
-      card_summary: {max: 160}
-      description: {max: 300}
-      what_happened: {required: true}
-      kssl_analysis: {judgement: true}
+      title: {required: true, max: 120, plain: warn}
+      card_summary: {max: 160, plain: warn}
+      description: {max: 300, plain: warn}
+      what_happened: {required: true, plain: strict}
+      kssl_analysis: {judgement: true, plain: strict}
+      change_note: {judgement: true, max: 160, plain: warn}
       movement_date: {type: date, required: true}
       category: {from_ref: ref_category}
       country_name: {max: 160}
       countries: {}
       region: {max: 128}
       program_name: {max: 240}
-      grade: {judgement: true, enum_from: context.moment_levels}   # level_code values only
+      signal_id: {from_ref: ref_signal}
+      grade: {judgement: true, enum_from: context.moment_levels}   # level_code values only; code overrides it when a signal is given
       source_url: {required: true}
       source_label: {max: 240}
     loader:
@@ -121,12 +163,14 @@ output:
       competitor_id: subject.competitor_id
       company_display: subject.display_name
       source_domain: host_of_source_url
+      story_id: resolved_ref_signal_story_id
       display_order: rank_by_movement_date_desc
     children:
       competitive_competitor_moment_analysis:
         columns: [view_name, analysis_text]
         required: [view_name, analysis_text]
         judgement: [analysis_text]
+        plain: {analysis_text: warn}
         enum: {view_name: [Products, Product Evaluation, Partnerships, Projects, Geo Footprint, Patents]}
         loader: {analysis_id: new_id, moment_id: parent_id, display_order: index}
       competitive_competitor_moment_source:
@@ -134,3 +178,6 @@ output:
         required: [source_url]
         enum: {source_type: [company, official, news]}
         loader: {source_id: new_id, moment_id: parent_id, source_domain: host_of_source_url}
+
+derive:
+  - moment_grade               # grade from the label of the signal the moment points at

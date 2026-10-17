@@ -1,10 +1,16 @@
 id: project
-title: Defence projects of one competitor
-version: 1
+title: Defence projects of one competitor (each programme as a dated, sourced timeline)
+version: 2
 fills: [competitive_project, competitive_project_source, competitive_project_specification, competitive_project_stage, competitive_project_timeline]
-shows_on: "Projects page (feed; drawer with facts, stage stepper, specs, timeline, strategic assessment, sources)"
+shows_on: "Projects page (feed; drawer with facts, stage stepper, specs, timeline of dated sourced steps, strategic assessment, KSSL option, sources)"
 cadence: quarterly
 web_search: true                 # programme facts are rarely in the news rows
+# v2 (prompt rebuild, docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.1.8, C "project.yml (v2)"; user brief section 7):
+#  - a project is a story: derive.project_story writes staging.story + story_step from the timeline events (date, what changed, source,
+#    stage after the step), so a later article can add a step instead of a new card
+#  - every timeline event is dated AND sourced and says what changed at that step
+#  - kssl_option: what KSSL can do about the project (compete | partner | supply | none | unknown), with a reason
+#  - inputs: the best-scored harvested documents (deal score of the triage, or routed to project), then news leads, then web search
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
 subject:
@@ -16,76 +22,101 @@ subject:
            (SELECT string_agg(f.filter_code || ' = ' || f.filter_label, '; ' ORDER BY f.display_order)
               FROM staging_ui.ui_project_filter f) AS region_filters
     FROM staging.competitive_competitor c
-    ORDER BY c.display_name
+    ORDER BY (SELECT count(*) FROM staging.source_document d WHERE c.competitor_id = ANY(d.competitor_ids)
+                AND (coalesce((d.triage->'info'->>'deal')::numeric, 0) >= 0.6 OR d.triage->'route' ? 'project')) DESC,
+             c.display_name
   documents:
-    - from: sql
+    - from: sql                  # 1. best-scored harvested documents: full text
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
+               round(coalesce((d.triage->'info'->>'deal')::numeric, 0), 2) AS deal_score,
+               d.triage->'deal_types' AS deal_types, d.triage->'counterparties' AS counterparties,
+               left(d.body_text, 2200) AS text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
+        ORDER BY (CASE WHEN d.triage->'route' ? 'project' THEN 1 ELSE 0 END) DESC,
+                 coalesce((d.triage->'info'->>'deal')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 8
+    - from: sql                  # 2. news leads (headlines)
       query: |
         SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
         FROM staging.competitive_news_article n
         WHERE n.competitor_id = '{{subject.competitor_id}}' AND n.published_date >= current_date - 730
           AND COALESCE(n.category, '') NOT IN ('Stock & market', 'Non-defence business')
-        ORDER BY n.published_date DESC LIMIT 80
-    - from: sql                  # the client's stored specs, only for kssl_platform / kssl_advantage
+        ORDER BY n.published_date DESC LIMIT 50
+    - from: sql                  # 3. the client's stored specs, only for kssl_platform / kssl_advantage
       query: |
         SELECT 'CLIENT SPEC' AS doc, p.product_name, s.spec_name, s.value_text, s.value_numeric, s.unit
         FROM staging.client_product p
         JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
         ORDER BY p.product_name, s.display_order
 
-context: [client, client_products]
+context: [client, client_portfolio, client_markets, client_partners]
 
 task: |
-  TASK project — list the defence projects of {{subject.display_name}} ({{subject.origin_country}}),
-  with stage, specifications, timeline and sources. Use the DOCUMENTS first, then web search for gaps.
+  TASK project — list the defence projects of {{subject.display_name}} ({{subject.origin_country}}) as programmes with a dated,
+  sourced timeline, a stage, specifications, and what they mean for {{client.name}}. Use the DOCUMENTS first, then web search for
+  gaps. Facts only from sources; judgements are marked.
 
-  A PROJECT is a named defence programme or contract in which the company is lead organisation or
-  prime contractor for a stated customer. Not a product launch without a customer, and not a
-  programme where the company is only a sub-supplier. At most 5 projects, largest or most recent
-  first. None: "records": [] and "skip_reason".
+  A PROJECT is a named defence programme or contract in which the company is lead organisation or prime contractor for a stated
+  customer. Not a product launch without a customer, and not a programme where the company is only a sub-supplier. At most 5
+  projects, largest or most recent first. None: "records": [] and "skip_reason".
 
   Per project, one record, table competitive_project:
    - project_title: the programme or contract name as written in the main source (max 200)
-   - kind: short type as the source describes it (e.g. development, production contract,
-     upgrade), max 64 characters
+   - kind: short type as the source describes it (e.g. development, production contract, upgrade), max 64 characters
    - customer: the customer or end user as written
    - location: where the work is done or delivered (plant, city, country), as stated
-   - region: JUDGEMENT. One filter_code from REGION FILTERS (left of the "="), chosen by its label;
-     null if none fits
-   - stage: JUDGEMENT. One name from STAGE STEPS: the furthest stage a source reports (the steps
-     are listed first to last). Give the reporting source in _sources
-   - stage_note: one sentence on the current stage, as stated
-   - card_summary: one sentence, max 200 characters, what the project is
-   - what_the_project_is: 2-4 sentences: objective, system, quantity, customer, as stated
-   - assessment_stance: JUDGEMENT. threat if the project directly strengthens the competitor with
-     customers {{client.name}} sells to in a category where {{client.name}} has a product (CLIENT
-     PRODUCTS); fav if it weakens the competitor or opens ground for {{client.name}}; watch
-     otherwise. Allowed: threat | watch | fav
-   - assessment_read: JUDGEMENT. 2-4 sentences: what the project means for {{client.name}}, naming
-     the {{client.name}} product(s) it touches
+   - region: JUDGEMENT. One filter_code from REGION FILTERS (left of the "="), chosen by its label; null if none fits
+   - stage: JUDGEMENT. One name from STAGE STEPS: the furthest stage a source reports (the steps are listed first to last)
+   - stage_note: one plain sentence on the current stage, as stated
+   - card_summary: one plain sentence, max 200 characters, what the project is
+   - what_the_project_is: 2-4 plain sentences: objective, system, quantity, customer, as stated
+   - assessment_stance: JUDGEMENT. threat if the project directly strengthens the competitor with customers {{client.name}} sells to
+     (CLIENT MARKETS) in a sub-type where {{client.name}} has a product (CLIENT PORTFOLIO); fav if it weakens the competitor or opens
+     ground for {{client.name}}; watch otherwise. Allowed: threat | watch | fav
+   - assessment_read: JUDGEMENT. 2-4 plain sentences: what the project means for {{client.name}}, naming the {{client.name}} product,
+     market or partner it touches. If none is touched, write exactly: "No KSSL product, market or partner is touched by this project."
+   - kssl_option: JUDGEMENT. What {{client.name}} can do about this project: compete (a {{client.name}} product could bid for the same
+     buyer), partner (the competitor or a team member could use a {{client.name}} product or partner), supply (the project needs a
+     component {{client.name}} makes, such as barrels, forgings or shells), none (nothing in the portfolio fits) or unknown (the
+     sources or blocks do not say). Allowed: compete | partner | supply | none | unknown
    - ref_client_product: JUDGEMENT. The CLIENT PRODUCTS name that competes most directly; null if none
-   - kssl_advantage: JUDGEMENT. One sentence naming a stated figure of that {{client.name}} product
-     (CLIENT SPEC rows) that beats or trails a stated figure of the project's system; null unless
-     both figures are stated
+   - kssl_advantage: JUDGEMENT. One sentence naming a stated figure of that {{client.name}} product (CLIENT SPEC rows) that beats or
+     trails a stated figure of the project's system; null unless both figures are stated
    children:
    competitive_project_specification (0-12 rows, stated parameters in source order):
-   - spec_label (short English name), spec_value (as written, no conversion), unit (as written).
-     A stated contract or programme value is a row here: spec_value = the amount as written,
-     unit = its currency
-   competitive_project_timeline (3-8 dated events, oldest first):
-   - event_date; event_title (max 120 chars); event_description (one sentence, as stated);
-     is_expected: true for a future or planned event, false for one that happened
+   - spec_label (short English name), spec_value (as written, no conversion), unit (as written). A stated contract or programme value
+     is a row here: spec_value = the amount as written, unit = its currency
+   competitive_project_timeline (3-8 dated steps of the programme, oldest first. EVERY step is dated, sourced and says what changed):
+   - event_date; event_title (max 120 chars, plain words); event_description (one plain sentence, as stated);
+     is_expected: true for a future or planned step, false for one that happened
+   - changed: max 120 characters: what changed at this step compared with the step before it ("Order grows from 12 to 24 guns",
+     "Programme moves from trials to production"). The first step: "Programme starts."
+   - source_url: the page that states this step (a document URL from the DOCUMENTS, or a web page). Required for every step that happened.
+   - stage_after: the STAGE STEPS name the programme was in after this step; empty for a planned step
    competitive_project_source (2-4 rows, the sources used most):
-   - source_label (page or document title as published), source_url,
-     source_type (official = government, ministry, armed forces; company; news)
+   - source_label (page or document title as published), source_url, source_type (official = government, ministry, armed forces; company; news)
   Do not output competitive_project_stage; the loader builds it from the stage you choose.
+  For every JUDGEMENT field give "_reason": one sentence naming the facts it rests on. For project_title, customer, stage and kind give
+  "_sources": the verbatim sentence and its URL.
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented. Say what IS touched, not what is absent. Never write the names of
+  the blocks (CLIENT MARKETS...) in the text; say "KSSL's markets" or "KSSL's range".
 
   STAGE STEPS: {{subject.stage_steps}}
   REGION FILTERS: {{subject.region_filters}}
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
 
-  DOCUMENTS (news leads for {{subject.display_name}}, then client specs):
+  DOCUMENTS (best-scored harvested documents of {{subject.display_name}}, news leads, then client specs):
   {{documents}}
 
 output:
@@ -99,13 +130,14 @@ output:
       location: {}
       region: {judgement: true, enum_from: ui.ui_project_filter.filter_code}     # coupling: filter_code must equal region
       stage: {required: true, judgement: true, enum_from: ui.ui_project_stage_step.stage_name}
-      stage_note: {}
-      card_summary: {max: 200}
-      what_the_project_is: {required: true}
+      stage_note: {plain: warn}
+      card_summary: {max: 200, plain: warn}
+      what_the_project_is: {required: true, plain: strict}
       assessment_stance: {required: true, judgement: true, enum: [threat, watch, fav]}
-      assessment_read: {judgement: true}
+      assessment_read: {judgement: true, plain: strict}
+      kssl_option: {judgement: true, enum: [compete, partner, supply, none, unknown]}
       kssl_platform: {from_ref: ref_client_product, judgement: true}   # product_name text of the referenced client product
-      kssl_advantage: {judgement: true}
+      kssl_advantage: {judgement: true, plain: warn}
     loader:
       project_id: new_id
       competitor_id: subject.competitor_id
@@ -122,6 +154,11 @@ output:
       competitive_project_timeline:
         columns: [event_date, event_title, event_description, is_expected]
         required: [event_date, event_title, is_expected]
+        transient:                 # read by derive.project_story, not stored on the timeline row
+          changed: {max: 120}
+          source_url: {}
+          stage_after: {enum_from: ui.ui_project_stage_step.stage_name}
+        plain: {event_description: warn}
         loader: {timeline_id: new_id, project_id: parent_id, display_order: index}
       competitive_project_source:
         columns: [source_label, source_url, source_type]
@@ -136,3 +173,6 @@ output:
           stage_name: from_ui.ui_project_stage_step.stage_name
           stage_order: from_ui.ui_project_stage_step.stage_order
           is_current: stage_name_equals_project_stage
+
+derive:
+  - project_story            # story + dated sourced steps from the timeline events

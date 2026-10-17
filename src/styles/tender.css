@@ -220,25 +220,19 @@
     white-space: nowrap;
     flex-shrink: 0;
     padding: 3px 8px;
-    border-radius: 3px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
     align-self: flex-start;
   }
   .tcard .ddl.urgent {
-    background: rgba(220, 38, 38, 0.16);
-    color: #ef4444;
+    color: var(--threat);
     font-weight: 600;
   }
   .tcard .ddl.soon {
-    background: rgba(234, 179, 8, 0.16);
-    color: #eab308;
+    color: var(--watch);
   }
   .tcard .ddl.normal {
-    background: rgba(255, 255, 255, 0.05);
     color: var(--d-txt-3);
-  }
-  .tcard .ddl.settled {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--d-txt-4);
   }
 
   /* Clean, unclustered parameters grid on dashboard */
@@ -275,12 +269,11 @@
     font-style: italic;
   }
 
-  /* Fit bar on dashboard card (Cummins Arabia matching) */
+  /* Fit bar on dashboard card */
   .tcard .fitbar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-top: 6px;
+    gap: 9px;
   }
   .tcard .fitlab {
     font-family: var(--mono);
@@ -288,47 +281,32 @@
     letter-spacing: .08em;
     text-transform: uppercase;
     color: var(--d-txt-4);
-    white-space: nowrap;
   }
   .tcard .fittrack {
-    width: 80px;
-    max-width: 100px;
+    flex: 1;
+    max-width: 140px;
     height: 4px;
     background: var(--d-bg-3);
-    border-radius: 2px;
-    overflow: hidden;
-    flex-shrink: 0;
   }
   .tcard .fittrack i {
     display: block;
     height: 100%;
-    border-radius: 2px;
+    background: var(--ok);
   }
-  .tcard .fittrack i.strong, .tcard .fittrack i.high, .tcard .fittrack i.good {
-    background: #3fa86a;
+  .tcard .fittrack i.mid {
+    background: var(--watch);
   }
-  .tcard .fittrack i.partial, .tcard .fittrack i.mid {
-    background: #e0a020;
-  }
-  .tcard .fittrack i.weak, .tcard .fittrack i.low, .tcard .fittrack i.poor {
-    background: #f0593c;
+  .tcard .fittrack i.low {
+    background: var(--threat);
   }
   .tcard .fitpct {
     font-family: var(--mono);
-    font-size: 10.5px;
-    font-weight: 500;
+    font-size: 10px;
+    color: var(--d-txt-2);
   }
   .tcard .fitpct.grade {
+    color: var(--d-txt-2);
     text-transform: lowercase;
-  }
-  .tcard .fitpct.strong, .tcard .fitpct.high, .tcard .fitpct.good {
-    color: #3fa86a;
-  }
-  .tcard .fitpct.partial, .tcard .fitpct.mid {
-    color: #e0a020;
-  }
-  .tcard .fitpct.weak, .tcard .fitpct.low, .tcard .fitpct.poor {
-    color: #f0593c;
   }
   .tp-list-empty {
     padding: 50px 22px;
@@ -431,6 +409,10 @@
     color: #16a34a;
     margin-bottom: 4px;
   }
+  /* the same grade colours as the list card's fit bar: strong green, partial amber, weak red */
+  .tp-fit-verdict.high { color: var(--ok); }
+  .tp-fit-verdict.mid { color: var(--watch); }
+  .tp-fit-verdict.low { color: var(--threat); }
 
   .tp-asmt-sec .req {
     font-size: 13px;
@@ -576,10 +558,10 @@
   .tp-lean b {
     font-weight: 600;
   }
-  .tp-lean.go { border-left: 3px solid var(--fav); }
+  .tp-lean.go { border-left: 3px solid var(--ok); }
   .tp-lean.maybe { border-left: 3px solid var(--watch); }
   .tp-lean.pass { border-left: 3px solid var(--threat); }
-  .tp-lean.won { border-left: 3px solid var(--fav); }
+  .tp-lean.won { border-left: 3px solid var(--ok); }
   .tp-lean.closed { border-left: 3px solid var(--l-line-2); }
   .tp-lean.na { border-left: 3px dashed var(--l-line-2); }
 

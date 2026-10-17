@@ -1,80 +1,267 @@
 id: signal
 title: Competitive signal from a news article
-version: 1
-fills: [competitive_signal, competitive_signal_detail, competitive_signal_evidence]
-shows_on: Competitive Overview cards + signal drawer
+version: 2
+fills: [competitive_signal, competitive_signal_detail, competitive_signal_evidence, competitive_product_news]
+shows_on: Competitive Overview cards (risk matrix) + signal drawer + Products timeline
 cadence: daily                   # routine: run for every new article since the last run
 # model / web_search: inherit from _shared.yml (the article is the only document)
+#
+# v2 (prompt rebuild, Phase 3a; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.1.1, A.1.2, A.1.4, F.1, F.4):
+#  - the model SCORES (probability, time to effect, six impact dimensions, sub-type match, KSSL market, direction); it writes NO label.
+#    derive.signal_label computes impact, dimension, threat / watch / fav and the "Orders . high" glance field from the scores.
+#  - at a glance = six fixed fields; key points 3-6 with a count rule and a restatement check; plain English checked by the loader.
+#  - the card is one step of a story (story_ref + story_kind / story_country / story_product; derive.story_link).
+#  - product news: one competitive_product_news row per competitor product the article involves (derive.product_news_merge
+#    keeps the row the news job already attached instead of adding a second one).
+# TODO (Phase flood): raw-layer subjects. Add a second subject query over staging.source_document (documents the harvester read, with
+#    no competitive_news_article row) so a harvested page can be a signal too; its key would be doc_id, and the documents entry below
+#    would read it by `field: url`. The `from: source_document` entry already works for an article whose url is in the raw layer.
 
 subject:                         # one run per row; key = what makes a run unique
   # company news only: prompts/news_merge.py also writes every product story to the company table, so reading
   # competitive_product_news here would signal the same story twice. Stories the news prompt categorised as
-  # Stock & market / Non-defence business / Other are not signals.
+  # Stock & market / Non-defence business / Other are not signals, and neither is a story flagged not_about_company.
   key: article_id
   query: |
-    SELECT n.article_id, n.headline, n.article_url, n.publisher, n.published_date,
-           c.display_name AS competitor
+    SELECT n.article_id, n.competitor_id, n.headline, n.article_url, n.publisher, n.published_date, n.category, n.image_url,
+           c.display_name AS competitor,
+           (SELECT string_agg(DISTINCT p.product_name, '; ') FROM staging.competitive_product_news pn
+              JOIN staging.competitive_product p ON p.product_id = pn.product_id
+             WHERE pn.article_url = n.article_url) AS attached_products
     FROM staging.competitive_news_article n
     JOIN staging.competitive_competitor c ON c.competitor_id = n.competitor_id
     WHERE n.article_url IS NOT NULL
       AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business', 'Other')
+      AND NOT EXISTS (SELECT 1 FROM staging.fact_source f WHERE f.table_name = 'competitive_news_article'   -- the news job found the story is not about the company
+                       AND f.column_name = 'not_about_company' AND f.row_id = n.article_id::text)
     ORDER BY n.published_date DESC NULLS LAST
   documents:
-    - from: url                  # the runner fetches the article text
+    - from: source_document      # the raw layer's stored text first (no fetch) ...
+      field: article_url
+      min_chars: 600
+      cap: 12000
+    - from: url                  # ... else the runner fetches the article text
       field: article_url
 
-context: [client, client_products, competitors, categories]
+context: [client, client_portfolio, client_capabilities, client_markets, client_partners, competitors_extended, categories, stories, competitor_catalogue]
 
 task: |
-  TASK signal — decide whether one news article is a competitive signal for {{client.name}}, and
-  if so fill one signal card.
+  TASK signal — decide whether one news article is a competitive signal for {{client.name}}. If it is, fill one signal card:
+  scores, plain-English text, key points and product-news rows. Every judgement is made from {{client.name}}'s point of view,
+  using only the blocks at the end of this task for facts about {{client.name}}.
 
-  ARTICLE: "{{subject.headline}}" — {{subject.publisher}}, {{subject.published_date}}
+  ARTICLE: "{{subject.headline}}" - {{subject.publisher}}, {{subject.published_date}}
   URL: {{subject.article_url}}
   The article was found while tracking: {{subject.competitor}}
+  Product news the news job already attached to this article: {{subject.attached_products}}
 
-  STEP 1 — RELEVANCE. It is a signal only if all three hold:
-   a) it reports a concrete event: contract, order, selection, delivery, induction, test or
-      trial, product launch, partnership or joint venture, acquisition, new facility or capacity,
-      export approval. Opinion, forecasts and market commentary are not events;
-   b) the company that acts is one of the COMPETITORS below (match name or short name).
-      An article about {{client.name}} itself is not a competitive signal;
-   c) the event falls in one of the CATEGORIES below.
+  STEP 1 - RELEVANCE. It is a signal only if all three hold:
+   a) it reports a concrete event: contract, order, selection, delivery, induction, test or trial, product launch,
+      partnership or joint venture, acquisition, new facility or capacity, export approval, a cancellation or failure,
+      a procurement step (a proposal sent for approval, an approval, a tender, a shortlist), or financial results that state
+      orders, backlog, capacity or deliveries. Opinion, forecasts and market commentary are not events;
+   b) the company that acts is one of the COMPETITORS below (match name or short name). An article about {{client.name}}
+      itself is not a competitive signal;
+   c) the event falls in one of the CATEGORIES below, or it touches something in CLIENT PORTFOLIO, CLIENT CAPABILITIES,
+      CLIENT MARKETS or CLIENT PARTNERS (a supplier, a barrel or forging line, a partner's move). Do not judge by the
+      company's main business; judge by the item the event is about.
   If any test fails: "records": [] and "skip_reason" = one sentence naming the failed test.
+  If the article reports several events, card the main one. Use the others as key points.
 
-  STEP 2 — one record, table competitive_signal:
-   - ref_competitor: the competitor that acts, exactly as in the COMPETITORS list
+  STEP 2 - the card. One record, table competitive_signal, with its children. You score; the loader labels. Do NOT write
+  threat / watch / fav anywhere.
+
+  record competitive_signal (values):
+   - ref_competitor: the competitor that acts, exactly as in COMPETITORS
    - title: the event as a headline, max 120 characters, in the article's words
-   - summary: JUDGEMENT. 1-2 sentences, max 300 characters: what happened and what it means
-     for {{client.name}} in that category
-   - classification: JUDGEMENT. "threat" if the event directly strengthens the competitor with
-     customers {{client.name}} sells to in a category where {{client.name}} has a product
-     (CLIENT PRODUCTS); "watch" if relevant but indirect (test, launch, R&D, partnership, new
-     capacity, a market {{client.name}} does not serve). Allowed: threat | watch
-   - event_date: the date the event happened as the article states it; else the published date
-     (say so in _precision)
+   - summary: JUDGEMENT. Two short plain sentences, each 20 words or fewer, max 300 characters in all: what happened, then the one
+     thing that matters for {{client.name}}. A sentence over 32 words rejects the whole card, so count: if a sentence
+     carries names, a value and a place, split it in two. Never put a list of companies in the summary.
+   - event_date: the date the event happened as the article states it; else the published date (say so in _precision)
    - ref_category: one name from CATEGORIES, exactly as written
-   children:
+   - direction: JUDGEMENT. adverse = the rival gains or {{client.name}} may lose ground. favourable = the rival loses, cancels,
+     fails, is blocked or leaves. Allowed: adverse | favourable
+   - probability: JUDGEMENT, 1-5. How sure is it that the move becomes a fact? Take the highest anchor the article supports.
+       5 done: contract signed, delivery made, joint venture registered, plant opened, induction completed
+       4 decided: selected, lowest bidder (L1) or approved with funding; award or signature expected within 12 months
+       3 in competition: shortlisted, in trials, bid submitted, MoU tied to a named programme
+       2 intent: MoU without a programme, "plans to", "in talks", capacity announced with no customer
+       1 report of interest, unnamed sources, analyst view
+     Something that has already happened (a unit set up, a deal signed, a delivery made) is 5. Words like "likely" or "poised" are
+     not an anchor. If the article states no procurement state, leave probability empty.
+   - time_to_effect: JUDGEMENT. When the effect reaches {{client.name}}, from stated delivery, production or service dates only.
+     Count from the next stated step (first deliveries, a production contract, a plant start), not from the end of the programme.
+     lt_1y | 1_3y | gt_3y | unknown ("soon" is unknown)
+   - impact_orders_revenue, impact_market_standing, impact_supply_chain, impact_technology_gap, impact_partnerships,
+     impact_policy_export: JUDGEMENT, each 1-5, always all six. Anchors:
+       orders_revenue   5 a tender or customer where {{client.name}} is bidding or is the incumbent is decided or shifted
+                        4 a customer or market of {{client.name}} buys a like-for-like product from the rival
+                        3 the rival wins a like-for-like order in a country listed in CLIENT MARKETS
+                        2 the rival wins a like-for-like order outside {{client.name}}'s markets
+                        1 no like-for-like product
+       market_standing  5 the rival becomes preferred or sole supplier, or wins a reference with a key customer of {{client.name}}
+                        4 first export reference in a {{client.name}} market   3 the rival gains a qualification or certificate
+                        {{client.name}} lacks   2 reputation only   1 none
+       supply_chain     5 a supplier or partner of {{client.name}} (CLIENT PARTNERS) commits capacity or exclusivity to the rival,
+                        or the rival buys it   4 the rival books scarce capacity (barrels, forgings, propellant, explosives,
+                        titanium) or wins a component supply that {{client.name}} also sells
+                        3 the rival builds in-house what {{client.name}} supplies to it   2 raw-material or licence news that
+                        could reach {{client.name}}   1 none
+       technology_gap   5 trial evidence of a spec that {{client.name}}'s like-for-like product cannot meet by a margin a buyer
+                        notices (range +20 percent, weight -20 percent)   4 the same, but claimed or on a prototype
+                        3 parity on a spec where {{client.name}} led   2 small step   1 none
+       partnerships     5 a partner of {{client.name}} signs a JV or an exclusive tie with the rival
+                        4 a partner of {{client.name}} teams with the rival on a bid {{client.name}} is in
+                        3 a likely partner of the same kind ties with the rival   2 a tie outside {{client.name}}'s lines   1 none
+       policy_export    5 a rule or approval that blocks {{client.name}} or favours the rival in a {{client.name}} market
+                        4 the rival gets export approval to a {{client.name}} market   3 policy change that affects the category
+                        2 general policy news   1 none
+     Be strict. Most events score 1 in most dimensions. A score above 2 needs a named link between the article and a product,
+     country, partner or customer in the blocks below. No link in the blocks = 1 or 2.
+   - subtype_match: JUDGEMENT. Is the rival product of the same kind as a {{client.name}} product? Find the rival product's
+     sub-type in RIVAL PRODUCTS (written "category > sub_type: name"), then look for that sub-type in CLIENT PORTFOLIO (the part
+     before the ":"). same = the same sub-type; adjacent = same category and a close sub-type (a towed and a mounted howitzer);
+     none = a different kind of product; unknown = the sub-type of the product cannot be told. For supply-chain or partnership
+     events with no rival product, use unknown.
+     Allowed: same | adjacent | none | unknown
+   - in_client_market: JUDGEMENT. Is the country where the effect lands (the buyer's country, or the site's country) a country line
+     in CLIENT MARKETS? yes | no | unknown. Use only that block. If it says "none on record" the answer is unknown. If the
+     article names no country, the answer is unknown.
+   - story_ref: the handle of the story this article continues (see STORIES), else the word new. Same rival, same product or
+     programme and same country is the same story: a prototype award, a production plan and a plant for one programme are steps
+     of one story. A later delivery or a new customer country is a new story.
+   - story_kind: what kind of thread the story is. One of programme | order | delivery | trial | partnership | capacity | policy.
+     When you continue a story, give the kind that story already has (the last part of its key).
+   - story_country: the buyer or partner country, English name; leave empty if none
+   - story_product: the rival's product, written exactly as in RIVAL PRODUCTS; leave empty if none or not listed
+   - _reason (one sentence for EVERY judgement above, each naming the anchor or block line and the article fact it rests on):
+       "summary": "Rests on the signed contract and on the match with a product in CLIENT PORTFOLIO."
+       "direction": "adverse: the rival wins an order."
+       "probability": "5: the contract is signed (anchor: done)."
+       "impact_orders_revenue": "5: {{client.name}} bid the MArG 155/52 in this competition and the rival was chosen."
+       "impact_policy_export": "1: no rule or approval is mentioned."
+     A score of 1 may use a few words.
+   - _sources: for title and event_date, the verbatim sentence and the URL
+
+  children of competitive_signal:
    competitive_signal_detail (exactly one):
-   - drawer_title: the title, may be longer (max 200 characters)
-   - impact_eyebrow: JUDGEMENT. 2-5 words naming the impact, e.g. "Order won in artillery"
-   - why_it_matters: JUDGEMENT. 2-3 sentences: how this affects {{client.name}}, naming the
-     {{client.name}} product(s) from CLIENT PRODUCTS it touches, if any
-   - what_article_says: 2-3 sentences summarising only what the article states
-   - source_name: the publisher; source_url: the article URL
-   competitive_signal_evidence (3-8 rows):
-   - evidence_group: "fact" (a figure or named detail stated in the article: quantity, value,
-     customer, date, place) or "key_point" (a sentence-level takeaway stated in the article).
-     Allowed: fact | key_point
-   - label: 1-4 words ("Customer", "Order value", "Quantity", "Delivery")
-   - value: the stated value, as written
-   - quote: the verbatim sentence that states it; source_url: the article URL
+   - drawer_title: the headline for the drawer, max 140 characters
+   - AT A GLANCE, six short fields. A word or a short phrase each, never a sentence, never a summary:
+       glance_who: the rival's name, max 40 characters
+       glance_move: one of Order | Contract | Selection | Delivery | Induction | Trial | Launch | JV | MoU | Acquisition |
+                    Capacity | Export approval | Policy | Supply deal | Cancellation
+       glance_where: the country or buyer, max 40 characters
+       glance_third_party: the customer or partner as the article names them, max 60 characters; empty if none
+       glance_when: the event date, then the next stated step, max 60 characters, e.g. "9 Oct 2026 · deliveries 2028-2030"
+     (The impact field of the glance is built by code from your scores. Do not write it.)
+   - impact_eyebrow: JUDGEMENT. 2-5 words: the highest-scoring impact dimension and its level (high = 4-5, medium = 3,
+     low = 1-2), e.g. "Orders and revenue · high". It must agree with your scores.
+   - what_article_says: 2-4 plain sentences. Only what the article states: who, what, how many, how much, when, where.
+   - why_it_matters: JUDGEMENT. 2-4 plain sentences from {{client.name}}'s point of view. Name what is touched: a
+     {{client.name}} product from CLIENT PORTFOLIO, a market from CLIENT MARKETS, or a partner or supplier from CLIENT PARTNERS,
+     and say how. Say plainly what is unknown ("The article does not say which country buys the shells."). If nothing is touched,
+     write exactly: "No <product> product line is touched; kept because <reason>." where <reason> names an impact dimension
+     (for example "of the market standing it gives the rival with a customer in Europe"). Do not recommend actions. Never write
+     "{{client.name}} should".
+   - _sources: for what_article_says, the verbatim sentence and the URL. _reason for impact_eyebrow and why_it_matters.
+   competitive_signal_evidence (7-10 rows in two groups):
+   - key_point, 3 to 6 rows. Each is one fact worth remembering: a number with its unit, a name that is not in the title, a date,
+     or a condition ("option for", "subject to", "if"). One sentence of 20 words or fewer. Never repeat the title or the summary;
+     a row that does is dropped. Fewer than 3 new facts is a failure: read the article again.
+       label: 1-3 words ("Value", "Option", "Local assembly")
+       value: the sentence
+       quote: the verbatim sentence from the article that states it
+   - fact, 2 to 4 rows: label, value (a figure or a name, max 60 characters: customer, quantity, value, place) and quote.
+   - evidence_group is key_point or fact. List the key_point rows first.
+
+  records competitive_product_news (zero to four, after the signal record). One row for each competitor product the article
+  involves in any way: ordered, delivered, tested, shown, used in combat, upgraded, built under licence.
+  Write a row only for an event that THIS article reports about the product, not for an older fact it mentions in passing.
+   - ref_product: the product's name written EXACTLY as in RIVAL PRODUCTS (after the ":"). If the article's product is not in
+     that list, write no row for it, and add "competitive_product_news.<product name>" to not_found. Never invent a product.
+   - news_type: what happened to the product in this article. One of
+       programme_order           a programme, order or selection
+       delivery_induction        a delivery or induction into service
+       deployment_combat_use     use in the field or in combat
+       trial_test_demo           a trial, test or demonstration
+       export_new_customer       a first sale or approval for a new customer country
+       upgrade_variant_component a new variant, an upgrade or component work
+       production_localisation_licence  production lines, local assembly or a licence
+       certification_qualification  a certificate or qualification
+       incident_failure          an accident, failure or recall
+   - event_date: the date of this step (YYYY-MM-DD), with _sources
+   - product_variant: the variant named in the article ("K9A2", "Block 2"), max 60 characters; empty if none
+   - kssl_relevance: JUDGEMENT, max 200 characters, one plain sentence. Fill it only when this product's sub-type appears in
+     CLIENT PORTFOLIO. Say what {{client.name}} product it is the same class as and what happened. Otherwise leave empty.
+   - _reason for kssl_relevance
+
+  PLAIN ENGLISH. This is read by managers who are not weapons specialists.
+   - Sentences of 20 words or fewer, one idea each, active voice. Name the company and the thing.
+   - A technical term only when it is the name of the thing. Explain it in a few words the first time:
+     "self-propelled gun (a gun on its own tracked vehicle)". Spell out an acronym the first time unless it is in the article's
+     headline. Official names (ATAGS, K9 Vajra-T) stay as names. Titles (title, drawer_title) use the full name, not an acronym:
+     write "Indo-Russian Rifles", not "IRRPL".
+   - Numbers keep their unit and date. Never convert, round or add "about" unless the article does.
+   - Never use: leverage, synergy, ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end,
+     strategic imperative, capability enhancement, strengthens its position, extends its footprint, poses a threat to,
+     positions itself, unprecedented. No hype the article does not quote.
+   - Say what IS touched. Not "there is no direct overlap".
+   - Never write the names of the blocks (CLIENT MARKETS, CLIENT PORTFOLIO...) in the text. Say "KSSL's markets" or "KSSL's range".
+   Before: "The agreement strengthens Nordvik's position in the Gulf artillery market and extends its footprint."
+   After:  "Nordvik will build NV-155 guns in Veland with a local firm. The article gives no start date."
+   Before: "The platform leverages robust, state-of-the-art propulsion for unprecedented mobility."
+   After:  "The vehicle has a 1,000 horsepower engine. The article gives no range or speed."
+
+  EXAMPLE of the shape and register only. Every name and figure in it is fictional; do not reuse any of them.
+  {"prompt_id": "signal", "subject": "Nordvik Defence: Veland orders 24 NV-155 guns", "skip_reason": null, "records": [
+   {"table": "competitive_signal", "values": {"ref_competitor": "Nordvik Defence",
+     "title": "Veland orders 24 NV-155 wheeled guns from Nordvik Defence",
+     "summary": "Veland's army signed for 24 NV-155 truck-mounted 155 mm guns, with deliveries from 2028. {{client.name}} offered the MArG 155/52 in the same competition.",
+     "event_date": "2026-10-09", "ref_category": "Artillery", "direction": "adverse", "probability": 5, "time_to_effect": "1_3y",
+     "impact_orders_revenue": 5, "impact_market_standing": 4, "impact_supply_chain": 1, "impact_technology_gap": 2,
+     "impact_partnerships": 1, "impact_policy_export": 2, "subtype_match": "same", "in_client_market": "yes",
+     "story_ref": "T3f9a12c0", "story_kind": "order", "story_country": "Veland", "story_product": "NV-155",
+     "_reason": {"probability": "5: the contract is signed (anchor: done).",
+                 "impact_orders_revenue": "5: {{client.name}} offered the MArG 155/52 in this competition (CLIENT MARKETS: Veland) and the rival was chosen.",
+                 "subtype_match": "NV-155 is a wheeled self-propelled 155 mm gun, the same sub-type as the MArG 155/52."},
+     "_sources": {"title": [{"url": "https://example-defence-news.test/veland-nv155", "quote": "Veland's Ministry of Defence signed a contract on 9 October for 24 NV-155 systems."}]}},
+    "children": {
+     "competitive_signal_detail": [{"drawer_title": "Veland picks Nordvik's NV-155 over {{client.name}}'s MArG 155/52: 24 guns, deliveries from 2028",
+       "glance_who": "Nordvik Defence", "glance_move": "Contract", "glance_where": "Veland", "glance_third_party": "Veland Ministry of Defence",
+       "glance_when": "9 Oct 2026 · deliveries 2028-2030", "impact_eyebrow": "Orders and revenue · high",
+       "what_article_says": "Veland's Ministry of Defence signed a contract on 9 October for 24 NV-155 truck-mounted 155 mm guns. The value is EUR 310 million. Deliveries run from 2028 to 2030. Nordvik will assemble the trucks at a local firm, Veland Motor Works.",
+       "why_it_matters": "{{client.name}} offered the MArG 155/52 in this competition in 2025. The buyer chose a gun of the same class. The article gives no reason for the choice. Nordvik now has a reference customer in a market {{client.name}} targets.",
+       "_sources": {"what_article_says": [{"url": "https://example-defence-news.test/veland-nv155", "quote": "signed a contract on 9 October for 24 NV-155 systems"}]},
+       "_reason": {"why_it_matters": "Veland is in CLIENT MARKETS (offered 2025) and the MArG 155/52 has the same sub-type.", "impact_eyebrow": "Orders scored 5."}}],
+     "competitive_signal_evidence": [
+       {"evidence_group": "key_point", "label": "Value", "value": "EUR 310 million for 24 guns, with training and spares.", "quote": "The contract is worth EUR 310 million and covers training and an initial spares package."},
+       {"evidence_group": "key_point", "label": "Local assembly", "value": "Final assembly is at Veland Motor Works, a condition the ministry set for all bidders.", "quote": "Final assembly will take place at Veland Motor Works, a condition the ministry set for all bidders."},
+       {"evidence_group": "key_point", "label": "Option", "value": "An option for 12 more guns can be taken until the end of 2029.", "quote": "The contract includes an option for 12 additional systems until the end of 2029."},
+       {"evidence_group": "fact", "label": "Customer", "value": "Veland Ministry of Defence", "quote": "Veland's Ministry of Defence signed a contract"},
+       {"evidence_group": "fact", "label": "Quantity", "value": "24 guns (+12 option)", "quote": "24 NV-155 systems"}]}},
+   {"table": "competitive_product_news", "values": {"ref_product": "NV-155", "news_type": "programme_order", "event_date": "2026-10-09",
+     "product_variant": null, "kssl_relevance": "Same class as the MArG 155/52; chosen over it in Veland.",
+     "_reason": {"kssl_relevance": "Both are wheeled self-propelled 155 mm guns and {{client.name}} offered in Veland."},
+     "_sources": {"event_date": [{"url": "https://example-defence-news.test/veland-nv155", "quote": "signed a contract on 9 October"}]}}}],
+   "not_found": [], "conflicts": []}
+
+  STORIES (open stories of this competitor; answer story_ref with a handle or new):
+  {{context.stories}}
+
+  RIVAL PRODUCTS (this competitor's catalogue, "category > sub_type: product name"):
+  {{context.competitor_catalogue}}
 
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
-  COMPETITORS:
-  {{context.competitors}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT CAPABILITIES (lines, ventures, capabilities and what partners supply):
+  {{context.client_capabilities}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
+  COMPETITORS (name, sub-types they make, countries they sell in):
+  {{context.competitors_extended}}
   CATEGORIES:
   {{context.categories}}
 
@@ -85,22 +272,62 @@ output:                          # what the loader accepts; anything else is rej
   competitive_signal:
     card: true                   # one review card per record
     key: [prompt_id, subject]    # same article -> same signal id (a re-run updates it)
+    transient:                   # read by derive.story_link, not stored on the signal
+      story_ref: {max: 40}
+      story_kind: {enum: [programme, order, delivery, trial, partnership, capacity, policy, demand, technology]}
+      story_country: {max: 100}
+      story_product: {max: 200}
     columns:
-      title: {required: true, max: 120}
-      summary: {judgement: true, max: 300}
-      classification: {required: true, judgement: true, enum: [threat, watch]}
+      title: {required: true, max: 120, plain: warn}
+      summary: {judgement: true, max: 300, plain: strict}
       event_date: {type: date}
       category: {from_ref: ref_category}
-      company_id: {from_ref: ref_competitor}
+      company_id: {from_ref: ref_competitor, required: true}
+      direction: {required: true, judgement: true, enum_from: code_label.competitive_signal.direction}
+      probability: {judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      time_to_effect: {required: true, judgement: true, enum_from: code_label.competitive_signal.time_to_effect}
+      subtype_match: {required: true, judgement: true, enum_from: code_label.competitive_signal.subtype_match}
+      in_client_market: {required: true, judgement: true, enum_from: code_label.competitive_signal.in_client_market, unknown_when_empty: client_markets}
+      impact_orders_revenue: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      impact_market_standing: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      impact_supply_chain: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      impact_technology_gap: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      impact_partnerships: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      impact_policy_export: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
     loader:                      # columns the loader fills (bookkeeping, not data)
       sequence_no: rank_by_event_date_desc
+      classification: derive.signal_label      # threat / watch / fav from the scores, by code
+      thumbnail_url: article_image_url         # the article's image: no model involved
     children:
       competitive_signal_detail:
-        columns: [drawer_title, impact_eyebrow, why_it_matters, what_article_says, source_name, source_url]
-        required: [drawer_title]
+        columns: [drawer_title, glance_who, glance_move, glance_where, glance_third_party, glance_when, impact_eyebrow, what_article_says, why_it_matters]
+        required: [drawer_title, glance_who, glance_move, glance_where, what_article_says, why_it_matters]
         judgement: [impact_eyebrow, why_it_matters]
+        max: {drawer_title: 140, impact_eyebrow: 60}
+        plain: {drawer_title: warn, impact_eyebrow: warn, what_article_says: strict, why_it_matters: strict}
+        loader: {source_name: subject.publisher, source_url: subject.article_url}      # glance_impact is set by derive.signal_label
       competitive_signal_evidence:
-        columns: [evidence_group, label, value, quote, source_url]
-        required: [evidence_group, label]
+        columns: [evidence_group, label, value, quote]
+        required: [evidence_group, label, value, quote]
         enum: {evidence_group: [fact, key_point]}
-        loader: {evidence_id: new_id, display_order: index}
+        plain: {value: warn}
+        count: {min: 3, max: 6, where: {evidence_group: key_point}}      # 3-6 key points; fewer than 3 rejects the card
+        dedupe: {column: value, against: [title, summary], where: {evidence_group: key_point}}   # a key point that repeats the title / summary is dropped
+        loader: {evidence_id: new_id, display_order: index, source_url: subject.article_url}
+  competitive_product_news:      # the product timeline: one row per competitor product the article involves
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      product_id: {from_ref: ref_product, required: true}
+      news_type: {required: true, enum_from: code_label.competitive_product_news.news_type}
+      event_date: {type: date}
+      product_variant: {max: 60}
+      kssl_relevance: {judgement: true, max: 200, plain: warn}
+    loader:
+      headline: subject.headline
+      article_url: subject.article_url
+      publisher: subject.publisher
+      published_date: subject.published_date
+      category: subject.category
+
+derive: [signal_label, product_news_merge, story_link]

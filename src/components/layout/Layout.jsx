@@ -1,3 +1,4 @@
+import { globalRequirements, globalCardFilter } from "../../lib/globalRequirements";
 import { useEffect, useMemo, useState } from "react";
 import ErrorBoundary from "../ErrorBoundary";
 import TopBar from "../topBar/TopBar";
@@ -7,12 +8,12 @@ import MetricsStrip from "../metricsStrip/MetricsStrip";
 import MalloryChat from "../malloryChat/MalloryChat";
 import Overview from "../../pages/overview/Overview";
 import Positioning from "../../pages/competitive/Positioning";
+import GapAnalysis from "../../pages/competitive/GapAnalysis";
 import Partnerships from "../../pages/competitive/Partnerships";
 import Geo from "../../pages/competitive/Geo";
 import Patents from "../../pages/competitive/Patents";
 import Tenders from "../../pages/market/Tenders";
 import MarketOverview from "../../pages/market/MarketOverview";
-import TopOpportunity from "../../pages/market/TopOpportunity";
 import GlobalRequirement from "../../pages/market/GlobalRequirement";
 import Profile from "../../pages/competitive/Profile";
 import Products from "../../pages/competitive/Products";
@@ -22,9 +23,11 @@ import Projects from "../../pages/competitive/Projects";
 import Finances from "../../pages/competitive/Finances";
 import { useAppState, isOverview } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { metricsFor, tilePredicate, filterMatch, readFeedSeq, writeFeedSeq, TILE_LABELS } from "../../lib/overview";
-import { bucketTenders } from "../../lib/tenderCalc";
-import { marketMetrics, topOpportunityMetrics } from "../../lib/marketOverview";
+import { projectMetrics } from "../../lib/projects";
+import { metricsFor, tilePredicate, filterMatch, readFeedSeq, writeFeedSeq, TILE_LABELS, bucketTenders } from "../../lib/overview";
+import { navTitle } from "../../lib/route";
+import { marketMetrics } from "../../lib/marketOverview";
+import { isVisible, viewVisible } from "../../lib/visibility";
 
 const PILLAR_OF_VIEW = {
   overview: "competitive",
@@ -44,6 +47,7 @@ const pageStore = () => {
 export default function Layout() {
   const { pillar, view, chatCtx, setChatCtx, jumpTo } = useAppState();
   const { data, viewMeta } = useData();
+  const isGlobalCard = useMemo(() => globalCardFilter(data), [data]);
 
   /* Overview state lives here because two pieces of chrome above the feed depend on
      it: the subhead's filter row and the shell's third column, which collapses when
@@ -89,17 +93,19 @@ export default function Layout() {
      the feed chrome: the count line, the direction filters and the tile-to-feed filter
      all describe cards it does not render. `onFeed` is what gates that chrome;
      `isOverview` still gates the strip and the collapsed third column. */
-  const onMarketReport = view === "m-report" || view === "tender" || view === "awarded-tenders" || view === "closed-tenders" || view === "global-requirement" || view === "m-overview";
+  const onMarketReport = view === "m-report" || view === "tender" || view === "awarded-tenders" || view === "closed-tenders" || view === "global-requirement";
   const onFeed = isOverview(view) && !onMarketReport;
+  // Projects is laid out as the Overview is: the metric strip, a feed, and a panel that opens beside it
+  const onProjects = view === "projects";
 
   const metrics = useMemo(
     () =>
-      view === "m-overview"
-        ? topOpportunityMetrics(data)
+      onProjects
+        ? projectMetrics(data.projects)
         : onMarketReport
           ? marketMetrics(data.tenders)
           : metricsFor(cfg, overviewPillar, data),
-    [cfg, overviewPillar, data, onMarketReport, view],
+    [cfg, overviewPillar, data, onMarketReport, onProjects],
   );
 
   const meta = viewMeta[isOverview(view) ? "overview" : view] || viewMeta.overview;
@@ -109,15 +115,16 @@ export default function Layout() {
      metric strip above, and the shell's third column collapsed so it can use the width.
      Gating those on `isOverview` alone left it rendering into a two-column grid with a
      third column reserved for a drawer that never opens. */
-  const wideNoDrawer = onOverview || onMarketReport || view === "innovation";
-  const showMetricsStrip = onOverview || onMarketReport;
+  const wideNoDrawer = onOverview || onMarketReport || onProjects || view === "innovation";
+  /* no tile rows in the database -> no strip (the slot is not reserved) */
+  const showMetricsStrip = (onOverview || onMarketReport || onProjects) && metrics.length > 0;
   /* Each pillar's overview carries its own heading ("Market Intelligence"), which lives
      on the served config; viewMeta only has the competitive one. */
   /* onMarketReport gates LAYOUT (metric strip, collapsed third column) and covers
      m-report, tender, awarded-tenders and closed-tenders. It must not also pick the
      title, or all four render as "Market Report". Every heading now comes from
      viewMeta; only a pillar overview overrides it, from its served config. */
-  const headTitle = onOverview ? cfg.title || meta.title : meta.title;
+  const headTitle = (onOverview ? cfg.title || meta.title : meta.title) || "";
 
   /* The count line reflects whichever filter is active — the original rewrote it in
      applyFilter(), with the tile label or the direction word. */
@@ -128,15 +135,8 @@ export default function Layout() {
       const { open, awarded, closed } = bucketTenders(data.tenders || []);
       return `${open.length} open · ${awarded.length} awarded · ${closed.length} closed · demand shape, spec and requirement`;
     }
-    if (view === "m-overview") {
-      const topOpp = data.topOpportunities || {};
-      const tLen = (topOpp.topTenders || []).length;
-      const pLen = (topOpp.projectsBeforeTender || []).length;
-      return `${tLen} top tenders · ${pLen} pre-tender targets`;
-    }
     if (view === "global-requirement") {
-      const reqs = data.globalRequirements || [];
-      return `${reqs.length} requirements on record · worldwide defence demand & capability specs`;
+      return `${globalRequirements(data).length} worldwide demand, capacity and supply signals`;
     }
     if (!onFeed) return meta.cnt;
     const total = (cfg.cards || []).length;
@@ -164,12 +164,14 @@ export default function Layout() {
   })();
 
   const body = () => {
+    /* a section the database has switched off renders nothing, even if a jump or a
+       stale state reaches its view id */
+    if (!viewVisible(view)) return null;
     switch (view) {
       case "m-report":
         return <MarketOverview />;
-      case "m-overview":
-        return <TopOpportunity />;
       case "overview":
+      case "m-overview":
       case "t-overview":
         return (
           <Overview
@@ -181,6 +183,7 @@ export default function Layout() {
             }}
             onSelectionChange={setHasSelection}
             onSeq={setSeqMode}
+            part={view === "m-overview" ? "cockpit" : undefined}
             pillarKey={overviewPillar}
             seqMode={seqMode}
             tile={tile}
@@ -194,27 +197,50 @@ export default function Layout() {
         return <Products />;
       case "positioning":
         return <Positioning />;
-      /* Gap Analysis is hidden by decision (2026-10-16): not routed at all, so its
-         written essays never show. parseRoute sends a stale #v=gap-competitive link to
-         the pillar's default view. */
+      /* ARCHIVED — off the rail, still routed. getInitialAppState validates the pillar
+         but never the view, so a saved route or a pasted link pointing here would
+         otherwise fall through to `default: null` and render a blank pane forever. */
+      case "gap-competitive":
+        return isVisible("gap-analysis") ? <GapAnalysis /> : null;
       case "partnerships":
         return <Partnerships />;
       case "projects":
-        return <Projects />;
+        return <Projects onSelectionChange={setHasSelection} />;
       case "finances":
-        return <Finances />;
+        return isVisible("finances") ? <Finances /> : null;
       case "geo":
         return <Geo />;
       case "patents-comp":
         return <Patents />;
       case "tender":
       /* Also archived: the Market overview carries Awarded and Closed as tabs now, but
-         the routes stay so a saved link still resolves. */
+         the routes stay for the same reason gap-competitive's does. */
       case "awarded-tenders":
       case "closed-tenders":
         return <Tenders mode={view} />;
       case "global-requirement":
-        return <GlobalRequirement />;
+        return (
+          <GlobalRequirement
+            feed={
+              <Overview
+                dirFilter={dirFilter}
+                filters={cfg.filters}
+                onFilter={(f) => {
+                  setDirFilter(f);
+                  setTile(null);
+                }}
+                onSelectionChange={setHasSelection}
+                onSeq={setSeqMode}
+                cardFilter={isGlobalCard}
+                title={navTitle("market", "global-requirement")}
+                part="feed"
+                pillarKey="market"
+                seqMode={seqMode}
+                tile={tile}
+              />
+            }
+          />
+        );
       case "innovation":
         return <Innovation />;
       default:
@@ -239,7 +265,7 @@ export default function Layout() {
           /* The market tiles are a readout, not doors — the page below them has its own
              tabs and filter. Rendering them as buttons that do nothing is worse than
              rendering them as numbers. */
-          inert={onMarketReport}
+          inert={onMarketReport || onProjects}
           metrics={metrics}
           /* The 'all' tiles are the reset door: they clear both the tile and the
              direction filter rather than filtering to everything. Redirect tile clicks if requested. */
@@ -293,7 +319,7 @@ export default function Layout() {
           {body()}
         </ErrorBoundary>
       </div>
-      <MalloryChat />
+      {isVisible("chat") ? <MalloryChat /> : null}
     </>
   );
 }

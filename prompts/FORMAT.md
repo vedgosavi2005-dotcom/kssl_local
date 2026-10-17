@@ -22,7 +22,7 @@ blocks). `prompts/signal.yml` is the reference example — copy its shape.
 | `cadence` | `daily` / `weekly` / `quarterly` / `on_demand` (routine scheduling) |
 | `model`, `web_search` | override the `_shared.yml` defaults (research prompts: `web_search: true`) |
 | `subject.key`, `subject.query` | SQL on kssl_staging; one run per row; `key` column makes the run unique |
-| `subject.documents` | how the runner gets source text: `{from: url, field: <col>}` (fetch page text), `{from: sql, query: ...}` (rows as text) |
+| `subject.documents` | how the runner gets source text: `{from: url, field: <col>}` (fetch page text), `{from: sql, query: ...}` (rows as text), `{from: source_document, field: <col>}` (harvested text from the raw layer, see "Foundations") |
 | `context` | context blocks to render (see `_shared.yml` `context_blocks`) |
 | `task` | the task text. Placeholders: `{{client.<col>}}`, `{{subject.<col>}}`, `{{context.<block>}}`, `{{documents}}` |
 | `output` | per table the model may write: `card` (true = one review card per record), `key`, `columns` rules, `loader` (columns the loader fills), `children` |
@@ -87,6 +87,8 @@ text sent and the raw output. `--due` skips subjects already run with the same p
 | kssl_fit / fit_grade / fit_label (tender, opportunity, requirement) | strong, partial, weak |
 | market_tender.url_kind | notice, portal, award |
 | technology_innovation.client_position | behind, parity, ahead |
+| client_partner.partner_type, client_partner_relationship.relationship_type (prompt `client_partner_research`) | Supplier, Customer, Licensor, Joint venture, Technology partner, MoU / teaming |
+| technology_category.category_name; every `category` / `product_range` / `category_text` column | the client Excel's 10 categories (db/setup/12_vocabulary.sql): Artillery, Ammunition, Protected & Armoured Vehicles, Armoured Vehicle MRO, Small Arms, Marine / Naval, Missiles & Air Defence, UAVs & Drones, Precision Components & Forgings, Other |
 | competitive_news_article.category, competitive_product_news.category (prompt `news`) | Contract & order, Partnership / JV, Product launch & testing, Delivery & induction, Export, Financial results, Stock & market, Facility & capacity, Leadership & corporate, Non-defence business, Other (signal skips Stock & market, Non-defence business and Other) |
 
 ## Extensions (implemented in prompts/spec.py, prompts/vocab.py, prompts/loader.py, prompts/derive.py)
@@ -94,7 +96,7 @@ text sent and the raw output. `--due` skips subjects already run with the same p
 Output-spec keys
 | Key | Meaning |
 |---|---|
-| column rule `enum_from` | allowed values from `context.<block>` (the code left of ` = ` in each rendered line) or `ui.<table>.<col>` (distinct values in staging_ui); compared case-insensitively, stored as listed |
+| column rule `enum_from` | allowed values from `context.<block>` (the code left of ` = ` in each rendered line) or `ui.<table>.<col>` (distinct values in staging_ui) or `code_label.<table>.<col>` (active codes of ui.code_label); compared case-insensitively, stored as listed |
 | `loader_only: true` | table the loader builds, never the model (an output record naming it is rejected). Rows: one per stage step (`from_ui.<t>.<c>` tokens), one per evidence row (`copy_of_evidence_*`), one per distinct cited spec url (matchup source), or `rows:` |
 | `rows: [ {col: token-or-text} ]` | fixed loader rows in order; a row whose `copy_of_*` value is empty is skipped; a plain word is text |
 | `update_only: true` | the record names an existing row through its declared `refs` entry (e.g. `ref_filing`) and only the listed columns are updated; nothing is inserted or deleted |
@@ -103,7 +105,7 @@ Output-spec keys
 | `from_ref` on child tables | same as on cards; a text column receives the name, an id column the id |
 | `transient: {name: rules}` | a model field that is validated but not stored (`check`, `source_url`, `country`); read with `transient.<name>`; with `from_ref` it carries the resolved name |
 | `creates: {table: {loader: {...}}}` | find-or-create `technology_source` (by url) / `technology_company` (by name); the id token is `id_of_technology_<source\|company>_found_or_created_by_<url\|display_name\|display_label>`; created ids are stable (hash of the url / name) |
-| `derive: [step]` | hooks run after the rows are written: `matchup_edge`, `geo_match_edge`, `geo_rollup`, `tender_fit`, `renumber_signals` |
+| `derive: [step]` | hooks run after the rows are written: `matchup_edge`, `geo_match_edge`, `geo_rollup`, `tender_fit`, `renumber_signals`, and the foundations hooks `signal_label`, `moment_grade`, `story_link`, `tech_direction`, `pursue_label`, `requirement_state`, `award_to_signal`, `filter_options` (see "Foundations" below) |
 | `key: [...]` | id seed after `prompt_id | subject`; a card key longer than that leaves the subject's other cards alone on a re-run (otherwise the last run's rows are replaced) |
 
 Pseudo-refs: `ref_client_spec` (client_product_specification.spec_name, of the matchup's / match's client product), `ref_competitor_spec` (competitive_product_specification.spec_label, of the subject's / geo product's competitor product), `ref_opportunity` (when given on market_opportunity the existing opportunity is extended: only its children are written), `ref_filing` (batch handle F001.. of the subject's patent batch). Declared refs that are not found drop the row and are logged under "unresolved".
@@ -131,3 +133,51 @@ Other behaviour
 - `_sources` entries with `url: null` + a `quote` cite a stored input row: fact_source gets source_url `stored row`, tier `stored`. Quotes that name a fetched document are checked against its text; a quote not found is logged as a warning.
 - Re-runs: the rows written by the last loaded run of the subject (staging.prompt_run.loaded) are deleted first, except subject-owned rows (updated in place) and, for keyed-beyond-subject prompts, the other cards.
 - `--due` / bulk runs: a prompt keyed by an entity (competitor, category, pair, tender, innovation...) re-runs a subject once its cadence period has passed since its last run; one keyed by an event (`article_id`, `source_id`) never re-runs a subject at the same version. `recurring: true|false` in a prompt file overrides. Prompts run in dependency order (news, signal, moment, partnership, project, geo, matchup, tender, tender_assessment, opportunity, top_opportunity, global_requirement, innovation_discovery, innovation_detail, tech_article, patent_classification).
+
+## Foundations (prompt rebuild, phase 2): derived labels, text checks, stories
+
+Source: docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md. Schema: db/setup/11_foundations.sql (staging AND serving). Code: prompts/derive.py, prompts/story.py,
+prompts/plain_english.py, prompts/raw_docs.py, prompts/spec.py (rules), prompts/loader.py + vocab.py (tokens).
+
+### New column and table rules (prompts/spec.py)
+| Rule | Where | Meaning |
+|---|---|---|
+| `plain: warn` / `strict` / `off` (or `true` = warn) | column rule, or table-level map `plain: {col: strict}` / list `plain: [a, b]` (= warn) | Plain-English lint of that text column (A.0.3). `warn`: every finding is a warning in `prompt_run.details.warnings`. `strict`: the HARD findings reject the record, the soft ones still only warn. Hard: a sentence over 32 words, a banned phrase (leverage, synergy, ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, strategic imperative, capability enhancement, end-to-end, strengthens its position, extends its footprint, poses a threat to, positions itself, unprecedented; not inside quotation marks), "KSSL should". Soft: a sentence over 20 words; an acronym (3+ capitals, not on the whitelist) used before it is explained as "ABC (what it is)" (once per record, across all its columns); a statement of absence ("no stated route", "no direct overlap", ... except the fixed sentence "No <product> product line is touched; kept because ..."); the record-level reading-level proxy (average sentence 17 words, average word 5.3 letters; warn only). A column without a `plain` rule is not linted. |
+| glance limits | built in | `glance_who` / `glance_where` / `glance_impact` max 40, `glance_third_party` / `glance_when` max 60 (rejected over length, like `max`); `glance_move` must be one of Order, Contract, Selection, Delivery, Induction, Trial, Launch, JV, MoU, Acquisition, Capacity, Export approval, Policy, Supply deal, Cancellation. Also built in: `change_note` 160, `kssl_relevance` 200, `product_variant` 60. A prompt's own `max` / `enum` / `enum_from` overrides them. |
+| `count: {min, max, where, min_action}` | table rule on a child table | Rows of that child table per card. `where: {col: value}` counts only matching rows (key points = `evidence_group: key_point`). Too few rejects the CARD (`min_action: warn` only warns); too many keeps the first `max` and warns. |
+| `dedupe: {column, against, threshold, where}` | table rule on a child table | Drops a child row whose `column` text restates the card's `against` columns (e.g. `[title, summary]`): more than `threshold` (default 0.6) of its content words are already there. A row that repeats an earlier kept row (70 % both ways) is dropped too. Each drop is a warning. Runs before `count`. |
+| `unknown_when_empty: <block>` or `{block, action: reject\|coerce}` | column rule | The column rests on a context block (`in_client_market` on `client_markets`, `overlap_kind` on `client_partners`). While that block renders "none on record" the only allowed value is `unknown`: `reject` (default) rejects the record, `coerce` stores `unknown` and warns. `specmod.enum_sources` computes `empty.<block>` for it; the block must be in the prompt's `context:` list (checked by the loader self-test). |
+| `reason_pointer: true` | table rule | A judgement's `_reason` must share a number, name or word (4+ letters) with a sourced field's value or quote (A.0.2); otherwise a warning. |
+
+### Loader tokens added (prompts/vocab.py)
+| Value | Result |
+|---|---|
+| `article_image_url` | `competitive_signal.thumbnail_url`: the subject's `image_url`; else the image stored on `competitive_news_article` for the same url; else the page's og:image (backend/news.py `parse_page`, one fetch; skipped when env `KSSL_NO_IMAGE_FETCH` is set or `Loader.fetch_images = False`); else null. |
+| `derive.<step>` on a NOT NULL text column | the loader inserts an empty placeholder and the hook sets the value (`classification: derive.signal_label`). |
+
+### Code-derived labels (prompts/derive.py; the model scores, code labels, `rule_version` is stored on the row)
+| Hook | Fills | Rule |
+|---|---|---|
+| `signal_label` | competitive_signal.impact, impact_dimension, impact_dimension_2, classification, rule_version (`s1`); competitive_signal_detail.glance_impact | impact = max of the six `impact_*` scores (the first listed dimension wins a tie; `_2` = the next dimension scoring 4+). **fav** = direction `favourable` and probability >= 4 (checked first). **threat** = probability >= 4 and impact >= 4 and time_to_effect in (lt_1y, 1_3y) and (in_client_market = yes, or dimension in supply_chain / partnerships / policy_export) and (subtype_match in same / adjacent, or dimension in supply_chain / partnerships). **watch** = everything else: any unknown or missing input fails its test. A card with no probability and no dimension score keeps the model's label (watch if it gave none). |
+| `moment_grade` | competitive_competitor_moment.grade | label of `signal_id`'s signal: threat -> high, watch -> watch, fav -> opportunity |
+| `tech_direction` | technology_overview_article.direction, horizon, horizon_source, rule_version (`t1`) | threat = classification in (competitor_advance, threat_to_position) and relevance >= 4 and maturity >= 3; fav = adoptable and relevance >= 3; else watch. No stated horizon: maturity 5 -> lt_2y, 3-4 -> 2_5y, 1-2 -> gt_5y, with `horizon_source = rule`. |
+| `pursue_label` | fit_assessment.attractiveness, ability, pursue_label, rule_version (`p1`); market_tender.lean_code | attractiveness = round(mean(value_score, strategic_score)). ability: strong fit 5 (fit_percent >= 75) else 4, partial 3, weak 1; -1 per not_met eligibility item that is not a hard bar, -2 once for a hard bar (not_met and fixable = no), floor 1; -1 when 2+ rivals fit strongly and one has presence; +1 when KSSL or a KSSL partner is on record in the buyer's country; clamp 1-5. Label: pass = weak fit or a hard bar; pursue = A >= 3 and W >= 4; position = A >= 3 and W = 3, or A >= 4 and W = 2 with every gap fixable; monitor = the rest. lean_code: pursue go, position maybe, monitor watch, pass pass. List it AFTER `tender_fit`. |
+| `requirement_state` | market_global_requirement.status_state | unconfirmed when last_confirmed is older than 9 months (stages up to rfi) or 3 months (rfp_tender), or missing; else current |
+| `award_to_signal` | competitive_signal (+ detail, story) | STUB: a tender with `awarded_to` naming one tracked competitor becomes a signal: probability 5, orders impact 4 (3 if KSSL did not assess it strong / partial), time_to_effect lt_1y, in_client_market from the client presence rows, label by `signal_label`. Not done: the geo Sells row. |
+| `story_link` | story, story_step, `story_id` on the card | see Stories. List it after `signal_label` / `tech_direction`. |
+| `filter_options` | ui.competitive_filter_option, ui.technology_filter_option, market_filter_option | rebuilt as a whole from the distinct stored values with counts; labels from ui.code_label. `derive.rebuild_filter_options(cur, data='serving', ui='ui', live=True)` does the same in the serving DB (to be called from Approve). |
+
+Typical lists: signal `[signal_label, story_link]`; tender assessment `[tender_fit, pursue_label]`; technology article `[tech_direction, story_link]`; a prompt that should refresh the option lists adds `filter_options`.
+
+### Stories (prompts/story.py)
+- Key (code): `pillar:party:subject:country:family`, blanks kept, e.g. `competitive:hanwha:k9:pl:order`; family in programme, order, delivery, trial, partnership, capacity, policy, demand, technology.
+- The prompt is shown the competitor's open stories (last 365 days, at most 15) as `T<8 hex>: key - last step (date)`: `story.stories_block(cur, competitor_id=..., pillar='competitive')` (the text, or "none on record"). It answers with the transient `story_ref` = a handle or `new`; the transient fields `story_kind` (family), `story_country` (name or ISO) and `story_product` (catalogue name) feed the key. An EXACT KEY MATCH WINS over the model's answer in both directions; an unknown handle makes a new story with a warning.
+- Each card is one step (`story_step`: date, type, one line <= 120, source, probability, impact, `label_after`). Steps are replaced, not duplicated, when a card is loaded again. After each load the label timeline is rebuilt from the steps: when the label changes between two consecutive steps a `label_change` step is written ("watch -> threat: probability 3 -> 5 (contract signed)", <= 120 characters) and, for an upward change, `story.escalated_at` is set. An older article arriving late takes its place by date and does not change the current state.
+- Cards linked: competitive_signal, competitive_product_news, market_global_requirement, market_opportunity, technology_overview_article (their `story_id`). For market cards the label is the stage; for the others it is the card's label.
+- `story` and `story_step` are in backend/review.py GRAPH (story = a reviewed card, steps = its children).
+
+### Raw-layer documents (prompts/raw_docs.py; for prompts/render.py to call)
+`documents: [{from: source_document, field: article_url, min_chars: 400, cap: 12000}, {from: url, field: article_url}]`: `raw_docs.resolve(cur, entry, subject)` returns the harvested text of the subject's url, or `[]` (text shorter than `min_chars`, or no row), and the runner goes on to the next entry. A roll-up prompt reads `{from: source_document, competitor: competitor_id, days: 90, limit: 20, cap_each: 3000}` (documents attributed to the competitor, nothing fetched). Block format: `[SOURCE <url>]` then the text.
+
+### Code lists and filter options (ui.code_label, ui.*_filter_option)
+`ui.code_label (table_name, column_name, code, label, tag_class, tooltip, display_order, is_active, value_from, value_to, is_default)` holds every allowed value of the new enum columns and the lists that were typed into the frontend (seed rows and the file:line of each list: db/setup/11_foundations.sql). A prompt takes an enum from it with the column rule `enum_from: code_label.<table>.<column>` (e.g. `code_label.competitive_signal.time_to_effect`): the active codes in display order, read from staging_ui at run time, so a new value is a row, not a prompt edit. The existing forms stay: `context.<block>` and `ui.<table>.<column>` (distinct values).

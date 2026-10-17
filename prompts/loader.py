@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 import uuid
@@ -345,6 +346,30 @@ class Loader:
             raise NoValue(f"staging.technology_pillar has {len(rows)} rows; exactly one is needed to pick the pillar")
         return rows[0]["pillar_name"] if want_name else rows[0]["pillar_id"]
 
+    fetch_images = True                    # False (or env KSSL_NO_IMAGE_FETCH=1): never fetch the article page for its og:image
+
+    def article_image(self):
+        """Thumbnail of the subject article: subject.image_url; else the image stored for the same url on competitive_news_article;
+        else (when fetching is allowed) the og:image of the page, by backend/news.py parse_page. None when nothing is found."""
+        if hasattr(self, "_image"):
+            return self._image
+        img = self.subject.get("image_url") or None
+        url = next((self.subject.get(k) for k in ("article_url", "url", "source_url") if self.subject.get(k)), None)
+        if not img and url:
+            self.cur.execute("SELECT image_url FROM staging.competitive_news_article WHERE article_url = %s AND image_url IS NOT NULL LIMIT 1", (str(url),))
+            r = self.cur.fetchone()
+            img = r["image_url"] if r else None
+        if not img and url and self.fetch_images and not os.environ.get("KSSL_NO_IMAGE_FETCH"):
+            try:
+                from backend import news
+                resp = news.http(str(url), timeout=8)
+                if resp.status == 200 and not news.page_blocked(resp):
+                    img = news.parse_page(resp.text(), resp.url).image or None
+            except Exception as e:  # noqa: BLE001  a missing thumbnail must never fail a load
+                self.warn(f"thumbnail: could not read {str(url)[:80]} ({type(e).__name__})")
+        self._image = img
+        return img
+
     def competitor_products_in_category(self, competitor_id):
         cat = self.subject.get("category_text") or self.subject.get("category_name")
         if competitor_id is None or not cat:
@@ -403,6 +428,8 @@ class Loader:
             r = r.parent
         if ref == "ref_product":
             return next((x.resolved["ref_competitor"]["id"] for x in chain if "ref_competitor" in x.resolved), self.subject.get("competitor_id"))
+        if ref == "ref_signal":
+            return self.subject.get("competitor_id")
         if ref == "ref_client_spec":
             return next((x.resolved["ref_client_product"]["id"] for x in chain if "ref_client_product" in x.resolved),
                         self.subject.get("client_product_id"))
@@ -667,6 +694,11 @@ class Loader:
         out, kc = self.out, row.key_col
         meta = self.meta.table(row.table)
         cols = {c: v for c, v in row.cols.items() if c not in row.unset and c in meta}
+        if row.mode == "insert":                  # a NOT NULL text column left to a derive step (classification) gets a placeholder; the hook sets it
+            for c in row.unset:
+                m = meta.get(c)
+                if m and m["is_nullable"] == "NO" and m["column_default"] is None and m["data_type"] in TEXT_TYPES and str(row.items.get(c, "")).startswith("derive."):
+                    cols[c] = ""
         key = row.cols.get(kc)
         if row.mode == "update_only":
             sets = {c: v for c, v in cols.items() if c != kc}
@@ -891,9 +923,11 @@ def _selftest() -> None:
     assert len(parsed) >= 15, sorted(parsed)
     sig = parsed["signal"]["competitive_signal"]
     assert sig.card and sig.refs == {"ref_category": "category", "ref_competitor": "company_id"}
-    assert sig.loader == {"sequence_no": "rank_by_event_date_desc"}
+    assert sig.loader == {"sequence_no": "rank_by_event_date_desc", "classification": "derive.signal_label", "thumbnail_url": "article_image_url"}
     ev = sig.children["competitive_signal_evidence"]
-    assert ev.loader == {"evidence_id": "new_id", "display_order": "index"} and ev.columns["evidence_group"]["required"]
+    assert ev.loader == {"evidence_id": "new_id", "display_order": "index", "source_url": "subject.article_url"} and ev.columns["evidence_group"]["required"]
+    assert ev.count["min"] == 3 and ev.dedupe["against"] == ["title", "summary"] and set(sig.transient) == {"story_ref", "story_kind", "story_country", "story_product"}
+    assert sig.columns["in_client_market"]["unknown_when_empty"] == "client_markets" and "competitive_product_news" in parsed["signal"]
     for bad in ({"competitive_signal": {"loader": {"x": "Not A Token!"}}},):
         try:
             parse_output(bad)
@@ -923,14 +957,25 @@ def _selftest() -> None:
     assert parsed["opportunity"]["market_opportunity"].refs_decl == {"ref_opportunity": "market_opportunity.title"}
 
     # -- envelope: fences, prose around JSON, errors
+    sig_enums = {"code_label.competitive_signal.direction": ["adverse", "favourable"],
+                 "code_label.competitive_signal.time_to_effect": ["lt_1y", "1_3y", "gt_3y", "unknown"],
+                 "code_label.competitive_signal.subtype_match": ["same", "adjacent", "none", "unknown"],
+                 "code_label.competitive_signal.in_client_market": ["yes", "no", "unknown"],
+                 "code_label.competitive_product_news.news_type": ["programme_order", "delivery_induction"], "empty.client_markets": False}
+    sig_scores = {"direction": "Adverse", "time_to_effect": "1_3y", "subtype_match": "same", "in_client_market": "yes",
+                  **{f"impact_{d}": 1 for d in ("orders_revenue", "market_standing", "supply_chain", "technology_gap", "partnerships", "policy_export")}}
     good = {"prompt_id": "signal", "subject": "s", "skip_reason": None, "records": [{
         "table": "competitive_signal",
-        "values": {"title": "L&T wins order", "summary": "S.", "classification": "Threat", "event_date": "2026-09-30",
+        "values": {"title": "L&T wins order", "summary": "S.", **sig_scores, "probability": 5, "event_date": "2026-09-30",
                    "ref_competitor": "Larsen & Toubro", "ref_category": "Artillery",
                    "_sources": {"title": [{"url": "https://www.thehindu.com/x", "quote": "Q"}]},
-                   "_reason": {"classification": "r"}},
-        "children": {"competitive_signal_detail": [{"drawer_title": "D", "why_it_matters": "w"}],
-                     "competitive_signal_evidence": [{"evidence_group": "fact", "label": "Customer", "value": "MoD"},
+                   "_reason": {"direction": "r"}},
+        "children": {"competitive_signal_detail": [{"drawer_title": "D", "glance_who": "L&T", "glance_move": "Order", "glance_where": "India",
+                                                    "what_article_says": "W.", "why_it_matters": "w"}],
+                     "competitive_signal_evidence": [{"evidence_group": "fact", "label": "Customer", "value": "MoD", "quote": "q1"},
+                                                     {"evidence_group": "key_point", "label": "Value", "value": "INR 900 crore for 50 launchers", "quote": "q2"},
+                                                     {"evidence_group": "key_point", "label": "Option", "value": "An option for 20 more until 2029", "quote": "q3"},
+                                                     {"evidence_group": "key_point", "label": "Delivery", "value": "Deliveries start in March 2028", "quote": "q4"},
                                                      {"evidence_group": "bogus", "label": "x"}]}}]}
     out = parsed["signal"]
     txt = json.dumps(good)
@@ -942,13 +987,13 @@ def _selftest() -> None:
             raise AssertionError(f"accepted {bad!r}")
         except NotJson:
             pass
-    v = validate(good, "signal", out)
-    assert len(v.recs) == 1 and v.recs[0].values["classification"] == "threat"             # enum normalised
+    v = validate(good, "signal", out, sig_enums)
+    assert len(v.recs) == 1 and v.recs[0].values["direction"] == "adverse" and "classification" not in v.recs[0].values   # enum normalised; the label is the code's
     assert v.recs[0].refs == {"company_id": ("ref_competitor", "Larsen & Toubro"), "category": ("ref_category", "Artillery")}
-    assert [c.table for c in v.recs[0].children] == ["competitive_signal_detail", "competitive_signal_evidence"]
+    assert [c.table for c in v.recs[0].children] == ["competitive_signal_detail"] + ["competitive_signal_evidence"] * 4, [c.table for c in v.recs[0].children]
     assert any("bogus" in r for r in v.rejected)                                          # bad child row rejected, logged
-    assert any(".summary" in w for w in v.warnings)
-    assert v.recs[0].reasons == {"classification": "r"} and "title" in v.recs[0].sources
+    assert any(".probability" in w for w in v.warnings)                                  # judgement without a _reason
+    assert v.recs[0].reasons == {"direction": "r"} and "title" in v.recs[0].sources
     try:
         validate(dict(good, prompt_id="other"), "signal", out)
         raise AssertionError("wrong prompt_id accepted")
@@ -959,16 +1004,20 @@ def _selftest() -> None:
 
     def rejects(values, why, pid="signal", table="competitive_signal", enums=None):
         env = {"prompt_id": pid, "records": [{"table": table, "values": values}]}
-        r = validate(env, pid, parsed[pid], enums)
+        r = validate(env, pid, parsed[pid], enums if enums is not None else (sig_enums if pid == "signal" else None))
         assert not r.recs and any(why in x for x in r.rejected), (values, r.rejected)
 
-    rejects({"classification": "threat"}, "title is required")
-    rejects({"title": "x" * 121, "classification": "threat"}, "max 120")
-    rejects({"title": "t", "classification": "maybe"}, "not one of")
-    rejects({"title": "t", "classification": "watch", "event_date": "30/09/2026"}, "YYYY-MM-DD")
-    rejects({"title": "t", "classification": "watch", "colour": "red"}, "not allowed")
-    rejects({"title": "t", "classification": "watch", "company_id": "11111111-1111-1111-1111-111111111111"}, "not allowed")
-    rejects({"title": "t", "classification": "watch", "ref_tender": "x"}, "not a reference")
+    base = {**sig_scores, "ref_competitor": "Larsen & Toubro"}
+    rejects({**base, "direction": "adverse"}, "title is required")
+    rejects({**base, "title": "x" * 121}, "max 120")
+    rejects({**base, "title": "t", "direction": "maybe"}, "not one of")
+    rejects({**base, "title": "t", "probability": 6}, "not one of")
+    rejects({**base, "title": "t", "event_date": "30/09/2026"}, "YYYY-MM-DD")
+    rejects({**base, "title": "t", "colour": "red"}, "not allowed")
+    rejects({**base, "title": "t", "classification": "threat"}, "not allowed")           # the model never writes the label
+    rejects({**base, "title": "t", "company_id": "11111111-1111-1111-1111-111111111111"}, "not allowed")
+    rejects({**base, "title": "t", "ref_tender": "x"}, "not a reference")
+    rejects({**base, "title": "t", "impact_supply_chain": None}, "impact_supply_chain is required")
     assert "not allowed" in validate({"prompt_id": "signal", "records": [{"table": "market_tender", "values": {}}]}, "signal", out).rejected[0]
     assert "not allowed" in validate({"prompt_id": "partnership", "records": [{"table": "competitive_partnership_relationship_detail", "values": {}}]},
                                      "partnership", parsed["partnership"]).rejected[0]            # loader_only: never from the model
@@ -1152,7 +1201,8 @@ def _selftest() -> None:
     rendered = render.fill(shared["system"], {"name": "KSSL", "legal_name": "L", "headquarters": "H"}, {}, {}, "")
     assert "{{" not in rendered and "KSSL" in rendered and '"prompt_id"' in rendered
     t = render.load_prompt("signal")
-    assert t["model"] and t["version"] and render.required_context(t) == ["client", "client_products", "competitors", "categories"]
+    assert t["model"] and t["version"] and render.required_context(t) == ["client", "client_portfolio", "client_capabilities", "client_markets", "client_partners",
+                                                                        "competitors_extended", "categories", "stories", "competitor_catalogue"]
     html_doc = ("<html><head><title>T</title></head><body><nav>menu menu menu menu</nav><article><p>" + "Sentence one is here. " * 30
                 + "</p><p>" + "Another paragraph follows. " * 20 + "</p></article><footer>footer text</footer></body></html>")
     title, text = render.page_text(html_doc)
@@ -1177,12 +1227,169 @@ def _selftest() -> None:
     assert R.recurring(dict(sp["signal"], recurring=True)) and not R.recurring(dict(sp["moment"], recurring=False))
     order = R.ordered_ids()
     assert order.index("tender") < order.index("tender_assessment") < order.index("top_opportunity") and         order.index("innovation_discovery") < order.index("innovation_detail") and order.index("opportunity") < order.index("top_opportunity")
-    qv = validate(good, "signal", out)
+    qv = validate(good, "signal", out, sig_enums)
     qv.recs[0].sources["title"][0]["quote"] = "L&T wins the “Pinaka” order today"
     assert R.quote_check(qv, 'x https://www.thehindu.com/x  l&t WINS the "pinaka" order\ntoday') == []           # case / quotes / spacing
     assert R.quote_check(qv, "unrelated https://www.thehindu.com/x text") != []                      # url fetched, quote absent
     assert R.quote_check(qv, "no such url in the prompt") == []                                      # web page: cannot be checked
+    _selftest_rules()
     print("loader self-check ok")
+
+
+def _selftest_rules() -> None:
+    """The foundations rules of prompts/spec.py (plain English, glance limits, key-point count / dedupe, unknown_when_empty, evidence
+    pointer) on a synthetic output spec: no DB, no prompt file."""
+    from prompts import plain_english as PE
+
+    def spec(**over):
+        ev = {"columns": ["evidence_group", "label", "value", "quote"], "enum": {"evidence_group": ["fact", "key_point"]},
+              "dedupe": {"column": "value", "against": ["title", "summary"], "where": {"evidence_group": "key_point"}},
+              "count": {"min": 3, "max": 6, "where": {"evidence_group": "key_point"}}}
+        top = {"card": True, "columns": {"title": {"required": True}, "summary": {"plain": "strict"},
+                                         "probability": {"type": "number"},
+                                         "in_client_market": {"enum": ["yes", "no", "unknown"], "unknown_when_empty": "client_markets"}},
+               "children": {"competitive_signal_detail": {"columns": ["drawer_title", "glance_who", "glance_move", "glance_when", "why_it_matters"],
+                                                          "plain": {"why_it_matters": "warn"}},
+                            "competitive_signal_evidence": ev}}
+        top.update(over)
+        return parse_output({"competitive_signal": top})
+
+    def run(out, values=None, children=None, enums=None):
+        v = {"title": "Veland orders 24 NV-155 wheeled guns from Nordvik", "summary": "Veland's army signed for 24 NV-155 truck-mounted 155 mm guns, with deliveries from 2028."}
+        v.update(values or {})
+        pts = [("fact", "Customer", "Veland Ministry of Defence")] + [("key_point", f"P{i}", t) for i, t in enumerate((
+            "An option for 12 more guns can be taken until the end of 2029.", "Final assembly takes place at Veland Motor Works, a ministry condition.",
+            "The ministry quoted 40 km with base-bleed ammunition as the accepted range.", "The contract covers training and an initial spares package."))]
+        kids = {"competitive_signal_evidence": [{"evidence_group": g, "label": lab, "value": val} for g, lab, val in pts]}
+        kids.update(children or {})
+        r = validate({"prompt_id": "signal", "records": [{"table": "competitive_signal", "values": v, "children": kids}]}, "signal", out, enums or {"empty.client_markets": False})
+        r.warnings = [w for w in r.warnings if "facts without _sources" not in w]          # (the sources rule is not under test here)
+        return r
+
+    out = spec()
+    ok = run(out)
+    assert len(ok.recs) == 1 and not ok.rejected and not ok.warnings, (ok.rejected, ok.warnings)
+    assert [c.table for c in ok.recs[0].children] == ["competitive_signal_evidence"] * 5
+    # glance fields: hard length limits and the move list apply with no rule in the prompt file
+    det = lambda **k: {"competitive_signal_detail": [{"drawer_title": "D", **k}]}
+    v = run(out, children=det(glance_who="x" * 41))
+    assert any("glance_who is 41 characters, max 40" in r for r in v.rejected) and len(v.recs[0].children) == 5
+    assert not run(out, children=det(glance_who="x" * 40, glance_when="y" * 60, glance_move="Export approval")).rejected
+    assert any("glance_when" in r for r in run(out, children=det(glance_when="y" * 61)).rejected)
+    assert any("glance_move='Weird'" in r for r in run(out, children=det(glance_move="Weird")).rejected)
+    assert next(c for c in run(out, children=det(glance_move="contract")).recs[0].children if c.table == "competitive_signal_detail").values["glance_move"] == "Contract"        # case-insensitive, stored as listed
+    # plain English: strict rejects the hard findings and warns for the soft ones; warn only warns
+    v = run(out, {"summary": "The deal gives a robust base."})
+    assert not v.recs and any("plain English (strict)" in r and "robust" in r for r in v.rejected)
+    v = run(out, {"summary": " ".join(["Word"] * 25) + "."})
+    assert v.recs and any("summary: plain English: sentence of 25 words" in w for w in v.warnings)
+    v = run(out, children=det(why_it_matters="It will leverage local assembly."))
+    assert v.recs and any("why_it_matters: plain English: banned phrase 'leverage'" in w for w in v.warnings)
+    v = run(out, {"summary": "The FOO order was placed."}, det(why_it_matters="The FOO plant opens."))
+    assert sum("acronym FOO" in w for w in v.warnings) == 1                                                                # explained once per record, across columns
+    # key points: restating rows are dropped with a warning; fewer than 3 rejects the card; more than 6 is trimmed
+    pts = lambda *t: {"competitive_signal_evidence": [{"evidence_group": "key_point", "label": "x", "value": x} for x in t]}
+    v = run(out, children=pts("Veland orders 24 NV-155 guns from Nordvik.", "An option for 12 more guns until the end of 2029.", "Final assembly is at Veland Motor Works.",
+                              "The ministry quoted 40 km as the accepted range.", "The contract covers training and spares."))
+    assert [c.values["value"][:6] for c in v.recs[0].children] == ["An opt", "Final ", "The mi", "The co"] and any("restates the title" in w for w in v.warnings)
+    v = run(out, children=pts("Veland orders 24 NV-155 guns from Nordvik.", "An option for 12 more guns until the end of 2029.", "Final assembly is at Veland Motor Works."))
+    assert not v.recs and any("competitive_signal_evidence (evidence_group=key_point): 2 row(s), at least 3 needed" in r for r in v.rejected)
+    v = run(out, children={"competitive_signal_evidence": [{"evidence_group": "fact", "label": "a", "value": "b"}] * 9})
+    assert not v.recs                                                                                                      # facts do not count as key points
+    many = [f"Point number {i} mentions item {chr(97 + i)}{i}{i} and place Q{i}Z{i}." for i in range(9)]
+    v = run(out, children=pts(*many))
+    assert v.recs and len(v.recs[0].children) == 6 and any("9 rows, only the first 6 kept" in w for w in v.warnings)
+    soft = spec()
+    soft["competitive_signal"].children["competitive_signal_evidence"].count["min_action"] = "warn"
+    v = run(soft, children=pts("An option for 12 more guns until the end of 2029."))
+    assert v.recs and any("at least 3 wanted" in w for w in v.warnings)
+    # unknown_when_empty: yes / no are refused while the block is empty; unknown is always fine; coerce sets unknown
+    v = run(out, {"in_client_market": "yes"}, enums={"empty.client_markets": True})
+    assert not v.recs and any("in_client_market='yes' but the client_markets context block is empty" in r for r in v.rejected)
+    assert run(out, {"in_client_market": "unknown"}, enums={"empty.client_markets": True}).recs and run(out, {}, enums={"empty.client_markets": True}).recs
+    assert run(out, {"in_client_market": "yes"}, enums={"empty.client_markets": False}).recs[0].values["in_client_market"] == "yes"
+    v = run(out, {"in_client_market": "yes"}, enums={"other": []})
+    assert v.recs and any("client_markets' was not checked" in w for w in v.warnings)
+    co = spec()
+    co["competitive_signal"].columns["in_client_market"]["unknown_when_empty"] = {"block": "client_markets", "action": "coerce"}
+    v = run(co, {"in_client_market": "no"}, enums={"empty.client_markets": True})
+    assert v.recs[0].values["in_client_market"] == "unknown" and any("set to 'unknown'" in w for w in v.warnings)
+    fake = _FakeCur()
+    assert enum_sources(fake, out, {"client_markets": "none on record"}) == {"empty.client_markets": True}
+    assert enum_sources(fake, out, {"client_markets": "India = sells, since 2019"}) == {"empty.client_markets": False}
+    assert enum_sources(fake, out, {"client_markets": "  \n"}) == {"empty.client_markets": True}
+    try:
+        enum_sources(fake, out, {})
+        raise AssertionError("missing block accepted")
+    except ValueError:
+        pass
+    # enum_from: code_label.<table>.<column> reads the active codes of ui.code_label
+    class CL:
+        def __init__(self, rows): self.rows, self.args = rows, None
+        def execute(self, sql, args): self.args = args
+        def fetchall(self): return self.rows
+
+    cl = parse_output({"competitive_signal": {"columns": {"time_to_effect": {"enum_from": "code_label.competitive_signal.time_to_effect"}}}})
+    c = CL([{"code": "lt_1y"}, {"code": "1_3y"}])
+    assert enum_sources(c, cl, {}) == {"code_label.competitive_signal.time_to_effect": ["lt_1y", "1_3y"]} and c.args == ("competitive_signal", "time_to_effect")
+    try:
+        enum_sources(CL([]), cl, {})
+        raise AssertionError("empty code list accepted")
+    except ValueError:
+        pass
+    # evidence pointer (table rule reason_pointer): a reason that names no sourced value or quote is a warning
+    rp = spec(reason_pointer=True, columns={"title": {"required": True}, "summary": {"judgement": True}})
+    base = {"summary": "S", "_sources": {"title": [{"url": "https://www.thehindu.com/x", "quote": "Veland's Ministry of Defence signed a contract on 9 October"}]}}
+    v = run(rp, {**base, "_reason": {"summary": "It is indirect."}}, children={})
+    assert any("names no value or quote" in w for w in v.warnings)
+    v = run(rp, {**base, "_reason": {"summary": "The contract signed on 9 October decides the order."}}, children={})
+    assert not any("names no value or quote" in w for w in v.warnings)
+    # spec errors
+    for bad in ({"columns": {"x": {"plain": "loud"}}}, {"columns": ["x"], "plain": {"x": "sometimes"}}, {"count": {"minimum": 2}}, {"count": {"min": 1, "min_action": "x"}},
+                {"dedupe": {"column": "v"}}, {"columns": {"x": {"unknown_when_empty": 5}}}):
+        try:
+            parse_output({"competitive_signal": bad})
+            raise AssertionError(f"bad spec accepted: {bad}")
+        except ValueError:
+            pass
+    # table-level lists: plain: [a, b] means warn; every prompt file that uses unknown_when_empty names a block it renders
+    assert parse_output({"competitive_signal": {"columns": ["a", "b"], "plain": ["a", "b"]}})["competitive_signal"].columns["a"]["plain"] == "warn"
+    from prompts import render
+    for pid in render.prompt_ids():
+        sp = render.load_prompt(pid)
+        if sp.get("handler"):
+            continue
+        for t in parse_output(sp["output"]).values():
+            stack = [t]
+            while stack:
+                x = stack.pop()
+                stack += list(x.children.values())
+                for col, r in {**x.columns, **x.transient}.items():
+                    if r.get("unknown_when_empty"):
+                        assert spec_block(r["unknown_when_empty"]) in (sp.get("context") or []), f"{pid}.{col}: block not in context"
+    assert PE.CLIENT_NAMES == ("KSSL",)
+    # thumbnail_url: loader token article_image_url -> subject image, else the stored news image, else (fetching off here) nothing
+    pt = parse_output({"competitive_signal": {"columns": ["title"], "loader": {"thumbnail_url": "article_image_url"}}})
+    assert pt["competitive_signal"].loader == {"thumbnail_url": "article_image_url"}
+
+    class C1:
+        def __init__(self, row): self.row = row
+        def execute(self, *a): pass
+        def fetchone(self): return self.row
+
+    def img(subject, row=None):
+        x = Loader.__new__(Loader)
+        x.subject, x.cur, x.fetch_images = subject, C1(row), False
+        x.out = LoadResult()
+        return x.article_image()
+
+    assert img({"image_url": "https://i.test/a.jpg", "article_url": "https://x.test/a"}) == "https://i.test/a.jpg"
+    assert img({"article_url": "https://x.test/a"}, {"image_url": "https://i.test/b.jpg"}) == "https://i.test/b.jpg"
+    assert img({"article_url": "https://x.test/a"}, None) is None and img({}, None) is None
+
+
+def spec_block(v) -> str:
+    return v["block"] if isinstance(v, dict) else v
 
 
 if __name__ == "__main__":

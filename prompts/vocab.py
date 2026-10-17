@@ -28,6 +28,7 @@ REFS = {
     "ref_opportunity": ("market_opportunity", "opportunity_id", ["title"], None),
     "ref_location": ("competitive_geo_location", "location_id", ["country_name"], None),
     "ref_innovation": ("technology_innovation", "innovation_id", ["title"], None),
+    "ref_signal": ("competitive_signal", "signal_id", ["title"], "company_id"),            # a moment points at the signal it rolls up (scope: the subject competitor)
     "ref_client_spec": ("client_product_specification", "specification_id", ["spec_name"], "client_product_id"),
     "ref_competitor_spec": ("competitive_product_specification", "spec_id", ["spec_label"], "product_id"),
 }
@@ -168,6 +169,12 @@ def h_transient(m, row, L, col):
 def h_host(m, row, L, col):
     url = row.get("source_url") if "source" in m.group(0) else (row.get("url") or row.get("source_url"))
     return host_of(url) if url else None
+
+
+def h_article_image(m, row, L, col):
+    """competitive_signal.thumbnail_url: the subject's image_url, else the image stored for the same article url, else the
+    article page's og:image (backend/news.py parse_page). Null when none is found; never an error."""
+    return L.article_image()
 
 
 def h_from_ui(m, row, L, col):
@@ -437,6 +444,7 @@ TOKENS = [
     (r"subject\.(\w+)", h_subject),
     (r"transient\.(\w+)", h_transient),
     (r"host_of_(?:source_)?url", h_host),
+    (r"article_image_url", h_article_image),
     (r"from_ui\.(\w+)\.(\w+)", h_from_ui),
     (r"from_ref_(\w+)", h_from_ref_name),
     (r"derive\.(\w+)", h_derive),

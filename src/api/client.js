@@ -26,7 +26,7 @@ export async function apiGet(path, { signal } = {}) {
       /* fetch rejects without a status only when the request never got an answer —
          the backend is down or unreachable. Say that in plain English. */
       throw new Error(
-        `the API did not answer (${err.message || "network error"}) - is the backend running on port 8600?`,
+        `the API did not answer (${err.message || "network error"}) - is the backend running?`,
       );
     }
 

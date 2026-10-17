@@ -37,22 +37,25 @@ async function apiMiddleware(req, res, next) {
       return res.end("img fetch failed");
     }
   }
-  if (req.url && req.url.startsWith("/api/pulse")) {
+  if (req.url && req.url.startsWith("/api/dataset")) {
+    return next(); // forwarded to the FastAPI backend by the /api proxy
+  }
+  /* Exact path match: no sub-path of /api/pulse is served here (there is no stock lane). */
+  if (req.url && new URL(req.url, "http://localhost").pathname === "/api/pulse") {
     try {
       const q = new URL(req.url, "http://localhost").searchParams;
-      const cid = q.get("cid") || "";
       const name = q.get("name") || "";
       const product = q.get("product") || "";
-      /* Decision: live Google News headlines stay (not from the DB, not reviewed); stock
-         is hidden, so no quote is fetched. */
-      const data = { stock: null, trending: await fetchTrending(name, product), fetchedAt: new Date().toISOString() };
+      /* Decision: live Google News headlines stay (not from the DB, not reviewed). There is no
+         stock lane. The query is the request's own name/product -- no default is injected. */
+      const data = { trending: await fetchTrending(name, product), fetchedAt: new Date().toISOString() };
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "public, max-age=300"); // 5 min
       return res.end(JSON.stringify(data));
     } catch (e) {
       res.statusCode = 200; // never break the page on a data-source hiccup
       res.setHeader("Content-Type", "application/json");
-      return res.end(JSON.stringify({ stock: null, trending: [], error: String((e && e.message) || e) }));
+      return res.end(JSON.stringify({ trending: [], error: String((e && e.message) || e) }));
     }
   }
   return next();

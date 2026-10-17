@@ -31,7 +31,7 @@ export function sourceHref(u) {
    stays plain text rather than becoming a link that goes nowhere. */
 export function SourceChip({ url, source, style }) {
   const href = sourceHref(url);
-  const name = source || "Unattributed";
+  const name = source || "—";
   if (!href) return <span style={style}>{name}</span>;
   return (
     <a
@@ -85,7 +85,7 @@ export function ArticleLink({ article, className, style, children, title }) {
 
 export default function SourceLink({ url, source, color, label = "Source Publisher" }) {
   const href = sourceHref(url);
-  const name = source || "Unattributed";
+  const name = source || "—";
   return (
     <>
       {label}:{" "}

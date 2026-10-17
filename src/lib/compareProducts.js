@@ -1,50 +1,86 @@
-/* FREE PRODUCT COMPARISON for the Positioning page: any two products, side by side.
+/* FREE PRODUCT COMPARISON for the Positioning page: any two products, not only the
+   pairs the pipeline matched.
 
-   The catalogue is the product tables as served: every competitor product
-   (data.competitors[cid].products, from competitive_product + _specification) and every KSSL
-   product (data.clientProducts, from client_product + client_product_specification).
+   The catalogue is built from the served matchups -- the only place product specs live.
+   Each matchup carries BOTH products' figures (rival: cv/cn, client: kv/kn), so every
+   rival and every client product that appears in any matchup becomes one entry, its spec
+   rows merged across all the matchups it appears in (first measured value wins).
 
-   Nothing is scored. There is no stored direction ("higher is better") for a spec and the free
-   pair has no stored better_side, so no winner is invented: the published values are shown next
-   to each other, matched by spec label (case-insensitive). The stored winners live on the matchup
-   rows (see edge.js). */
+   A row decides a winner only when both sides carry a number and the field has a
+   direction (`hi`: true = higher is better, false = lower is better). Gaps under 3% are a
+   tie -- the same deadband the edge index uses. Two numbers more than 50x apart are
+   almost always the same quantity in different units (17.7 t against 18000 kg); that row
+   is flagged, not scored. */
+import { EDGE_DEADBAND } from "./edge.js";
 
-const lc = (v) => String(v == null ? "" : v).trim().toLowerCase();
+const SKIP = new Set(["Product (sourced)"]);
+const UNIT_RATIO = 50;
 
-export function buildProductIndex(data, clientShort = "KSSL") {
-  const out = [];
-  const specMap = (specs) => {
-    const m = {};
-    (specs || []).forEach((s) => {
-      if (!s || !s.label) return;
-      const k = lc(s.label);
-      if (!m[k]) m[k] = { l: s.label, v: s.value === "" || s.value == null ? null : String(s.value), n: null, hi: null, u: s.unit || "" };
-    });
-    return m;
-  };
-  (data.clientProducts || []).forEach((p) => {
-    out.push({ key: `client|${p.id}`, side: "client", name: p.name, maker: clientShort, cat: p.category, country: "", specs: specMap(p.specs) });
-  });
-  Object.values(data.competitors || {}).forEach((co) => {
-    (co.products || []).forEach((p) => {
-      if (!p || typeof p !== "object") return;
-      out.push({ key: `rival|${p.id}`, side: "rival", name: p.name, maker: co.name || "", cat: p.category, country: p.country || "", specs: specMap(p.specs) });
-    });
-  });
-  return out.sort((a, b) =>
-    (a.side === b.side ? 0 : a.side === "client" ? -1 : 1) || String(a.cat).localeCompare(String(b.cat)) || String(a.name).localeCompare(String(b.name)));
+// "KNDS · CAESAR 6x6" -> { maker: "KNDS", name: "CAESAR 6x6" }
+function split(label, fallbackMaker) {
+  const s = String(label || "").trim();
+  const i = s.indexOf(" · ");
+  if (i > 0) return { maker: s.slice(0, i).trim(), name: s.slice(i + 3).trim() };
+  return { maker: fallbackMaker || "", name: s };
 }
 
-/* Rows for two products' spec maps ({ key: { l, v, n, u } }). No winner is computed: `win` is
-   always null and the counters are 0, which is the shape the Geo page already reads. */
-export function compareProducts(a, b) {
-  const keys = [...new Set([...Object.keys(a.specs), ...Object.keys(b.specs)])];
-  const rows = keys.map((k) => {
-    const x = a.specs[k] || {}, y = b.specs[k] || {};
-    return { l: x.l || y.l || k, av: x.v ?? null, bv: y.v ?? null, u: x.u || y.u || "", hi: null, win: null, note: "" };
+export function buildProductIndex(matchups, clientLabel) {
+  const byKey = new Map();
+  const add = (side, label, maker, cat, country, spec, v, n) => {
+    const { maker: mk, name } = split(label, maker);
+    if (!name || /^—?$/.test(name) || /present$/i.test(name)) return;
+    const key = `${side}|${(mk || "").toLowerCase()}|${name.toLowerCase()}`;
+    let e = byKey.get(key);
+    if (!e) {
+      e = { key, side, name, maker: side === "client" ? clientLabel : mk || maker || "", cat: cat || "", country: country || "", specs: {} };
+      byKey.set(key, e);
+    }
+    if (!spec || SKIP.has(spec.l)) return;
+    const cur = e.specs[spec.l];
+    const hasNum = typeof n === "number" && isFinite(n);
+    if (!cur || (cur.n == null && hasNum)) {
+      e.specs[spec.l] = { v: v == null || v === "" ? null : String(v), n: hasNum ? n : null, hi: spec.hi ?? null, u: spec.u || "" };
+    }
+  };
+  Object.values(matchups || {}).forEach((m) => {
+    const specs = m.specs && m.specs.length ? m.specs : [null];
+    specs.forEach((s) => {
+      add("rival", m.comp, m.compBy, m.cat, m.country, s, s && s.cv, s && s.cn);
+      add("client", m.bf || m.anchor, clientLabel, m.cat, "", s, s && s.kv, s && s.kn);
+    });
   });
-  // rows both sides published first, then one-sided
+  return [...byKey.values()].sort((a, b) =>
+    (a.side === b.side ? 0 : a.side === "client" ? -1 : 1) || a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name));
+}
+
+export function compareProducts(a, b) {
+  const labels = [...new Set([...Object.keys(a.specs), ...Object.keys(b.specs)])];
+  const rows = labels.map((l) => {
+    const x = a.specs[l] || {}, y = b.specs[l] || {};
+    const hi = x.hi ?? y.hi ?? null;
+    const an = x.n, bn = y.n;
+    let win = null, note = "";
+    if (typeof an === "number" && typeof bn === "number") {
+      const big = Math.max(Math.abs(an), Math.abs(bn)), small = Math.min(Math.abs(an), Math.abs(bn));
+      if (small > 0 && big / small > UNIT_RATIO) {
+        note = "values look like different units — not scored";
+      } else if (hi != null) {
+        const mean = (an + bn) / 2;
+        const gap = mean ? Math.abs(an - bn) / Math.abs(mean) : 0;
+        win = gap < EDGE_DEADBAND ? "tie" : (an > bn) === !!hi ? "a" : "b";
+      }
+    }
+    return { l, av: x.v ?? null, bv: y.v ?? null, u: x.u || y.u || "", hi, win, note };
+  });
+  // rows both sides published first, then one-sided, then empty
   const rank = (r) => (r.av != null && r.bv != null ? 0 : r.av != null || r.bv != null ? 1 : 2);
   rows.sort((p, q) => rank(p) - rank(q));
-  return { rows, aWins: 0, bWins: 0, ties: 0, measured: 0 };
+  const scored = rows.filter((r) => r.win);
+  return {
+    rows,
+    aWins: scored.filter((r) => r.win === "a").length,
+    bWins: scored.filter((r) => r.win === "b").length,
+    ties: scored.filter((r) => r.win === "tie").length,
+    measured: scored.length,
+  };
 }

@@ -5,13 +5,20 @@
 
    Pure: takes the fetched object, returns a new wired one. Nothing is written to
    `window`, so the app can re-fetch and re-wire without a reload. */
+import { pairingReason } from "./specs.js";
 import { wireTendersWithRealDays } from "./tenderCalc.js";
-import { titleCaseHeadline, tidySeparators } from "./profile.js";
+import { tenderGist, tenderSummary } from "./tenderRow.js";
+import { fitOf } from "./tenderIntel.js";
+import { titleCaseHeadline, smartTitleCase, formatProductName, tidySeparators } from "./profile.js";
 import { formatDate } from "../utils/formatDate.js";
-import { techKindOf, DIR_WORD } from "./overview.js";
+// the patent country vocabulary. patents.js imports nothing from here, so this edge
+// adds no cycle -- and the normaliser lives with the rest of the patent display rules.
+import { normCountry } from "./patents.js";
+import { cutGroupsByDirection, marketAttention, technologyAttention, isRivalCard, dateVal, ATTENTION_DAYS } from "./overview.js";
 import { sortCompaniesByName } from "./roster.js";
+import { rosterIndex, rosterLookup } from "./partners.js";
 import { markOverlaps } from "./overlap.js";
-import { registerGeoLocations } from "./geoCountries.js";
+import { competitiveLane, technologyLane, marketLane, stanceOf } from "./chrome.js";
 import { logger } from "../utils/logger.js";
 
 /* THE PUBLISHER'S DATED PERMALINK IS AUTHORITATIVE FOR THE DAY.
@@ -31,28 +38,113 @@ function hasDay(s) {
   return /^\d{1,2}\s+[A-Za-z]/.test(String(s || "")) || /^\d{4}-\d{2}-\d{2}/.test(String(s || ""));
 }
 
-export function wireDataset(raw) {
-  // shallow clone the containers we mutate; the leaf objects are ours after a fetch.
-  /* One row per company is served (competitive_competitor); nothing is merged here.
-     sortCompaniesByName puts every company list in alphabetical order.
-     Stored text is left exactly as stored. */
-  const d = markOverlaps(sortCompaniesByName({ ...raw }));
+/* THE PIPELINE ESCAPES, AND SO DOES THE RENDERER, SO EVERY AMPERSAND IS ESCAPED TWICE.
 
-  /* Market-lane headline casing (competitive and technology text is shown as stored). */
+   extraction/signals/serving_fill.py stores `esc(card["title"])` and `esc(card["sowhat"])`
+   -- html.escape at WRITE time, from a period when the UI injected raw strings. The
+   React app escapes again at render (and the string builders call escAll), so the
+   reader is shown the entity itself: "Protected &amp; Armoured Vehicles",
+   "UAVs &amp; Drones", "Larsen &amp; Toubro".
+
+   Measured on production: 132 of the 133 sowhat values containing an ampersand hold the
+   five-character entity, and 11 of 12 titles. The `tags` column, written without esc(),
+   holds a real "&" -- which is how it is known to be the writer and not the corpus (the
+   corpus itself is clean: 0 of 5,000 document texts carry it).
+
+   ONLY `&amp;` is decoded here, deliberately. A blanket unescape would be unsafe: chat.js
+   interpolates tender and signal titles straight into markup without escaping, so
+   turning a stored `&lt;` back into `<` would hand it an injection point. A bare `&`
+   cannot open a tag, so this decode cannot make anything renderable that was not
+   already. Fixing the writer is the real repair and is a separate change -- it moves a
+   security boundary and needs chat.js hardened first.
+
+   URLs benefit too: a query string carrying `&amp;` is a broken link, not a styling
+   nit. */
+function decodeAmp(v) {
+  if (typeof v === "string") return v.indexOf("&amp;") < 0 ? v : v.split("&amp;").join("&");
+  if (Array.isArray(v)) return v.map(decodeAmp);
+  if (v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype) {
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = decodeAmp(v[k]);
+    return out;
+  }
+  return v;
+}
+
+/* THE EM DASH IS OFF, AND THE "NOT MEASURED" MARK IS NOT.
+ *
+ * Requested as "remove M dashes from everywhere". They are not written here -- the
+ * served store carries 13,937 strings containing one, all of them from the pipeline's
+ * own prose (COMPSYN reads, signal summaries, gap notes, innovation bodies). Editing the
+ * writers would fix new rows and leave every stored row as it is, so the rule is applied
+ * on the way in, once, to whatever the backend sends.
+ *
+ * TWO THINGS THE DASH IS USED FOR, AND ONLY ONE OF THEM GOES.
+ *
+ *   punctuation  "...not just product — its Hazira record is the real threat". Becomes a
+ *                spaced hyphen. The pause the sentence was built around is kept and the
+ *                glyph is gone; deleting it outright would run two clauses together.
+ *
+ *   a value that does not exist  a bare "—" in a cell, which is this dashboard's mark
+ *                for NOT MEASURED as opposed to zero. That mark stays. It is compared by
+ *                string equality in four places (specs.has, gapAnalysis, matchupDossier,
+ *                Positioning) to decide whether a field was published at all, so
+ *                rewriting one side of that comparison and not the other would make
+ *                unmeasured fields read as measured -- the exact failure this dashboard
+ *                is held to. Measured on the live store: 0 served strings are a bare
+ *                dash, so this branch protects a shape the data does not currently have,
+ *                which is when it is cheapest to protect.
+ *
+ * The en dash goes the same way, except between digits (a range: "200–250 km"), where a
+ * hyphen is what the range was always meant to be.
+ */
+export function plainDashes(v) {
+  if (typeof v === "string") {
+    if (v.indexOf("—") < 0 && v.indexOf("–") < 0) return v;
+    if (v.trim() === "—" || v.trim() === "–") return v;
+    return v
+      .replace(/\s*—\s*/g, " - ")
+      .replace(/(\d)\s*–\s*(\d)/g, "$1-$2")
+      .replace(/\s*–\s*/g, " - ");
+  }
+  if (Array.isArray(v)) return v.map(plainDashes);
+  if (v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype) {
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = plainDashes(v[k]);
+    return out;
+  }
+  return v;
+}
+
+export function wireDataset(raw) {
+  // shallow clone the containers we mutate; the leaf objects are ours after a fetch
+  // decodeAmp first: every later rule (casing, promotion, grouping) should see the text
+  // the reader will see, not a text with entities standing in for characters.
+  /* markOverlaps runs on the dataset as served: competitor_id is unique, so there is no merge step.
+     sortCompaniesByName puts every company list in alphabetical order. */
+  const d = markOverlaps(sortCompaniesByName(plainDashes(decodeAmp({ ...raw }))));
+
+  /* ONE capitalisation for every headline in the app, applied at the single point they
+     all enter it. Doing it here rather than at the render sites is the whole point: the
+     SAME headline is held in five places -- the card, its detail panel, the innovation
+     rail, the per-company news feed -- and casing them at four render sites would let a
+     card and its own panel disagree, which is the exact shape of the date bug fixed
+     just before this one.
+
+     The stored text is untouched. This is a display rule; the record still holds the
+     publisher's headline verbatim, and the source link still leads to it. */
   try {
-    // competitive and technology cards, details and news are shown as stored (no recasing)
-    ["marketCards"].forEach((lane) => {
+    ["competitiveCards", "marketCards", "techCards"].forEach((lane) => {
       d[lane] = (d[lane] || []).map((c) => {
-        const out = { ...c, title: titleCaseHeadline(c.title) };
+        /* a stance is threat or watch: any other stored value (a legacy one) means no stance, never a relabel */
+        const out = { ...c, title: titleCaseHeadline(c.title), dir: stanceOf(c.dir) };
+        /* the competitive overview shows only threat and watch cards (the reference UI's rule that dropped its
+           third stance from that feed, stated neutrally): a card with a stored stance that is neither is
+           marked here and left out of that lane; it still reads, stance-less, everywhere else */
+        if (c.dir != null && String(c.dir).trim() !== "" && !out.dir) out.noStance = true;
         // The per-pillar rewrite (gen_signal_text) is already a headline; title-case it
         // the same way so an enriched card and a not-yet-enriched one read alike.
         if (c.uiTitle) out.uiTitle = titleCaseHeadline(c.uiTitle);
-        // THREAT ROUTING stays STRICT, by operator choice (quality over volume): a card is
-        // a `threat` only when the write-time gain-gate proved a tracked rival's concrete
-        // GAIN (a win/delivery) in a core KSSL line. A rival's mere ANNOUNCEMENT at
-        // direct overlap + high severity is real but noisier, so it stays on `watch`
-        // rather than crowd the threat board. (Earlier a direct+high elevation was tried
-        // and removed at the operator's request -- keep the board small and high-signal.)
         // Recover the exact day from the article's own dated URL when the card's `ago`
         // carries only a month -- see urlDate above.
         const ud = urlDate(c.url);
@@ -72,77 +164,160 @@ export function wireDataset(raw) {
         t: titleCaseHeadline(iv.t),
         driver: typeof iv.driver === "string" ? tidySeparators(iv.driver) : iv.driver,
       })));
+    d.competitorNews = mapValues(d.competitorNews, (rows) =>
+      (rows || []).map((n) => ({ ...n, title: titleCaseHeadline(n.title) })));
+    // the drill-down behind a card carries its own copy of the headline
+    d.details = mapValues(d.details, (x) =>
+      x && x.title ? { ...x, title: titleCaseHeadline(x.title) } : x);
+
+    /* Carry the per-pillar rewrite onto the drill-down record, so the detail panel shows
+       the SAME understood title as the feed row, plus the plain-language summary, the
+       "how KSSL is impacted" line and the per-pillar at-a-glance -- all written by
+       gen_signal_text on the GPU, grounded in the card's own facts. A card that was not
+       enriched leaves the served detail untouched. */
+    ["competitiveCards", "marketCards", "techCards"].forEach((lane) => {
+      (d[lane] || []).forEach((c) => {
+        const det = d.details && d.details[c.id];
+        if (!det) return;
+        if (c.uiTitle) det.title = c.uiTitle;
+        if (c.summary) det.summary = c.summary;
+        if (c.ksslImpact) det.ksslImpact = c.ksslImpact;
+        if (c.ksslImpactKind) det.ksslImpactKind = c.ksslImpactKind;
+        if (Array.isArray(c.glance) && c.glance.length) det.glance = c.glance;
+      });
+    });
+
+    /* PRODUCT NAMES, through the same funnel and for the same reason. 63 of 124 stored
+       product names are sentence case or lower -- "air defense systems", "launched
+       effects", "tracked combat ground vehicles", "AK-203 assault rifle" -- while
+       others arrive title cased, so the portfolio reads as two lists stacked. The same
+       name is printed on the profile, the portfolio grid, the matchup list and the spec
+       comparison; casing it at those four render sites is how "nag carrier" and "Nag
+       Carrier" ended up on the same screen.
+
+       formatProductName, NOT formatLabel. formatLabel lower-cases every word outside a
+       fixed acronym list, which is right for a field LABEL and wrong for a product:
+       it splits on the hyphen and prints "Ak-203". The product rule raises only and
+       eats no acronym, so AK-203, K10, YFQ-44A and BrahMos survive it -- and a listed
+       acronym typed in lower case ("uav swarms") comes out whole (T 20).
+
+       Stored text untouched -- display rule only. */
+    const caseProduct = (p) => {
+      if (typeof p === "string") return formatProductName(p);
+      if (p && typeof p === "object" && typeof p.name === "string") {
+        return { ...p, name: formatProductName(p.name) };
+      }
+      return p;
+    };
     // competitors is a MAP keyed by comp_id, not an array -- mapValues, not .map()
     d.competitors = mapValues(d.competitors, (c) => {
       if (!c || typeof c !== "object") return c;
       const out = { ...c };
+      if (Array.isArray(c.products)) out.products = c.products.map(caseProduct);
+      /* A partner label stored as "Saab," joins into a list as "Saab,, Foo" -- the
+         double comma of FE 31. The id is the join key; the label is only printed.
+         No row is dropped here: what the database stores is what is shown. */
+      if (Array.isArray(c.partners)) {
+        out.partners = c.partners.map((p) =>
+          p && typeof p.label === "string" ? { ...p, label: tidySeparators(p.label) } : p);
+      }
       return out;
     });
 
+    /* THE MATCHUP TABLE spells the same product a third way. `comp` is "Company ·
+       Product" and `bf` is "KSSL · Product", printed raw by the matchup list, the
+       dossier and the Positioning header, while the Products page derives its heading
+       from the same string through its own formatter -- so "NAMICA (Nag carrier)" sat
+       on one screen and "Namica (Nag Carrier)" on the next (FE 33). Case the product
+       segment here, once. The company segment and `compBy` are the join keys and are
+       left exactly as stored. */
+    const caseSegment = (s) => {
+      if (typeof s !== "string" || !s.trim()) return s;
+      const i = s.lastIndexOf("·");
+      return i < 0 ? formatProductName(s) : `${s.slice(0, i + 1)} ${formatProductName(s.slice(i + 1))}`;
+    };
+    d.matchups = mapValues(d.matchups, (m) =>
+      m && typeof m === "object"
+        ? { ...m, comp: caseSegment(m.comp), bf: caseSegment(m.bf), anchor: caseSegment(m.anchor), dir: stanceOf(m.dir) }
+        : m);
   } catch (e) {
     logger.warn("wiring:headlineCase", e);
   }
 
-  // overviewConfig: the feeds are the served rows as stored (no shortlist, no reclassification)
+  // overviewConfig needs the card arrays by reference (the exporter emits them apart)
   try {
-    const compCards = d.competitiveCards || [];
-    /* Direction pills: one per stored direction code present in the cards -- known codes in
-       the order threat, watch, fav, then any other code in order of appearance; the label is
-       the code's word (DIR_WORD) or, for an unknown code, the stored classification. */
-    const seenDirs = [];
-    compCards.forEach((c) => {
-      if (c.dir && !seenDirs.some((x) => x.f === c.dir)) seenDirs.push({ f: c.dir, l: DIR_WORD[c.dir] || c.classification });
-    });
-    const known = Object.keys(DIR_WORD);
-    seenDirs.sort((a, b) => {
-      const ia = known.indexOf(a.f), ib = known.indexOf(b.f);
-      return (ia < 0 ? known.length : ia) - (ib < 0 ? known.length : ib);
-    });
-    d.techCards = (d.techCards || []).map((c) => {
-      const kind = techKindOf(c.classification);
-      return { ...c, kind, tags: [c.tags, kind].filter(Boolean).join(" ") };
+    /* The competitive and technology priority groups are cut by DIRECTION, as the
+       market ones are further down: the served defs carry only a heading and a size,
+       and on the live-shape dump every technology card is dir=watch, so "Priority --
+       Capability Gaps" was the caption over five watch cards. See
+       cutGroupsByDirection in lib/overview.js and test_feed_groups.mjs case 8. */
+    /* The overview shows the stored cards of each lane in the stored sequence (ruling R5): no shortlist, no
+       demotion, nothing re-graded. */
+    /* A tender card whose closing date has passed is out of date: it is dropped from the lane, so search, the news
+       join and the counts do not offer it. The pipeline still lists the tender itself on its Closed tab. A card
+       with "closes n/d" is a tender the pipeline has marked closed. */
+    const today0 = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime();
+    d.marketCards = (d.marketCards || []).filter((c) => {
+      if (!/^Tender\b/.test(String(c.meta || ""))) return true;
+      const m = String(c.meta).match(/closes (\d{1,2} \w{3} \d{4})/);
+      return !!m && Date.parse(m[1]) >= today0;
     });
     d.overviewConfig = {
-      ...d.overviewConfig,
       competitive: {
         ...d.overviewConfig.competitive,
-        cards: compCards,
-        cnt: "signals",
-        dirWord: DIR_WORD,
-        filters: compCards.length ? [{ f: "all", l: "All" }].concat(seenDirs) : [],
-        metrics: [
-          { l: "Competitive threats", act: "threat" },
-          { l: "Watch signals", act: "watch" },
-          { l: "Companies tracked", act: "all" },
-        ],
+        ...competitiveLane(),
+        cards: (d.competitiveCards || []).filter((c) => !c.noStance),
+        groups: cutGroupsByDirection(d.overviewConfig.competitive.groups),
       },
-      market: { ...d.overviewConfig.market, title: "Top opportunity" },
+      market: { ...d.overviewConfig.market, ...marketLane(), cards: d.marketCards || [] },
       technology: {
         ...d.overviewConfig.technology,
-        cards: d.techCards,
-        title: "Technology Knowledge",
-        cnt: "signals",
-        dirWord: {},
-        /* a stream's badge: only Adoptable is worded; a competitor advance carries none; a card
-           with any other stored classification shows that classification (see Overview.labelFor) */
-        tagWord: { rival: "", adopt: "Adoptable" },
+        /* TECHNOLOGY IS KNOWLEDGE, NOT A THREAT BOARD: two streams (a tracked rival's tech move, and defence tech
+           from anyone else), each cut by the tag technologyAttention stamps. The words (pills, groups, badges,
+           tiles) are front-end chrome (chrome.js technologyLane). The
+           All / Competitor / Adoptable buttons are off on this pillar (owner request); `filters` stays for the
+           tiles and the count line. */
+        ...technologyLane(),
+        cards: technologyAttention(d.techCards, isRivalCard),
+        cnt: "technology articles",
         hideFilterButtons: true,
-        filters: [],
-        metrics: [
-          { l: "Competitor advances", act: "rival" },
-          { l: "Adoptable advances", act: "adopt" },
-          { l: "Domains tracked", act: "all" },
-        ],
       },
     };
   } catch (e) {
     logger.warn("wiring:overviewConfig", e);
   }
 
-  /* matchups[].edge, .decision and every per-spec win / gap / state are STORED columns
-     (competitive_matchup.edge_score, decision_level; competitive_matchup_specification
-     .better_side, gap_value, comparability_state). They are served as they are and never
-     recomputed here (see lib/edge.js). */
+  // innovations may key on a domain the tech-area table doesn't list ('uncategorised');
+  // append a chip for it so no innovation is unreachable from the rail.
+  try {
+    d.techCats = d.techCats.slice();
+    Object.keys(d.innovations).forEach((k) => {
+      if (!d.techCats.some((c) => c.id === k)) {
+        d.techCats.push({
+          id: k,
+          name:
+            (d.techAreaMeta[k] && d.techAreaMeta[k].area) ||
+            k.replace(/-/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()),
+        });
+      }
+    });
+  } catch (e) {
+    logger.warn("wiring:techCats", e);
+  }
+
+  /* matchups[].edge is the STORED 0-100 score (50 = parity, <50 = client behind), read everywhere
+     as it is: the gap block, the positioning report, the gap engine and the scoped chat. It is not
+     recomputed here (ruling R6). specDims / specDecided are stored with it. The served pairing prose
+     promises source links the spec panel does not print; see pairingReason in lib/specs.js. Cleaned
+     once, here, so the dossier, the Products drawer and the exported report cannot disagree. */
+  try {
+    Object.keys(d.matchups).forEach((id) => {
+      if (d.matchups[id].reason != null)
+        d.matchups[id].reason = pairingReason(d.matchups[id].reason);
+    });
+  } catch (e) {
+    logger.warn("wiring:matchup.reason", e);
+  }
 
   /* RESOLVE THE CLIENT'S ID ONCE, FROM THE DATA.
 
@@ -165,11 +340,10 @@ export function wireDataset(raw) {
     logger.warn("wiring:client.id", e);
   }
 
-  // served coordinates for every location, read by the map and by the country helpers
   try {
-    registerGeoLocations(d.geoLocations);
+    adaptPatents(d);
   } catch (e) {
-    logger.warn("wiring:geoLocations", e);
+    logger.warn("wiring:PATENTS", e);
   }
 
   /* Compute real remaining days for all tenders based on DB record and current system date */
@@ -177,9 +351,209 @@ export function wireDataset(raw) {
     if (d.tenders) {
       d.tenders = wireTendersWithRealDays(d.tenders);
     }
-    d.globalRequirements = Array.isArray(d.globalRequirements) ? d.globalRequirements : [];
   } catch (e) {
     logger.warn("wiring:tenders", e);
+  }
+
+  /* OPEN TENDERS BECOME MARKET CARDS -- but only the ones that need a decision now.
+     ---------------------------------------------------------------------------------
+     The Market feed's pills read 0 because they filter on `dir` and every demand-signal
+     card carried dir='watch'; the bid state they wanted lived on the TENDERS. So open
+     tenders are promoted into the feed. But the OVERVIEW is a shortlist, not the
+     pipeline -- promoting all ~900 open tenders is the "958 rows above a tile reading
+     119" complaint. `marketAttention` picks the tenders that need attention now (a
+     strong KSSL fit, or closing within two weeks), falling back to the soonest-closing
+     head when the corpus carries no grades. The Tender Pipeline still lists every open
+     tender; this is the curated head.
+
+     A PROMOTED TENDER IS MARKED `kind: "tender"` AND CARRIES NO `dir`. Whether a tender
+     publishes a price is not a stance, so the browser no longer splits tenders into
+     a stance on it; the facets, groups and tiles select on `kind` (asserted by
+     test_market_facets). CONCLUDED tenders are never promoted: awarded and closed have
+     their own two views.
+
+     Each card carries a detail record built from the tender's own stored fields. A card
+     with no detail opens an empty panel -- the drawer reads data.details[id]. */
+  try {
+    const tenders = d.tenders || [];
+    if (tenders.length) {
+      const isAwarded = (t) =>
+        (t.status || "").toLowerCase() === "awarded" || t.urlKind === "award";
+      const isClosed = (t) =>
+        !isAwarded(t) && (t.isLive === false || t.dl <= 0 ||
+                          (t.deadline || "").includes("Closed"));
+      const open = tenders.filter((t) => !isAwarded(t) && !isClosed(t));
+      const hasValue = (t) => t.value != null && String(t.value).trim() !== "";
+      /* The "Latest Tenders" head -- the same set metricsFor counts for that tile, so the visible
+         list, the header count and the tile can never disagree. Stored rank order, no score. */
+      const shown = marketAttention(open);
+
+      const details = { ...(d.details || {}) };
+      const cards = shown.map((t, i) => {
+        const id = `tender-${t.id}`;
+        const live = hasValue(t);
+        const isGo = fitOf(t) === "strong";
+        const urgent = t.dl >= 1 && t.dl <= ATTENTION_DAYS;
+        const where = [t.issuer, t.country].filter(Boolean).join(" · ");
+        /* The closing DATE, in the one house format -- not `t.deadline`, which the
+           wiring above has already rewritten into a countdown ("2 days left"). That
+           countdown was landing in the card's date slot beside signal cards that read
+           "11 Aug 2026", in the Closing fact, and in the so-what as "Closes 2 days
+           left." -- three surfaces, one field, and none of them a date. A tender with
+           no closing date on record states nothing rather than "no deadline on record"
+           in a slot that is a date everywhere else. */
+        const closes = t.closingDate ? formatDate(t.closingDate) : "";
+        const posted = t.posted ? formatDate(t.posted) : "";
+        /* A readable gist title and a one-line summary. Prefer the LLM-written ones
+           when the pipeline generated them (t.gist / t.summary, produced on the GPU
+           farm from the tender's OWN stored fields -- grounded, never on the VPS), and
+           fall back to the deterministic tenderRow composition otherwise. Both give a
+           terse SAM name like "Vane Large" a class and a place at a glance, and fill the
+           At a glance panel, which showed a tender no summary at all. */
+        const hasStr = (v) => v != null && String(v).trim() !== "";
+        const gist = smartTitleCase(hasStr(t.gist) ? String(t.gist)
+          : tenderGist({ ...t, title: titleCaseHeadline(t.title) }));
+        const summary = hasStr(t.summary) ? String(t.summary) : tenderSummary(t);
+        /* The genuine fit, when the pipeline graded it -- a stored grade, NOT invented.
+           Surfaced in the so-what, separate from the LIVE BID status. Absent -> omitted,
+           no placeholder. */
+        const fitWord = hasStr(t.leanTxt) ? String(t.leanTxt).trim().replace(/\.$/, "") : "";
+        const matches = Array.isArray(t.matches) && t.matches.length ? t.matches : null;
+        // No invented prose: every clause below is a stored field or omitted. `Closes`
+        // labels the date so the corner date never reads as a publish date.
+        const sowhat = [
+          fitWord ? `<b>${fitWord}.</b>` : null,
+          live ? `Published value ${t.value}.` : null,
+          closes ? `Closes ${closes}.` : null,
+          t.qty ? `Quantity ${t.qty}.` : null,
+        ].filter(Boolean).join(" ");
+        details[id] = {
+          // ONE status word for every open tender -- see dirWord. The value split lives
+          // on `dir`, not in this word.
+          rank: `LATEST TENDER · ${String(i + 1).padStart(2, "0")}`,
+          /* The detail record must carry its own id: DetailPanel detects a tender by the
+             `tender-` prefix on detail.id (and then glances it through tenderFactRows and
+             drops the stance pill). Nothing else stamps it -- served details have no id
+             field -- so without this the tender path never fired and every promoted
+             tender opened as an "article" with a stance pill. */
+          id,
+          kind: "tender",   // what the card IS; it carries no dir, because the data holds no stance for a tender
+          title: gist,
+          facts: [
+            ["Issuer", t.issuer],
+            ["Country", t.country],
+            ["Category", t.cat],
+            ["Published", posted],
+            ["Closing", closes],
+            ["Value", live ? t.value : null],
+            ["Quantity", t.qty],
+          ].filter((f) => f[1] != null && String(f[1]).trim() !== ""),
+          summary,
+          what: sowhat,
+          why: t.reqNote || "",
+          lens: "Market",
+          actions: [],
+          match: matches,
+          url: t.url,
+        };
+        return {
+          id,
+          kind: "tender",   // what the card IS; no dir, the data holds no stance for a tender
+          rank: String(i + 1).padStart(2, "0"),
+          title: gist,
+          meta: [t.cat, where].filter(Boolean).join(" · "),
+          company: t.issuer || "",
+          lens: "Market",
+          sowhat,
+          /* An ARRAY, like every other card's: `sec` is the card's lens sections
+             everywhere else, and the depth sort and the metric strip both read its
+             length. This carried the category string, so the strip's lens loop threw on
+             the first promoted tender and the catch left the served sample numbers on
+             screen -- "Open opportunities 7" over 89 open tenders. The category already
+             travels on `meta` and `tags`. */
+          sec: [],
+          match: matches,
+          url: t.url,
+          ago: posted || closes,
+          /* Tags the shortlist tiles filter on (see tilePredicate): the category, plus
+             the reason this tender is on the shortlist and whether it carries a value. */
+          tags: [t.cat, isGo && "fit", urgent && "closing", live && "valued"]
+            .filter(Boolean).join(" "),
+        };
+      });
+      /* PERCEIVED OPPORTUNITIES: the demand/geopolitical watch lane, curated to KSSL's
+         categories and most recent first. These need NO tender -- "Poland is investing
+         heavily in artillery" is an opening to act on, not a bid. Built from the news lane
+         BEFORE the tender cards are concatenated onto d.marketCards. */
+      const kslCats = new Set((d.KSSL_CATS || []).map((s) => String(s).toLowerCase()));
+      const OPP_HEAD = 24;
+      const opportunities = (d.marketCards || [])
+        .filter((c) => c && c.kind === "opportunity")
+        .filter((c) => {
+          if (!kslCats.size) return true;   // no taxonomy served -> keep the lane
+          const tags = String(c.tags || "").toLowerCase();
+          for (const k of kslCats) if (k && tags.includes(k)) return true;
+          return false;
+        })
+        .sort((a, b) => dateVal(b.ago) - dateVal(a.ago))
+        .slice(0, OPP_HEAD);
+
+      /* d.marketCards keeps the whole demand-news lane too -- global search, the news feed
+         and the top-bar signal count all read it. The OVERVIEW FEED serves the two streams
+         the brief names: the Latest Tenders shortlist and the curated Perceived
+         Opportunities. navCounts counts the served feed, so the rail badge matches. */
+      d.marketCards = (d.marketCards || []).concat(cards);
+      d.details = details;
+      const marketFeed = cards.concat(opportunities);
+      if (d.overviewConfig && d.overviewConfig.market) {
+        d.overviewConfig = {
+          ...d.overviewConfig,
+          market: {
+            ...d.overviewConfig.market,
+            cards: marketFeed,
+            ...marketLane(),
+            cnt: marketFeed.length
+              ? "latest tenders and perceived opportunities"
+              : d.overviewConfig.market.cnt,
+            /* The pills, group headings, tiles and the TENDER / OPPORTUNITY badge words are front-end chrome
+               (chrome.js marketLane). A tender is marked by its `kind`, not by a stance. The All / Latest Tenders /
+               Perceived Opportunities buttons are OFF on this pillar (owner request); `filters` stays for the
+               tiles and the count line. */
+            hideFilterButtons: true,
+          },
+        };
+      }
+    }
+  } catch (e) {
+    logger.warn("wiring:tenderCards", e);
+  }
+
+  /* Shared-partner marking is decided in the PIPELINE (mark_shared.py), not here.
+
+     What used to sit in this block compared the two labels as strings and needed a
+     common run of more than five characters, so "DRDO" — four — matched nothing,
+     and the graph drew no red line at all while two rivals sat on the same
+     government partner as the client. Guessing at identity from a label is what
+     produced that; the pipeline resolves every organisation to one id and stamps
+     `cid`, `shared`, `koel` and `clientTie` onto the tie.
+
+     All that is left here is the join those ids make possible: attach the client's
+     own roster row so the drawer can say what the client uses the same company for. */
+  try {
+    /* `p.cid` was required here, and the rows the server flags carry none -- they key on
+       a name slug while the roster keys on plp_NN. So `koel` never attached, and the red
+       line lost the one thing it is for: what the CLIENT uses that partner for. Matched
+       through the shared index instead, which knows all three keys. */
+    const roster = rosterIndex(d.KSSL_PARTNERS);
+    Object.keys(d.competitors || {}).forEach((cid) => {
+      (d.competitors[cid].partners || []).forEach((p) => {
+        if (!p.shared || p.koel) return;
+        const hit = rosterLookup(roster, p);
+        if (hit) p.koel = hit;
+      });
+    });
+  } catch (e) {
+    logger.warn("wiring:sharedPartners", e);
   }
 
   /* The chat knowledge base reads flattened geo rows and innovation items
@@ -209,4 +583,275 @@ export function wireDataset(raw) {
   d.themeSignals = {};
 
   return d;
+}
+
+/* PATENTS shape adapter. The dataset emits byArea / byAssignee; the render code
+   reads byCompetitor / byTechnology. Empty in -> empty out, and both patent views
+   fall through to their documented empty state instead of throwing. */
+function adaptPatents(d) {
+  const PATENTS = d.PATENTS;
+  if (!PATENTS) return;
+  const byArea = PATENTS.byArea || {};
+  const byAssignee = PATENTS.byAssignee || {};
+
+  function norm(r) {
+    return {
+      id: r.no || r.id || "",
+      _src: r._src,
+      title: r.title || "",
+      assignee: r.assignee || "",
+      // the dataset uses granted/published; the badge CSS knows granted/filed/pending
+      /* 'filed' IS ALSO THE FALL-THROUGH, which is why _meta.grantStatusKnown below
+         exists. On the live corpus every one of the 1,157 harvested rows arrives
+         status='filed' with granted=NULL, so this branch cannot distinguish a source
+         that said "filed" from one that said nothing -- and the patents UI was
+         printing "Granted 0 / Pending 0 / Filed N" as if a registry had been checked. */
+      /* 'unknown' is carried through AS ITSELF and never folded into 'filed'. The
+         harvester now emits three states, and the one it emits when it could not read
+         the registry is precisely the one this ternary used to swallow. That is only
+         invisible while NO row has a grant: the day a re-harvest lands real grants,
+         grantStatusKnown flips true for the corpus and every unread record would have
+         worn a blue "FILED" -- a claim about a record nobody checked, appearing at the
+         exact moment the page starts looking trustworthy. Per-record honesty cannot be
+         carried by a corpus-level flag. */
+      status: /grant/i.test(r.status || "")
+        ? "granted"
+        : /pend/i.test(r.status || "")
+          ? "pending"
+          : /unknown/i.test(r.status || "")
+            ? "unknown"
+            : "filed",
+      filed: r.filed || "",
+      // the registry's publication date, which used to be stored IN `filed`
+      published: r.published || "",
+      granted: r.granted || "",
+      // what the registry's detail record said, where it was read: the grant's number
+      // and the publication kind code. Absent on every row harvested before that pass.
+      grant_no: r.grant_no || "",
+      pub_kind: r.pub_kind || "",
+      /* The English title, where the translation step has produced one. `title` above
+         stays exactly as the office published it -- both are carried, and the card
+         shows the source title under the translated one. */
+      title_en: r.title_en || "",
+      /* ONE COUNTRY, ONE KEY. The stored vocabulary collides: 'India' (21 rows) and
+         'IN' (10) are the same office, as are 'US' (354) and 'USA' (2). This is the
+         only place jurisdiction is derived, and everything downstream groups on it --
+         the per-holder country chips counted the same office twice without this. */
+      jurisdiction: normCountry(r.country || r.jurisdiction || ""),
+      ipc: r.ipc || [],
+      /* the classification's own words, as stored (competitive_patent_filing.classification_text) */
+      ipcText: r.ipcText || "",
+      abstract: r.abstract || r.claims || "",
+      techArea: r.area || r.techArea || "",
+      // threat was dropped here once, so every holder rendered as 'low' while the
+      // dataset actually carries 22 high / 24 medium / 12 low.
+      threat: (r.threat || "").toLowerCase(),
+      koel_relevance: r.relev || "",
+      srcs: r.srcs || [],
+      url: r.url || "",
+    };
+  }
+
+  /* Assignees are legal entity names ('Caterpillar Inc.'), competitors are trading
+     names ('Caterpillar India'). Match on shared distinctive tokens, best score wins,
+     one assignee to at most one competitor. The client's own filings are never
+     attributed to a rival. */
+  const STOP =
+    /^(inc|ltd|limited|corporation|corp|company|gmbh|oyj|holdings|group|india|indian|systems|solutions|technologies|energy|generation|electric|vehicles|commercial|components|industries|heavy|and|the|pvt|private|defence|defense|aerospace|strategic|advanced)$/;
+  function toks(s) {
+    return (s || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2 && !STOP.test(w));
+  }
+  // no client name, no client pattern: an empty RegExp would match every name
+  const clientPattern = ((d.client && d.client.name) || "")
+    .replace(/\s*\(.*?\)\s*/g, "")
+    .replace(/[^a-z0-9 ]/gi, "")
+    .trim()
+    .replace(/\s+/g, "\\s+");
+  const clientRe = clientPattern ? new RegExp(clientPattern, "i") : { test: () => false };
+  const compToks = d.compOrder.map((cid) => ({
+    cid,
+    t: toks(d.competitors[cid].name),
+  }));
+
+  /* WHICH ASSESSMENTS THIS CORPUS ACTUALLY CARRIES.
+
+     Three fields the patents UI renders as findings are constant across the whole
+     live harvest: every one of the 1,157 rows arrives status='filed' with granted
+     NULL, threat NULL, and relev='CORE'. A value every row shares separates nothing,
+     and printing it per row -- "Granted 0 / Pending 0 / Filed N", an "N published"
+     chip captioned "Published, not yet granted", a `low` threat chip, a CORE badge --
+     publishes assessments nobody made and, in the pending case, asserts NON-grant for
+     records that may well be granted. Measured once, here, so each surface can say
+     "not captured" instead of counting to zero. Each flips to true on its own the
+     moment the harvester lands the field; nothing downstream needs another edit. */
+  const allRaw = [];
+  Object.keys(byArea).forEach((a) => (byArea[a] || []).forEach((r) => allRaw.push(r)));
+  Object.keys(byAssignee).forEach((n) => (byAssignee[n] || []).forEach((r) => allRaw.push(r)));
+  const distinctVals = (f) =>
+    new Set(
+      allRaw
+        .map((r) => String(f(r) || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+  PATENTS._meta = {
+    ...(PATENTS._meta || {}),
+    // a grant date, or a status that is not the 'filed' fall-through, on ANY row
+    grantStatusKnown: allRaw.some((r) => r.granted || /grant|pend/i.test(r.status || "")),
+    // a relevance grade every row shares grades nothing
+    relevDiscriminates: distinctVals((r) => r.relev).size > 1,
+  };
+
+  PATENTS.byCompetitor = {};
+
+  /* THE ROW MAY ALREADY KNOW WHOSE IT IS.
+     fetch_patents_wipo.py resolves every applicant of record against an explicit
+     allow-list, Korean and German surfaces included, and now stores that answer as
+     comp_id. Where it is present it is used, because re-deriving it here by matching
+     Latin word tokens is strictly worse: on the 1,157 harvested rows the token match
+     loses 56 -- 49 Korean applicants (the Hanwha Aerospace and Poongsan registrations
+     share no Latin word with their trading names) and Krauss-Maffei Wegmann, which
+     shares none with "KNDS". A word-token matcher over a multilingual register is a
+     language detector.
+
+     The token match stays for rows without comp_id -- the 26 curated reference
+     filings, and any dataset served by a backend older than the column. */
+  const known = new Set(d.compOrder);
+  Object.keys(byArea).forEach((area) => {
+    byArea[area].forEach((r) => {
+      const cid = r.comp_id;
+      if (!cid || !known.has(cid)) return;
+      if (!PATENTS.byCompetitor[cid])
+        PATENTS.byCompetitor[cid] = { stats: null, records: [] };
+      PATENTS.byCompetitor[cid].records.push(norm(r));
+    });
+  });
+
+  Object.keys(byAssignee).forEach((name) => {
+    if (clientRe.test(name)) return; // KSSL's own filings
+    // Already placed by the id the harvester resolved; guessing again would double it.
+    if (byAssignee[name].some((r) => r.comp_id && known.has(r.comp_id))) return;
+    const at = toks(name);
+    let best = null;
+    let bestN = 0;
+    compToks.forEach((c) => {
+      const n = c.t.filter((w) => at.indexOf(w) >= 0).length;
+      if (n > bestN) {
+        bestN = n;
+        best = c.cid;
+      }
+    });
+    if (!best) return;
+    if (!PATENTS.byCompetitor[best])
+      PATENTS.byCompetitor[best] = { stats: null, records: [] };
+    PATENTS.byCompetitor[best].records = PATENTS.byCompetitor[best].records.concat(
+      byAssignee[name].map(norm),
+    );
+  });
+
+  PATENTS.byTechnology = {};
+  Object.keys(byArea).forEach((area) => {
+    const recs = byArea[area].map(norm);
+    let meta = null;
+    Object.keys(d.techAreaMeta || {}).forEach((k) => {
+      if (d.techAreaMeta[k].area === area) meta = d.techAreaMeta[k];
+    });
+    /* Per-holder facts. NOT a share percentage: only 1 of 56 (field, assignee) pairs
+       in this dataset has more than one filing, so share is always 1/N and a share
+       bar chart is guaranteed to render identical bars. What actually separates
+       holders here is whether the filing is GRANTED (enforceable now) vs merely
+       published, where it is filed, how recent it is, and its assessed threat. */
+    const THREAT_RANK = { threat: 2, watch: 1 };
+    const byName = {};
+    recs.forEach((r) => {
+      if (!r.assignee) return;
+      const g = (byName[r.assignee] = byName[r.assignee] || {
+        name: r.assignee,
+        filings: 0,
+        granted: 0,
+        unknown: 0,
+        countries: {},
+        latest: null,
+        /* NOT "low". An unassessed holder started at "low" and, since threat is NULL
+           on every harvested row, stayed there -- so the field lens stamped a `low`
+           chip titled "Assessed threat to KSSL" on every rival in the corpus. Empty
+           means unassessed, and the chip is omitted rather than guessed. */
+        threat: "",
+        recs: [],
+      });
+      g.filings++;
+      if (r.status === "granted") g.granted++;
+      // counted, not derived: see the `pending` note below
+      if (r.status === "unknown") g.unknown++;
+      if (r.jurisdiction) g.countries[r.jurisdiction] = 1;
+      const yr = parseInt((r.granted || r.filed || r.published || "").slice(0, 4), 10);
+      if (yr && (!g.latest || yr > g.latest)) g.latest = yr;
+      const t = (r.threat || "").toLowerCase();
+      if ((THREAT_RANK[t] || 0) > (THREAT_RANK[g.threat] || 0)) g.threat = t;
+      g.recs.push(r);
+    });
+    const isClient = (n) => clientRe.test(n || "");
+    const holders = Object.keys(byName)
+      .map((n) => {
+        const g = byName[n];
+        return {
+          name: n,
+          filings: g.filings,
+          granted: g.granted,
+          unknown: g.unknown,
+          /* THREE BUCKETS, NOT TWO. `filings - granted` called every non-grant
+             "pending", which was a positive claim -- "published, not yet granted" --
+             about records whose status was never read. A record the registry was not
+             asked about is neither granted nor pending; it is unknown, and it is
+             subtracted out here rather than absorbed into the pending count. */
+          pending: g.filings - g.granted - g.unknown,
+          countries: Object.keys(g.countries),
+          latest: g.latest,
+          threat: g.threat,
+          isClient: isClient(n),
+          isRival: !isClient(n),
+          trend: (meta && meta.trend) || "flat",
+        };
+      })
+      .sort((a, b) => {
+        // client pinned first — it is the reference point the banner above talks about,
+        // and it carries no threat rating so it would otherwise sort among the 'low' rows
+        if (a.isClient !== b.isClient) return a.isClient ? -1 : 1;
+        // then most consequential: granted before pending, then threat, then recency
+        return (
+          b.granted - a.granted ||
+          (THREAT_RANK[b.threat] || 0) - (THREAT_RANK[a.threat] || 0) ||
+          (b.latest || 0) - (a.latest || 0) ||
+          a.name.localeCompare(b.name)
+        );
+      });
+    PATENTS.byTechnology[area] = {
+      stats: {
+        totalFilings: recs.length,
+        activeAssignees: holders.length,
+        koel_position: (meta && meta.position) || "—",
+      },
+      /* the stored crowding word of this field (serving.patent_field_assessment.crowding), or null */
+      crowding: (meta && meta.crowding) || null,
+      /* the field assessment's card key, so the review copy can approve the crowding word and position note */
+      assessmentSrc: (meta && meta._src) || null,
+      summary: (meta && (meta.why || meta.desc)) || "",
+      leaders: holders,
+      /* NULL, NOT []. No pass computes sparsely-patented areas -- there is no
+         upstream field for it and nothing here derives one -- and an empty array
+         reads downstream as "the analysis ran and found none". null says it never
+         ran, which is what patTechBody now prints. Populate this the day a
+         white-space pass exists and the section renders unchanged. */
+      whitespace: null,
+      koel: {
+        filings: recs.filter((r) => clientRe.test(r.assignee || "")).length,
+        position: (meta && meta.reason) || null,
+      },
+      records: recs,
+    };
+  });
 }

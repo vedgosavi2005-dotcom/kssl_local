@@ -5,7 +5,11 @@ import { apiGet } from "./client";
    corpus-wide — they need the whole matchup and competitor set to compute at all —
    so this is the honest shape of the read, not a shortcut around the other routes. */
 export const datasetService = {
-  getDataset: (options) => apiGet("/dataset", options),
+  // the standalone HTML build (build_html.mjs) carries the dataset inside the page
+  getDataset: (options) =>
+    typeof window !== "undefined" && window.__EMBEDDED_DATASET__
+      ? Promise.resolve(window.__EMBEDDED_DATASET__)
+      : apiGet("/dataset", options),
   getGlobal: (name, options) =>
     apiGet(`/globals/${encodeURIComponent(name)}`, options),
   health: (options) => apiGet("/health", options),

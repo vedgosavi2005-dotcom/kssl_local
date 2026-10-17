@@ -1,33 +1,44 @@
+import { clientShort } from "../../lib/client.js";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import HtmlBlock from "../../components/htmlBlock/HtmlBlock";
 import ScopeChat from "../../components/scopeChat/ScopeChat";
+import { isVisible } from "../../lib/visibility";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
+import { gapCorrelateStrip } from "../../lib/gapModel";
+import { productOwner } from "../../lib/productLink";
 import { srcChips } from "../../lib/html";
 import { formatLabel, smartTitleCase } from "../../lib/profile";
 import { facetOptions } from "../../lib/countryFacet";
-import { NOT_ON_RECORD, resolveTenderRow, tenderFactRows } from "../../lib/tenderRow";
-import { formatDate } from "../../utils/formatDate";
+import { NOT_ON_RECORD, reqLabel, resolveTenderRow, tenderCardCells, tenderFactRows, tenderFitBar } from "../../lib/tenderRow";
 import { Review } from "../../components/review/Review";
 
-const has = (v) => v != null && String(v).trim() !== "";
-const cap = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
-/* The fit word is shown as stored; its CSS class is the stored word, lower-cased. */
-const fitClass = (v) => (has(v) ? String(v).trim().toLowerCase() : "");
+const fitClass = (p) => {
+  const n = parseInt(p, 10);
+  return n >= 75 ? "high" : n >= 50 ? "mid" : "low";
+};
 
-/* The facts of a notice: the fixed nine (src/lib/tenderRow.js), then the other stored
-   notice columns. Rows are [label, text, resolved]; the detail hides an unresolved one. */
+const has = (v) => v != null && String(v).trim() !== "";
+
+/* The source record's own reference (the part after the 'ted_/ca_/gem_/uk_/sam_'
+   prefix on the id) — the number a buyer's portal actually indexes the notice by. */
+const noticeRef = (t) => {
+  if (!t || !t.id) return null;
+  const s = String(t.id);
+  const u = s.indexOf("_");
+  return u > -1 ? s.slice(u + 1) : s;
+};
+
+/* The facts of a notice: the FIXED eight (src/lib/tenderRow.js) -- each a stored value
+   or the explicit unresolved state -- then the notice reference the portal indexes it
+   by. Rows are [label, text, resolved]. Nothing is dropped for being empty: a field the
+   notice does not publish is a fact about the notice, and it used to vanish here (and
+   an empty status used to be printed as "Open", which nobody recorded). */
 const factRows = (t) => {
   if (!t) return [];
   const rows = tenderFactRows(t);
-  [
-    ["Notice ref.", t.noticeRef],
-    ["Latest milestone", t.milestone],
-    ["Extension confirmed", typeof t.extension === "boolean" ? (t.extension ? "yes" : "no") : null],
-    ["Submission method", t.submissionMethod],
-    ["Registration", t.registration],
-    ["Local presence", t.localPresence],
-    ["Frequency", t.frequency],
-  ].forEach(([k, v]) => rows.push([k, has(v) ? v : NOT_ON_RECORD, has(v)]));
+  const ref = noticeRef(t);
+  rows.push(["Notice ref.", has(ref) ? ref : NOT_ON_RECORD, has(ref)]);
   return rows;
 };
 
@@ -45,14 +56,22 @@ const metaLine = (parts) =>
       </Fragment>
     ));
 
-/* url_kind (stored) says what the link lands on: 'notice' = this tender's own page,
-   'portal' = the listing it was found in, 'award' = an already-decided contract. */
+const dlClass = (d, statusClass) => {
+  if (statusClass) return statusClass;
+  const n = Number(d);
+  if (isNaN(n) || n <= 0) return "settled";
+  return n <= 7 ? "urgent" : n <= 14 ? "soon" : "normal";
+};
+
+/* The button used to promise a portal and open nothing. Every tender carries its
+   source URL, so open that. urlKind says what it lands on: 'notice' = this tender's
+   own page, 'portal' = the listing it was found in, 'award' = an already-decided
+   contract. Label it honestly rather than promising a notice we do not have. */
 const tpUrl = (t) => (t && t.url) || (t && t.srcs && t.srcs.length ? t.srcs[0].url : null);
-const kindOf = (t) => String((t && t.urlKind) || "").toLowerCase();
 const ctaLabel = (t) =>
-  kindOf(t) === "award"
+  t.urlKind === "award"
     ? "Read the award announcement"
-    : kindOf(t) === "portal"
+    : t.urlKind === "portal"
       ? "Open the tender portal"
       : tpUrl(t)
         ? "Open the tender notice"
@@ -65,29 +84,21 @@ const ctaNote = (t) => {
       notice: "opens this tender on ",
       portal: "no per-tender page on record - opens the listing on ",
       award: "this contract is settled - opens the announcement on ",
-    }[kindOf(t)] || "opens ") + u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]
+    }[t.urlKind] || "opens ") + u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]
   );
 };
 
-/* The chip: days left to the stored closing date; concluded tenders say so. */
-const countdownText = (row) => {
-  if (row.bucket === "awarded") return "awarded";
-  if (row.bucket === "closed") return "closed";
-  const d = row.dl;
-  if (d == null) return row.deadline || row.status || "";
-  if (d < 0) return "closing date passed";
-  if (d === 0) return "closes today";
-  return `${d} day${d === 1 ? "" : "s"} left`;
-};
-
-/* Only essential summary parameters are kept on the card face; the rest is in the
-   side assessment panel. */
-const DASHBOARD_PARAM_KEYS = new Set(["buyer", "country", "category", "value", "status"]);
-
 export default function Tenders({ mode = "tender" }) {
-  const { data } = useData();
-  const { setScope, takePending, searchQuery } = useAppState();
-  const clientName = (data.client && (data.client.short || data.client.name)) || "KSSL";
+  const { data, gapModel } = useData();
+  const { setScope, takePending, searchQuery, jumpTo } = useAppState();
+  const clientName = clientShort();
+  /* a model named on a tender opens that product in Products; a label that is not a model stays text */
+  const prodName = (name) => {
+    const own = productOwner(data, name);
+    return own ? (
+      <button className="prod-link" onClick={() => jumpTo("competitive", "products", own)} title="Open this product in Products" type="button">{name}</button>
+    ) : name;
+  };
   const getSavedTender = () => {
     try {
       const s = localStorage.getItem("kssl_tender_state");
@@ -96,6 +107,7 @@ export default function Tenders({ mode = "tender" }) {
   };
   const savedTender = getSavedTender();
 
+  const [productType, setProductType] = useState(null); // Product Type dropdown removed; ignore any saved value
   const [country, setCountry] = useState(savedTender.country || null);
   const [cat, setCat] = useState(savedTender.cat || null);
   const [menu, setMenu] = useState(null);
@@ -113,12 +125,15 @@ export default function Tenders({ mode = "tender" }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem("kssl_tender_state", JSON.stringify({ country, cat }));
+      localStorage.setItem("kssl_tender_state", JSON.stringify({ productType, country, cat }));
     } catch (e) {}
-  }, [country, cat]);
+  }, [productType, country, cat]);
 
   /* A tab CHANGE drops the selection -- a row from the open list is not on the awarded
-     list. Guarded against the mount run so a selection restored on mount survives. */
+     list. Guarded against the mount run: an effect with [mode] also fires once after
+     the first render, and that run was clearing the `sel` restored from localStorage
+     three lines up, so the selection this page saves on every change never survived a
+     reload or a detour to the Market Report and back. */
   const lastMode = useRef(mode);
   useEffect(() => {
     if (lastMode.current === mode) return;
@@ -134,16 +149,28 @@ export default function Tenders({ mode = "tender" }) {
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
-  /* `scope` is the tab (the stored status, see lib/tenderCalc) and the search box --
-     everything that is NOT one of the two dropdown facets. Each facet's option counts are
-     taken from scope with the OTHER facet applied, so a badge can never describe a
-     different set than the rows below it. */
+  /* `scope` is the tab and the search box -- everything that is NOT one of the three
+     dropdown facets. Each facet's option counts are then taken from scope with the OTHER
+     two facets applied, so a badge can never describe a different set than the rows
+     below it. They read "India 7" over a list of 2, because the counts ran over all 106
+     tenders while the list showed only the 74 that are open; five of those seven had
+     closed. Product Type had the same fault and is included here -- fixing two of three
+     facets and leaving the third is how this bug survives a fix. */
+  const isAirNaval = (t) =>
+    /uav|drone|naval|marine|missile|air defence/i.test(`${t.cat} ${t.title}`);
+
   const scope = useMemo(
     () =>
       (data.tenders || [])
-        .filter((t) =>
-          t.bucket === (mode === "awarded-tenders" ? "awarded" : mode === "closed-tenders" ? "closed" : "open"),
-        )
+        .filter((t) => {
+          const isAwarded = (t.status || "").toLowerCase() === "awarded" || t.urlKind === "award";
+          const isClosed = !isAwarded && (t.isLive === false || (t.status || "").toLowerCase() === "closed" || (t.deadline || "").toLowerCase().includes("closed"));
+          const isOpen = !isAwarded && !isClosed;
+
+          if (mode === "awarded-tenders") return isAwarded;
+          if (mode === "closed-tenders") return isClosed;
+          return isOpen;
+        })
         .filter((t) => {
           if (!searchQuery) return true;
           const tokens = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -157,23 +184,25 @@ export default function Tenders({ mode = "tender" }) {
   const facetOk = {
     country: (t, v) => !v || t.country === v,
     cat: (t, v) => !v || t.cat === v,
+    productType: (t, v) =>
+      !v || (v === "Air, Naval & Missiles" ? isAirNaval(t) : !isAirNaval(t)),
   };
 
   const applyFacets = (rows, except) =>
     rows.filter(
       (t) =>
         (except === "country" || facetOk.country(t, country)) &&
-        (except === "cat" || facetOk.cat(t, cat)),
+        (except === "cat" || facetOk.cat(t, cat)) &&
+        (except === "productType" || facetOk.productType(t, productType)),
     );
 
-  /* soonest closing first; tenders with no closing date last */
   const list = useMemo(
     () =>
       applyFacets(scope, null).sort(
-        (a, b) => (a.dl == null) - (b.dl == null) || (a.dl || 0) - (b.dl || 0),
+        (a, b) => (Number(a.dl) || 999) - (Number(b.dl) || 999),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scope, country, cat],
+    [scope, country, cat, productType],
   );
 
   const select = (id) => {
@@ -187,16 +216,21 @@ export default function Tenders({ mode = "tender" }) {
     });
   };
 
-  /* Another page can open a tender here by id (Top opportunity) or by title (search). */
+  /* A correlate chip elsewhere can open a tender here by title. */
   useEffect(() => {
     const p = takePending("tender");
-    if (p && (p.tenderId || p.tenderTitle)) {
-      const t = p.tenderId
-        ? (data.tenders || []).find((x) => x.id === String(p.tenderId))
-        : (data.tenders || []).find((x) => x.title === p.tenderTitle) ||
-          (data.tenders || []).find(
-            (x) => x.title.indexOf(p.tenderTitle) > -1 || p.tenderTitle.indexOf(x.title) > -1,
-          );
+    /* a category row on Market Intelligence opens the pipeline on that category (and country) */
+    if (p && "cat" in p) {
+      setCat(p.cat || null);
+      setCountry(p.country || null);
+      setProductType(null);
+    }
+    if (p && p.tenderTitle) {
+      const t =
+        (data.tenders || []).find((x) => x.title === p.tenderTitle) ||
+        (data.tenders || []).find(
+          (x) => x.title.indexOf(p.tenderTitle) > -1 || p.tenderTitle.indexOf(x.title) > -1,
+        );
       if (t) {
         select(t.id);
         setTimeout(() => asmtRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 130);
@@ -207,11 +241,13 @@ export default function Tenders({ mode = "tender" }) {
 
   const t = sel ? (data.tenders || []).find((x) => x.id === sel) : null;
 
-  /* What the header's Copy / Export / Print act on: the open tender's stored facts,
-     requirements and matches, then every tender listed under the tab and facets in force. */
+  /* What the header's Copy / Export / Print act on: the open tender's facts and
+     requirement rows as served, then every tender listed under the tab and facets in
+     force. */
   const modeTitle =
     mode === "awarded-tenders" ? "Awarded Tenders" : mode === "closed-tenders" ? "Closed Tenders" : "Tenders";
   const report = useMemo(() => {
+    /* the same eight parameters the card shows, labelled, unresolved ones included */
     const row = (x) => [
       x.title,
       resolveTenderRow(x).params.map((p) => `${p.label}: ${p.text}`).join(" · "),
@@ -220,36 +256,49 @@ export default function Tenders({ mode = "tender" }) {
     if (t) {
       sections.push({
         h: "Selected tender",
-        rows: [["Title", t.title], ...factRows(t).filter((r) => r[2]).map(([k, v]) => [k, v])],
+        rows: [["Title", t.title], ...factRows(t).map(([k, v]) => [k, v])],
       });
-      if (has(t.desc)) sections.push({ h: "Requirement", rows: [t.desc] });
-      (t.requirements || []).forEach((r) => sections.push({ h: r.type, rows: r.rows }));
-      if ((t.matches || []).length) {
+      if (has(t.reqNote)) sections.push({ h: "Requirement", rows: [t.reqNote] });
+      if (Array.isArray(t.req) && t.req.length) sections.push({ h: "Requirements", rows: t.req.map((r) => [reqLabel(r[0]), r[1]]) });
+      if (Array.isArray(t.matches) && t.matches.length) {
         sections.push({
           h: `${clientName} match`,
-          rows: t.matches.map((m) => [m.n, [m.fit, m.percent != null ? `${m.percent}%` : ""].filter(has).join(" · ")]),
+          rows: t.matches.map((m) => [m.n, [m.fit, m.pct].filter(has).join(" · ")]),
         });
       }
     }
     sections.push({ h: `${modeTitle} (${list.length})`, rows: list.map(row) });
     return {
       title: modeTitle,
-      subtitle: [country, cat].filter(Boolean).join(" · ") || "all tenders in this tab",
+      subtitle: [country, cat, productType].filter(Boolean).join(" · ") || "all tenders in this tab",
       sections,
       payload: {
         tab: mode,
-        filters: { country: country || null, category: cat || null },
+        filters: { country: country || null, category: cat || null, productType: productType || null },
         selected: t || null,
         tenders: list,
       },
     };
-  }, [t, list, mode, modeTitle, country, cat, clientName]);
+  }, [t, list, mode, modeTitle, country, cat, productType, clientName]);
   useHeaderReport(report);
 
   const menuItems = (which) => {
-    /* Option values come from the SERVED tenders only; the stored filter options
-       (market_filter_option -> d.tpAllCountries / d.tpAllCats) ORDER them and add nothing.
-       Counted over `scope` with the OTHER facet applied. */
+    if (which === "productType") {
+      const pool = applyFacets(scope, "productType");
+      return [
+        { v: "Land Systems", n: pool.filter((x) => !isAirNaval(x)).length },
+        { v: "Air, Naval & Missiles", n: pool.filter(isAirNaval).length },
+      ];
+    }
+    /* Option values come from the SERVED tenders only. The config vocabulary
+       (tpAllCountries / tpAllCats) ORDERS them; it adds nothing. It used to be unioned
+       in "for completeness", which put Armenia, Kenya, Morocco and eight more countries
+       with no tender at all into the menu as unclickable zero rows -- eleven of the
+       twenty-five options were padding -- and the acceptance test read that as the
+       filter not matching the data. An option is a promise of rows; a zero is not
+       information a menu should carry.
+       Counted over `scope` with the OTHER facets applied -- the facet being counted is
+       excluded, so picking one of its options gives exactly the number promised. */
     const cfgOrder = which === "country" ? data.tpAllCountries || [] : data.tpAllCats || [];
     const pool = applyFacets(scope, which);
     const q = menuQuery.trim().toLowerCase();
@@ -304,7 +353,7 @@ export default function Tenders({ mode = "tender" }) {
             setMenu(null);
           }}
         >
-          All {which === "country" ? "countries" : "categories"} ({items.length})
+          All {which === "country" ? "countries" : which === "productType" ? "product types" : "categories"} ({items.length})
         </div>
         {items.map(({ v, n }) => (
           <div
@@ -325,13 +374,6 @@ export default function Tenders({ mode = "tender" }) {
     );
   };
 
-  /* The detail's fit verdict: the stored fit word, else the best match's stored percentage. */
-  const bestPct = (x) => {
-    const p = (x.matches || []).map((m) => m.percent).filter((v) => v != null);
-    return p.length ? Math.max(...p) : null;
-  };
-  const fitWord = (x) => x.ksslFit || x.fitGrade || "";
-
   return (
     <div className={`tp-view v-tender ${t ? "has-sel" : "no-sel"}`}>
       <div className="tp-list">
@@ -339,19 +381,16 @@ export default function Tenders({ mode = "tender" }) {
           <span className="eyebrow">Filter</span>
           {dd("country", "Country", country, setCountry)}
           {dd("cat", "Category", cat, setCat)}
+          {/* the one deadline hint the operator kept; the verbose count line and the
+              "no fit assessment" note below it are cut as redundant noise. Fit is now
+              shown per card WHEN a tender carries it, and silent when it does not --
+              no list-level placeholder. */}
           <span className="sortnote">sorted by deadline</span>
         </div>
         <div id="tp-cards">
           {list.length ? (
             list.map((row) => {
-              /* THE BAR'S LENGTH HAS TO BE THE MEASUREMENT: a stored match percentage sets
-                 its own width. A fit WORD (stored kssl_fit / fit_grade) prints as the word,
-                 with no track behind it. No fit stored at all: no fit line. */
-              const word = fitWord(row);
-              const pct = bestPct(row);
-              const fitLabel = has(word) ? cap(word) : pct != null ? `${pct}%` : "";
-              const cd = countdownText(row);
-
+              const fit = tenderFitBar(row);
               return (
                 <div
                   className={`tcard${sel === row.id ? " sel" : ""}`}
@@ -368,38 +407,33 @@ export default function Tenders({ mode = "tender" }) {
                 >
                   <div className="trow1">
                     <div className="ttl">{smartTitleCase(row.title)}</div>
-                    {cd ? <span className={`ddl ${row.statusClass || ""}`}>{cd}</span> : null}
+                    <span className={`ddl ${dlClass(row.dl, row.statusClass)}`}>{row.deadline}</span>
                   </div>
                   <div className="tpgrid">
-                    {/* The same parameters on every card, each a stored value; one the
-                        record does not hold is hidden here. */}
-                    {resolveTenderRow(row).params
-                      .filter((p) => DASHBOARD_PARAM_KEYS.has(p.key) && p.value != null)
-                      .map((p) => (
-                        <div className="tpp" key={p.key}>
-                          <span className="tpk">{p.label}</span>
-                          <span className="tpv">{p.text}</span>
-                        </div>
-                      ))}
+                    {/* The same five cells on every card, in this order: Buyer, Country, Category, Value, Status.
+                        A cell the record leaves empty prints the screen's empty word, it is not dropped. */}
+                    {tenderCardCells(row).map((c) => (
+                      <div className="tpp" key={c.key}>
+                        <span className="tpk">{c.label}</span>
+                        <span className="tpv">{c.text}</span>
+                      </div>
+                    ))}
                   </div>
-                  {fitLabel ? (
-                    <div className="fitbar">
-                      <span className="fitlab">{clientName} fit</span>
-                      {pct != null ? (
-                        <span className="fittrack">
-                          <i className={fitClass(word)} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
-                        </span>
-                      ) : null}
-                      <span className={`fitpct grade ${fitClass(word)}`}>{fitLabel}</span>
-                    </div>
-                  ) : null}
+                  {/* the client's fit row is on every card: the bar and the stored word, or an empty bar and a dash */}
+                  <div className="fitbar">
+                    <span className="fitlab">{clientName} fit</span>
+                    <span className="fittrack">
+                      <i className={fit.cls} style={{ width: fit.width }} />
+                    </span>
+                    <span className={`fitpct${fit.scored ? "" : " grade"}`}>{fit.word}</span>
+                  </div>
                   <Review src={row._src} />
                 </div>
               );
             })
           ) : (
             <div className="tp-list-empty">
-              {country || cat
+              {productType || country || cat
                 ? "No tenders match this filter"
                 : "No tenders served yet"}
             </div>
@@ -428,92 +462,35 @@ export default function Tenders({ mode = "tender" }) {
                 <Review src={t._src} />
                 <div className="sub" style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "8px" }}>
                   <div>{metaLine([t.issuer, t.country, t.value])}</div>
-                  <div>{metaLine([t.deadline || (t.closingDate ? `Closes ${formatDate(t.closingDate)}` : ""), t.milestone])}</div>
+                  <div>{metaLine([t.timing || t.deadline])}</div>
                 </div>
               </div>
 
-              {/* Client fit & rank section: stored words and numbers only */}
+              {/* Client fit & rank section */}
               {(() => {
-                const word = fitWord(t);
-                const pct = bestPct(t);
-                const verdict = has(word) ? cap(word) : pct != null ? `${pct}%` : "";
+                const m0 = (t.matches || [])[0];
+                const pctNum = m0 && /%/.test(m0.pct || "")
+                  ? parseFloat(String(m0.pct).replace(/[^\d.]/g, ""))
+                  : NaN;
+                const scored = !Number.isNaN(pctNum);
+                const graded = !!(m0 && has(m0.fit));
+                const fc = scored ? fitClass(m0.pct) : graded ? m0.fit : null;
+                const fp = scored
+                  ? m0.pct
+                  : graded
+                    ? { high: "strong", mid: "partial", low: "weak" }[fc] || fc
+                    : "";
+                const verdict = fp || t.fit;
                 if (!verdict && !has(t.rank)) return null;
                 return (
                   <div className="tp-asmt-sec">
                     <span className="eyebrow">{clientName} Fit{has(t.rank) ? ` · Rank #${t.rank}` : ""}</span>
-                    {verdict ? <div className="tp-fit-verdict">{verdict}</div> : null}
-                    {has(t.fitNote) ? <div className="req">{t.fitNote}</div> : null}
+                    {verdict ? (
+                      <div className={`tp-fit-verdict ${{ strong: "high", partial: "mid", weak: "low" }[String(verdict).toLowerCase()] || ""}`}>{verdict.charAt(0).toUpperCase() + verdict.slice(1)}</div>
+                    ) : null}
                   </div>
                 );
               })()}
-
-              {has(t.desc) || (t.requirements || []).length ? (
-                <div className="tp-asmt-sec">
-                  <span className="eyebrow">What the tender requires</span>
-                  {has(t.desc) ? <div className="req">{t.desc}</div> : null}
-                  {(t.requirements || []).map((r, i) => (
-                    <div key={`${r.type}-${i}`}>
-                      <div className="req" style={{ marginTop: "8px", fontWeight: 600 }}>{r.type}</div>
-                      {r.rows.map(([k, v], j) => (
-                        <div className="kv" key={`${k}-${j}`}>
-                          <span className="k">{k}</span>
-                          <span className="v">{v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {(t.matches || []).length ? (
-                <div className="tp-asmt-sec">
-                  <span className="eyebrow">Matched {clientName} products</span>
-                  {(t.matches || []).map((m, i) => (
-                    <div className="tp-match" key={`${m.n}-${i}`}>
-                      <div className="mh">
-                        <span className="mn">{m.n}</span>
-                        {has(m.fit) || m.percent != null ? (
-                          <span className={`fit ${fitClass(m.fit)}`}>
-                            {[has(m.fit) ? m.fit : null, m.percent != null ? `${m.percent}%` : null].filter(Boolean).join(" · ")} fit
-                          </span>
-                        ) : null}
-                      </div>
-                      {(m.lines || []).map((l, j) => (
-                        <div className="mline" key={j}>
-                          <span>{[l.label, l.value].filter(has).join(": ")}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              {has(t.expectedRevenue) ? (
-                <div className="tp-asmt-sec">
-                  <span className="eyebrow">Expected revenue (estimate)</span>
-                  <div className="req">{t.expectedRevenue}</div>
-                </div>
-              ) : null}
-
-              {(t.competitorFit || []).length ? (
-                <div className="tp-asmt-sec">
-                  <span className="eyebrow">Competitor fit</span>
-                  {t.competitorFit.map((c, i) => (
-                    <div className="tp-comp-card" key={i}>
-                      <div className="tp-comp-header">
-                        <span className="tp-comp-name">{c.name}</span>
-                        {has(c.fit) ? <span className={`fit ${fitClass(c.fit)}`}>{c.fit}</span> : null}
-                      </div>
-                      {has(c.products) ? (
-                        <div className="tp-comp-line">
-                          <span>{c.products}</span>
-                        </div>
-                      ) : null}
-                      {has(c.rationale) ? <div className="tp-comp-desc">{c.rationale}</div> : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
 
               <div className="tp-asmt-sec">
                 <span className="eyebrow">Tender details</span>
@@ -528,35 +505,88 @@ export default function Tenders({ mode = "tender" }) {
                 </div>
               </div>
 
+              {has(t.reqNote) || (t.req || []).length || has(t.desc) ? (
+                <div className="tp-asmt-sec">
+                  <span className="eyebrow">What the tender requires</span>
+                  {has(t.reqNote) ? (
+                    <div className="req" dangerouslySetInnerHTML={{ __html: t.reqNote }} />
+                  ) : has(t.desc) ? (
+                    <div className="req">{t.desc}</div>
+                  ) : null}
+                  {(t.req || []).map((r, i) => (
+                    <div className="kv" key={`${r[0]}-${i}`}>
+                      <span className="k">{reqLabel(r[0])}</span>
+                      <span className="v" dangerouslySetInnerHTML={{ __html: r[1] }} />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {(t.matches || []).length ? (
+                <div className="tp-asmt-sec">
+                  <span className="eyebrow">Matched {clientName} products</span>
+                  {(t.matches || []).map((m, i) => (
+                    <div className="tp-match" key={`${m.n}-${i}`}>
+                      <div className="mh">
+                        <span className="mn">{prodName(m.n)}</span>
+                        <span className={`fit ${m.fit}`}>{m.pct} fit</span>
+                      </div>
+                      {(m.lines || []).map((l, j) => (
+                        <div className="mline" key={j}>
+                          <span className={`mk ${l[0]}`}>{l[0] === "up" ? "▲" : "▼"}</span>
+                          <span dangerouslySetInnerHTML={{ __html: l[1] }} />
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {has(t.revenueEstimate) || has(t.expectedRevenue) ? (
+                <div className="tp-asmt-sec">
+                  <span className="eyebrow">Expected revenue (estimate)</span>
+                  <div className="req">{t.revenueEstimate || t.expectedRevenue}</div>
+                </div>
+              ) : null}
+
+              {(t.competitorFit || t.competitors || []).length ? (
+                <div className="tp-asmt-sec">
+                  <span className="eyebrow">Competitor fit</span>
+                  {/* served shape: { company, products[], why, incumbent } (db/tender_fit.py) */}
+                  {(t.competitorFit || t.competitors).map((c, i) => (
+                    <div className="tp-comp-card" key={i}>
+                      <div className="tp-comp-header">
+                        <span className="tp-comp-name">{c.company || c.name || c.n}</span>
+                        {c.incumbent ? <span className="fit high">Incumbent</span> : c.fit ? <span className="fit high">{c.fit}</span> : null}
+                      </div>
+                      {(c.products || c.models || c.lines || []).map((l, j) => (
+                        <div className="tp-comp-line" key={j}>
+                          <span className="tp-comp-arrow">▲</span>
+                          <span>{typeof l === "string" ? prodName(l) : l[1] || l.text}</span>
+                        </div>
+                      ))}
+                      {c.why || c.desc || c.note || c.rationale ? (
+                        <div className="tp-comp-desc">{c.why || c.desc || c.note || c.rationale}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="tp-asmt-sec">
-                {has(t.leanTxt) ? (
-                  <div className={`tp-lean${has(t.lean) ? ` ${String(t.lean).toLowerCase()}` : ""}`}>
-                    <span className="tl">Bid assessment</span>
-                    <span>{t.leanTxt}</span>
+                {srcChips(t.srcs && t.srcs.length ? t.srcs : t.url ? [{ label: "Source", url: t.url }] : null) ? (
+                  <div style={{ marginTop: "10px" }}>
+                    <span className="eyebrow">Source</span>
+                    <div
+                      dangerouslySetInnerHTML={{
+                        __html: srcChips(
+                          t.srcs && t.srcs.length ? t.srcs : t.url ? [{ label: "Source", url: t.url }] : null,
+                        ),
+                      }}
+                      style={{ marginTop: "5px" }}
+                    />
                   </div>
                 ) : null}
-                {(() => {
-                  const chips = srcChips(t.srcs && t.srcs.length ? t.srcs : t.url ? [{ label: "Source", url: t.url }] : null);
-                  if (!chips) return null;
-                  return (
-                    <div style={{ marginTop: "10px" }}>
-                      <span className="eyebrow">Source</span>
-                      <div dangerouslySetInnerHTML={{ __html: chips }} style={{ marginTop: "5px" }} />
-                      {(t.srcs || [])
-                        .filter((s) => has(s.note) || has(s.portalAccess) || s.portalRegistration != null)
-                        .map((s, i) => (
-                          <div className="req" key={i} style={{ marginTop: "4px" }}>
-                            {[
-                              s.label,
-                              has(s.note) ? s.note : null,
-                              has(s.portalAccess) ? `access ${s.portalAccess}` : null,
-                              s.portalRegistration != null ? (s.portalRegistration ? "registration required" : "no registration") : null,
-                            ].filter(has).join(" · ")}
-                          </div>
-                        ))}
-                    </div>
-                  );
-                })()}
               </div>
 
               <div className="tp-cta-wrap">
@@ -578,7 +608,7 @@ export default function Tenders({ mode = "tender" }) {
               </div>
             </div>
 
-            <ScopeChat placeholder="Ask about this tender…" scopeKey="tender" />
+            {isVisible("chat") ? <ScopeChat placeholder="Ask about this tender…" scopeKey="tender" /> : null}
           </div>
         ) : null}
       </div>

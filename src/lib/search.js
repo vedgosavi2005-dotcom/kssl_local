@@ -12,7 +12,8 @@
  *
  * No backend, no index: the corpus is a few thousand rows and a substring scan of it
  * is well under a frame. */
-import { bucketTenders } from "./tenderCalc.js";
+import { bucketTenders } from "./overview.js";
+import { isPresenceLabel } from "./client.js";
 
 export const SEARCH_MIN_CHARS = 2;
 
@@ -59,7 +60,7 @@ export function searchDataset(data, query, limits = {}) {
   const base = { query: q, total: 0, groups: [], tooShort: false };
   if (q.length < SEARCH_MIN_CHARS || !tokens.length) return { ...base, tooShort: q.length > 0 };
 
-  const clientId = (d.client && d.client.id) || "KSSL";
+  const clientId = (d.client && d.client.id);
   const groups = {};
   const add = (key, hit) => {
     (groups[key] = groups[key] || []).push(hit);
@@ -67,8 +68,8 @@ export function searchDataset(data, query, limits = {}) {
 
   /* competitors: name, sector, hq and the serving key */
   Object.entries(d.competitors || {}).forEach(([cid, c]) => {
-    if (!c || c.dir === "client") return; // the client has no competitor profile
-    if (matches(tokens, [c.name, c.short, c.legal, c.sector, c.hq, cid])) {
+    if (!c) return;
+    if (matches(tokens, [c.name, c.sector, c.hq, cid])) {
       add("competitors", {
         key: `comp:${cid}`,
         title: text(c.name) || cid,
@@ -105,7 +106,7 @@ export function searchDataset(data, query, limits = {}) {
       }
     }
     const own = productName(m.bf);
-    if (own && own !== "KSSL present" && matches(tokens, [own, m.cat, clientId])) {
+    if (own && !isPresenceLabel(own, d.actLabel) && matches(tokens, [own, m.cat, clientId])) {
       const k = norm(`${clientId}|${own}`);
       if (!seenProduct.has(k)) {
         seenProduct.add(k);

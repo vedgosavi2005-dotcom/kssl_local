@@ -1,26 +1,59 @@
 id: partnership
-title: Partnerships of one competitor (partners + evidence cards)
-version: 2
+title: Partnerships of one competitor (partners, value to each side, overlap with KSSL's own partners, evidence timeline)
+version: 3
 fills: [competitive_partnership, competitive_partnership_evidence, competitive_partnership_relationship_detail]
-shows_on: Partnership page (network graph, partner roster, tie view, evidence cards, relationship detail)
+shows_on: Partnership page (network graph, partner roster, tie view with value to each side and KSSL overlap, evidence timeline, relationship detail)
 cadence: quarterly
 web_search: true                 # the competitor's partners are mostly not in the news rows; search for gaps
-# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+# v3 (prompt rebuild, docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.1.6, C "partnership.yml (v3)"; user brief section 5):
+#  - partner types follow the brief: JV, MoU, deal / contract, supplier, licence / ToT, teaming (+ acquisition, other)
+#  - value each side gets (value_to_competitor, value_to_partner), what it means for KSSL (kssl_read)
+#  - OVERLAP with KSSL's own partners and suppliers: the model names the CLIENT PARTNERS line the partner is (overlap_partner); code then
+#    matches the name (derive.partnership_overlap sets overlap_client_partner_id and removes an overlap the list does not support).
+#    Same component -> overlap_component says what it supplies to whom; overlap_effect says risk or advantage.
+#  - status of the tie, and each evidence card is a dated step (step_type) so the page shows the tie as a timeline
+# Inputs: the best-scored harvested documents of the competitor (deal score of the triage, or routed to partnership) first, then
+# headlines, then web search for gaps. A subject placeholder inside a documents query is bound as a SQL parameter.
 
 subject:
   key: competitor_id
   query: |
     SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country, c.headquarters
     FROM staging.competitive_competitor c
-    ORDER BY c.display_name
+    ORDER BY (SELECT count(*) FROM staging.source_document d WHERE c.competitor_id = ANY(d.competitor_ids)
+                AND (coalesce((d.triage->'info'->>'deal')::numeric, 0) >= 0.6 OR d.triage->'route' ? 'partnership')) DESC,
+             c.display_name
   documents:
-    - from: sql                  # headlines only: leads for the web search, not proof of a tie
+    - from: sql                  # 1. the best-scored harvested documents: full text
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
+               round(coalesce((d.triage->'info'->>'deal')::numeric, 0), 2) AS deal_score,
+               d.triage->'deal_types' AS deal_types, d.triage->'counterparties' AS counterparties,
+               left(d.body_text, 2200) AS text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
+        ORDER BY (CASE WHEN d.triage->'route' ? 'partnership' THEN 1 ELSE 0 END) DESC,
+                 coalesce((d.triage->'info'->>'deal')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 8
+    - from: sql                  # 2. the next documents: only the deal sentences the triage picked out
+      query: |
+        SELECT 'DEAL SENTENCES' AS doc, d.published_at, d.title, d.url,
+               (SELECT string_agg(h->>'text', ' | ') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.triage->'hints') = 'array' THEN d.triage->'hints' ELSE '[]'::jsonb END) h
+                 WHERE h->>'kind' = 'deal') AS sentences
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids)
+          AND (coalesce((d.triage->'info'->>'deal')::numeric, 0) >= 0.5 OR d.triage->'route' ? 'partnership')
+          AND d.doc_id NOT IN (SELECT x.doc_id FROM staging.source_document x WHERE '{{subject.competitor_id}}'::uuid = ANY(x.competitor_ids)
+                                 AND coalesce(x.body_text, '') <> ''
+                               ORDER BY (CASE WHEN x.triage->'route' ? 'partnership' THEN 1 ELSE 0 END) DESC,
+                                        coalesce((x.triage->'info'->>'deal')::numeric, 0) DESC, x.published_at DESC NULLS LAST LIMIT 8)
+        ORDER BY coalesce((d.triage->'info'->>'deal')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 25
+    - from: sql                  # 3. headlines only: leads for the web search, not proof of a tie
       query: |
         SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
         FROM staging.competitive_news_article n
         WHERE n.competitor_id = '{{subject.competitor_id}}' AND n.published_date >= current_date - 730
-        ORDER BY n.published_date DESC LIMIT 80
-    - from: sql                  # canonical partner names already on record (rivals' and the client's), for exact-name matching
+        ORDER BY n.published_date DESC LIMIT 40
+    - from: sql                  # 4. canonical partner names already on record (rivals' and the client's), for exact-name matching
       query: |
         SELECT 'KNOWN PARTNER' AS doc, k.partner_name, k.region
         FROM (SELECT partner_name, max(region) AS region FROM staging.competitive_partnership GROUP BY partner_name
@@ -28,53 +61,72 @@ subject:
               SELECT partner_name, max(country) FROM staging.client_partner GROUP BY partner_name) k
         ORDER BY k.partner_name
 
-context: [client, competitors]
+context: [client, client_portfolio, client_capabilities, client_markets, client_partners, competitors]
 
 task: |
-  TASK partnership — list the partner organisations of {{subject.display_name}}
-  ({{subject.origin_country}}) and the evidence for each tie. Use the DOCUMENTS first, then web
-  search for gaps.
+  TASK partnership — list the partner organisations of {{subject.display_name}} ({{subject.origin_country}}) and the evidence for
+  each tie, say what each side gets from it, and say what it means for {{client.name}} — above all where the partner also works
+  with {{client.name}}. Use the DOCUMENTS first, then web search for gaps. Facts only from sources; judgements are marked.
 
-  A PARTNER is an organisation with which the company has a joint venture, a teaming or
-  co-development agreement, an MoU, a technology licence or transfer of technology, an acquisition
-  of or by it, or a supply relationship (either direction). NOT partners: organisations that are
-  only customers (armed forces, ministries, governments buying from the company), and ties a
-  source reports as ended, cancelled or dissolved. One record per partner organisation, not per
-  agreement; several agreements with one partner become several evidence cards. Never a partner:
-  {{subject.display_name}} itself or one of its own units or subsidiaries, and never {{client.name}}.
-  Write partner_name as the partner organisation's own name; never copy a line of the COMPETITORS
-  list (those lines carry short names and countries in brackets). At most 20
-  partners, strongest evidence first. None found: "records": [] and "skip_reason".
+  A PARTNER is an organisation with which the company has a joint venture, a teaming or co-development agreement, an MoU, a
+  technology licence or transfer of technology (ToT), an acquisition of or by it, a supplier or sub-supplier relationship (either
+  direction), or a supply deal or contract between the two companies. NOT partners: organisations that are only customers (armed
+  forces, ministries, governments buying from the company), and ties a source reports as ended, cancelled or dissolved (an ended tie
+  may be listed with status ended if a source says it ended). One record per partner organisation, not per agreement; several
+  agreements with one partner become several evidence cards. Never a partner: {{subject.display_name}} itself or its own units or
+  subsidiaries, and never {{client.name}}. Write partner_name as the partner organisation's own name; never copy a line of the
+  COMPETITORS list. At most 15 partners, strongest evidence first. None found: "records": [] and "skip_reason".
 
-  PARTNER NAMES. {{client.name}}'s dashboard detects a partner shared with {{client.name}} by exact
-  name. If the organisation (same legal entity or same named unit, also under an alias) is in the
-  KNOWN PARTNER rows, use that name character for character. If it is one of COMPETITORS, use its
-  display name. Otherwise use the name the organisation uses for itself in English, without
-  legal-form suffixes (Ltd, Pvt, GmbH, S.A., Inc.); keep a country or unit name only when that
-  unit is the party in the source. Never shorten to an acronym unless the organisation does.
+  PARTNER NAMES. {{client.name}}'s dashboard detects a partner shared with {{client.name}} by exact name. If the organisation (same
+  legal entity or same named unit, also under an alias) is in the KNOWN PARTNER rows, use that name character for character. If it
+  is one of COMPETITORS, use its display name. Otherwise use the name the organisation uses for itself in English, without
+  legal-form suffixes (Ltd, Pvt, GmbH, S.A., Inc.). Never shorten to an acronym unless the organisation does.
 
   Per partner, one record, table competitive_partnership:
    - partner_name: as above
-   - partner_type: one of Joint venture (the two own a joint company), Supplier (main tie is
-     supply of products, subsystems or services, either way), Technology partner (licence,
-     transfer of technology, co-development, integration), MoU / strategic (MoU, teaming,
-     strategic agreement), Acquisition (one acquired the other or a unit of it), Other. If several
-     ties exist, take the first that applies in that order.
-   - region: the partner's home country, English short name; for a multinational body the region
-     as written in the source; null if no source states it
-   - description: 1-2 sentences saying who the partner is and what the tie is, from the sources
+   - partner_type: the first of these that applies, written exactly:
+       Joint venture        the two own a joint company
+       Acquisition          one acquired the other or a unit of it
+       Technology / ToT     a licence, transfer of technology, co-development or integration agreement
+       Teaming              they agreed to bid together for a named tender or programme
+       Supplier             the main tie is that one supplies parts, subsystems, materials or services to the other as a supplier or sub-supplier
+       Supply / customer    a deal or contract between the two companies that is not a supplier tie (an export deal, an order, a service contract)
+       MoU / strategic      an MoU, letter of intent or strategic pact with no contract yet
+       Other                a tie the source records without a type
+   - region: the partner's home country, English short name; for a multinational body the region as written; null if no source states it
+   - description: 1-2 plain sentences saying who the partner is and what the tie is, from the sources
    - relationship_scope: what the two do together, as stated (products, programme, work share)
-   - relationship_confidence: official if the company, the partner or a government body itself
-     states the tie; else corroborated if two or more independent editorial sources (different
-     publishers) state it; else single_source. List all the sources used in _sources
+   - status: JUDGEMENT. announced (intent or agreement signed, no work started) | active (work, supply or production under way)
+     | ended (a source says it ended or was cancelled) | unknown
+   - relationship_confidence: official if the company, the partner or a government body itself states the tie; else corroborated if
+     two or more independent editorial sources (different publishers) state it; else single_source
    - source_note: short factual note on the sources, e.g. "company announcement and one news report"
    - as_of_date: date of the most recent source stating the tie is in place
+   - value_to_competitor: JUDGEMENT. What {{subject.display_name}} gets from the tie, as "tag: one plain line", max 200 characters in all.
+     tag is one of market_access | technology | capacity | financing | credibility | offsets | other. Use only what a source states or
+     plainly implies (a local partner in a country gives market access); if the sources do not say, write "not stated".
+   - value_to_partner: JUDGEMENT. The same for the partner, "tag: one plain line", max 200 characters.
+   - kssl_read: JUDGEMENT. Max 300 characters, 1-3 plain sentences: what the tie means for {{client.name}}. Name the {{client.name}}
+     product, market, partner or supplier it touches (from CLIENT PORTFOLIO, CLIENT MARKETS, CLIENT PARTNERS) and say whether the tie
+     competes with it, opens a door for {{client.name}}, or threatens a {{client.name}} partnership. If nothing is touched, write
+     exactly: "No KSSL product, market or partner is touched by this tie."
+   - overlap_partner: the CLIENT PARTNERS line this partner is, written as its partner name exactly as in that block (the same
+     organisation or the same named unit); empty when the partner is not on that list or the list says "none on record"
+   - overlap_kind: JUDGEMENT. same_component = this partner supplies or licenses {{client.name}} the same kind of component, product or
+     technology that it gives {{subject.display_name}}; same_partner_other_scope = this partner also works with {{client.name}}, on
+     something else; kssl_market = the tie is in a country of CLIENT MARKETS and the partner is not on the CLIENT PARTNERS list;
+     none = no overlap found in the blocks; unknown = the blocks do not say. Without an overlap_partner, same_component and
+     same_partner_other_scope are not allowed. If CLIENT PARTNERS says "none on record", write unknown.
+   - overlap_component: when overlap_kind is same_component or same_partner_other_scope, max 160 characters: what this partner supplies
+     to whom, for both sides: "<partner> gives <component> to {{subject.display_name}} and <component> to {{client.name}}"; else empty
+   - overlap_effect: JUDGEMENT. risk (the shared partner can favour the rival or its capacity may be shared) | advantage ({{client.name}}
+     gains or can match the rival) | both | unknown. Empty when there is no overlap. Say the reason in _reason, naming the two supply facts.
    children:
-   competitive_partnership_evidence (1-3 cards per partner, most informative first; one per source article):
-   - evidence_type: one of Agreement, Contract, Joint venture, Delivery, Co-development, Statement
-     (the event the source reports)
+   competitive_partnership_evidence (1-3 cards per partner, oldest first: each card is one dated step of the tie; one per source article):
+   - step_type: what this step is: mou | agreement | jv_formed | first_product | order | delivery | ended
+   - evidence_type: one of Agreement, Contract, Joint venture, Delivery, Co-development, Statement (the event the source reports)
    - relationship_label: short label of the tie this source shows, max 40 characters
-   - evidence_text: 2-4 sentences summarising what this source says about the tie
+   - evidence_text: 2-4 plain sentences summarising what this source says about the tie, ending with what changed at this step
    - scope: the scope of the tie as stated in this source
    - confidence: official | corroborated | single_source, by the same rule, for this tie
    - source_note: short factual note on this source
@@ -85,27 +137,52 @@ task: |
    - source_url: the article URL
    - as_of_date: date of the event the source reports, else its publication date
   Do not output competitive_partnership_relationship_detail; the loader builds it.
+  For every JUDGEMENT field give "_reason": one sentence naming the facts it rests on. For partner_name, region, status and as_of_date
+  give "_sources": the verbatim sentence and its URL.
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented. Say what IS touched, not what is absent. Never write the names of
+  the blocks (CLIENT MARKETS...) in the text; say "KSSL's markets" or "KSSL's range".
 
   CLIENT: {{context.client}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT CAPABILITIES (lines, ventures, capabilities and what partners supply):
+  {{context.client_capabilities}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
   COMPETITORS:
   {{context.competitors}}
 
-  DOCUMENTS (news leads for {{subject.display_name}}, then partner names on record):
+  DOCUMENTS (best-scored harvested documents of {{subject.display_name}}, deal sentences of more documents, news leads, partner names on record):
   {{documents}}
 
 output:
   competitive_partnership:
     card: true
     key: [prompt_id, subject, partner_name]  # same partner -> same relationship id
+    transient:
+      overlap_partner: {max: 255}            # read by derive.partnership_overlap, not stored
     columns:
       partner_name: {required: true, max: 250}
-      partner_type: {required: true, enum: [Joint venture, Supplier, Technology partner, MoU / strategic, Acquisition, Other]}
+      partner_type: {required: true, enum: [Joint venture, Acquisition, Technology / ToT, Teaming, Supplier, Supply / customer, MoU / strategic, Other]}
       region: {max: 100}
-      description: {}
+      description: {plain: warn}
       relationship_scope: {}
+      status: {judgement: true, enum: [announced, active, ended, unknown]}
       relationship_confidence: {required: true, enum: [official, corroborated, single_source]}
       source_note: {}
       as_of_date: {type: date}
+      value_to_competitor: {judgement: true, max: 200, plain: warn}
+      value_to_partner: {judgement: true, max: 200, plain: warn}
+      kssl_read: {judgement: true, max: 300, plain: warn}
+      overlap_kind: {judgement: true, enum: [same_component, same_partner_other_scope, kssl_market, none, unknown], unknown_when_empty: client_partners}
+      overlap_component: {max: 160, plain: warn}
+      overlap_effect: {judgement: true, enum: [risk, advantage, both, unknown]}
     loader:
       relationship_id: new_id
       competitor_id: subject.competitor_id
@@ -115,11 +192,12 @@ output:
       view_relationship_action: true_when_evidence_exists
     children:
       competitive_partnership_evidence:
-        columns: [evidence_type, relationship_label, evidence_text, scope, confidence, source_note,
+        columns: [step_type, evidence_type, relationship_label, evidence_text, scope, confidence, source_note,
                   basis_for_type, source_article_title, source_publisher, source_type, source_url, as_of_date]
         required: [evidence_type, evidence_text, source_url]
         max: {relationship_label: 40, basis_for_type: 300}
         enum:
+          step_type: [mou, agreement, jv_formed, first_product, order, delivery, ended]
           evidence_type: [Agreement, Contract, Joint venture, Delivery, Co-development, Statement]
           confidence: [official, corroborated, single_source]
           source_type: [Official source, News article]
@@ -142,3 +220,6 @@ output:
       source_publisher_label: copy_of_evidence_source_publisher
       back_action: false           # UI flag, NOT NULL
       # image_state is not filled (images are hidden)
+
+derive:
+  - partnership_overlap          # overlap_client_partner_id from the name match; drops an overlap the CLIENT PARTNERS list does not support

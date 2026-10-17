@@ -1,16 +1,20 @@
+import { clientShort } from "../../lib/client.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import HtmlBlock from "../../components/htmlBlock/HtmlBlock";
 import ScopeChat from "../../components/scopeChat/ScopeChat";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { formatSectorName, formatCompanyName } from "../../lib/profile";
-import { ReviewList } from "../../components/review/Review";
+import { companyCountries, facetOptionsByName } from "../../lib/countryFacet";
 /* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. This page
    persisted to localStorage, which survives the tab, the browser and the machine's
    next reboot -- so a company opened once was still the landing selection weeks
    later, on a dashboard whose job is "what is new". Same key/value shape, held in
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
+import { isVisible } from "../../lib/visibility";
+import { ReviewList } from "../../components/review/Review";
+import { buildCategories } from "../../lib/partnerCategories";
 
 /* `sector` is escaped at write time ("Defence &amp; Aerospace") and is formatted consistently here. */
 const sectorText = (co) => formatSectorName(co && co.sector);
@@ -24,10 +28,7 @@ const sectorText = (co) => formatSectorName(co && co.sector);
 export default function Partnerships() {
   const { data, partners } = useData();
   const { setScope, searchQuery } = useAppState();
-  const clientName = (data.client && (data.client.short || data.client.name)) || "";
-  const clientId = data.client?.id;
-  const lc = (v) => String(v == null ? "" : v).toLowerCase();
-  const distinctPartners = (co) => new Set((co.partners || []).map((x) => x.pid || x.id)).size;
+  const clientName = clientShort();
   const getSavedPart = () => {
     try {
       const s = viewState.getItem("kssl_part_state");
@@ -40,9 +41,9 @@ export default function Partnerships() {
      Restore it only if the row is still here, or the drawer renders an id with no
      competitor behind it and throws on the first field it reads. */
   const defaultCid =
-    (data.compOrder && data.compOrder.find((k) => k !== clientId && data.competitors[k])) || null;
+    (data.compOrder && data.compOrder.find((k) => k !== (data.client?.id) && data.competitors[k])) || null;
   const savedCid =
-    savedPart.cid && data.competitors[savedPart.cid] && savedPart.cid !== clientId
+    savedPart.cid && data.competitors[savedPart.cid] && savedPart.cid !== (data.client?.id)
       ? savedPart.cid
       : defaultCid;
 
@@ -146,6 +147,15 @@ export default function Partnerships() {
   /* In Regions mode, display partners grouped by sovereign country flag.
      If a competitor is chosen, map that competitor by country; otherwise map KSSL's own alliance network. */
   const byRegion = groupMode === "region";
+  const ksslCo = useMemo(() => {
+    const raw = data.KSSL_PARTNERS || [];
+    return {
+      id: (data.client && data.client.id),
+      name: clientName,
+      dir: "client",
+      partners: raw,
+    };
+  }, [data, clientName]);
   const gc = c;
   const gcid = gc ? gc.id : null;
   // what the drawer / layout treat as "something is selected"
@@ -153,29 +163,30 @@ export default function Partnerships() {
 
   /* The rival ids this list draws from -- the same population the options describe. */
   const rivalIds = useMemo(
-    () => data.compOrder.filter((k) => k !== clientId && data.competitors[k]),
+    () => data.compOrder.filter((k) => k !== (data.client?.id) && data.competitors[k]),
     [data],
   );
-  /* The country filter offers the stored origin_country of each rival, one option per value. */
-  const hqOptions = useMemo(() => {
-    const counts = new Map();
-    rivalIds.forEach((k) => {
-      const o = (data.competitors[k].origin || "").trim();
-      if (o) counts.set(o, (counts.get(o) || 0) + 1);
-    });
-    return [...counts.entries()].map(([v, n]) => ({ v, n })).sort((a, b) => a.v.localeCompare(b.v));
-  }, [data, rivalIds]);
+  /* This select was headed "All HQ Countries" and offered the raw hq strings --
+     "Arlington, Virginia", "Falls Church, Virginia, USA" -- one option per spelling,
+     none of them a country. Same expression as the Products and Competitor sidebars
+     now, and the "All" label prints the list's own length. */
+  const hqOptions = useMemo(
+    () => facetOptionsByName(rivalIds, (k) => companyCountries(data, k)),
+    [data, rivalIds],
+  );
   /* What the header's Copy / Export / Print act on: the selected competitor's mapped
      partners, and the open tie in full. Memoised on selCo (the served record), not on
      `c`, which is re-spread every render. */
   const report = useMemo(() => {
     if (!selCo) {
       /* nothing selected: the roster the rail lists, each with its mapped-partner count */
+      const clientId = (data.client && data.client.id);
       const roster = (data.compOrder || [])
         .filter((k) => k !== clientId && data.competitors[k])
         .map((k) => {
           const co = data.competitors[k];
-          return { cid: k, name: co.name, partners: distinctPartners(co), hq: co.hq || null };
+          const n = (co.partners || []).length;
+          return { cid: k, name: co.name, partners: n, hq: co.hq || null };
         });
       return {
         title: "Partnerships",
@@ -183,7 +194,7 @@ export default function Partnerships() {
         sections: [
           {
             h: "Competitors and mapped partnerships",
-            rows: roster.map((r) => [r.name, `${r.partners} partner${r.partners === 1 ? "" : "s"}${r.hq ? ` · ${r.hq}` : ""}`]),
+            rows: roster.map((r) => [r.name, `${r.partners} partnership${r.partners === 1 ? "" : "s"}${r.hq ? ` · ${r.hq}` : ""}`]),
           },
         ],
         payload: { competitors: roster },
@@ -191,29 +202,43 @@ export default function Partnerships() {
     }
     const partners = selCo.partners || [];
     const tp = tie ? partners.find((x) => x.id === tie) : null;
-    const nd = (v) => (v ? String(v) : "—");
+    const nd = (v) => (v && v !== "n/d" ? String(v) : "—");
     return {
       title: selCo.name,
-      subtitle: `${distinctPartners(selCo)} mapped partner${distinctPartners(selCo) === 1 ? "" : "s"}${tp ? ` · ${tp.label}` : ""}`,
+      subtitle: `${partners.length} mapped partnership${partners.length === 1 ? "" : "s"}${tp ? ` · ${tp.label}` : ""}`,
       sections: [
         tp
           ? {
               h: `Tie: ${selCo.name} and ${tp.label}`,
               rows: [
-                ["Relationship", nd(tp.ptype)],
+                ["Kind", nd(tp.kind)],
+                // ptype FIRST. The legend word (chrome.js) is the fallback, so
+                // the ten types the pipeline now writes fell through to `nd(tp.rel)`
+                // and this report printed the raw key -- "manufacturing", "rnd".
+                ["Relationship", nd(tp.ptype) !== "—" ? tp.ptype : (buildCategories().categoryOf(tp.rel).label || nd(tp.rel))],
+                ["Status", tp.status === "ended"
+                  ? `ended${tp.ended ? ` (${tp.ended})` : ""}`
+                  : nd(tp.status)],
                 ["Source confidence", nd(tp.confidence)],
-                ["Region", nd(tp.country)],
-                ["As of", nd(tp.as_of)],
-                tp.scope ? ["Scope", tp.scope] : null,
+                ["Country", nd(tp.country)],
+                ["Date", nd(tp.date)],
+                ["Deal", nd(tp.deal)],
                 tp.note ? ["Note", tp.note] : null,
+                tp.insight ? ["Insight", tp.insight] : null,
+                tp.mean ? ["Meaning", tp.mean] : null,
               ].filter(Boolean),
             }
           : null,
         {
           h: "Mapped partners",
-          rows: partners.map((x) => [x.label, [x.ptype, x.country].filter(Boolean).join(" · ")]),
+          rows: partners.map((x) => [
+            x.label || x.name || x.id,
+            [x.kind, x.ptype || buildCategories().categoryOf(x.rel).label || x.rel, x.country,
+             x.status === "ended" ? "ENDED" : null].filter(Boolean).join(" · "),
+          ]),
         },
         selCo.threat ? { h: "Threat read", rows: [selCo.threat] } : null,
+        selCo.assess && isVisible("parallax-read") ? { h: "Assessment", rows: [selCo.assess] } : null,
       ].filter(Boolean),
       payload: {
         cid,
@@ -221,6 +246,7 @@ export default function Partnerships() {
         partners,
         tie: tp || null,
         threat: selCo.threat || null,
+        assessment: isVisible("parallax-read") ? selCo.assess || null : null,
       },
     };
   }, [selCo, cid, tie, data]);
@@ -230,14 +256,15 @@ export default function Partnerships() {
   const tokens = activeQ.split(/\s+/).filter(Boolean);
 
   const list = data.compOrder
-    .filter((k) => k !== clientId)
+    .filter((k) => k !== (data.client?.id))
     .filter((k) => {
       const co = data.competitors[k];
       if (!co) return false;
-      const pNames = (co.partners || []).map((x) => x.label || "").join(" ");
-      const search = `${(co.name || "").toLowerCase()} ${sectorText(co).toLowerCase()} ${(co.hq || "").toLowerCase()} ${pNames.toLowerCase()}`;
+      const nsh = partners.pgSharedFor(co).length;
+      const pNames = (co.partners || []).map((x) => x.name || x.label || "").join(" ");
+      const search = `${(co.name || "").toLowerCase()} ${sectorText(co).toLowerCase()} ${(co.hq || "").toLowerCase()} ${pNames.toLowerCase()}${nsh ? " overlap" : ""}`;
       if (tokens.length > 0 && !tokens.every((tok) => search.includes(tok))) return false;
-      if (hq && (co.origin || "").trim() !== hq) return false;
+      if (hq && !companyCountries(data, k).includes(hq)) return false;
       return true;
     });
 
@@ -470,7 +497,7 @@ export default function Partnerships() {
         <div id="patc-list" style={c && !listOpen ? { display: "none" } : undefined}>
           {list.map((k) => {
             const co = data.competitors[k];
-            const nPartners = distinctPartners(co);
+            const nPartners = partners.pgDistinct(co);
             return (
               <div
                 className={`pat-li${cid === k ? " active" : ""}`}
@@ -506,7 +533,7 @@ export default function Partnerships() {
                 }}
               >
                 <span className="pli-n" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span className={`wdot ${lc(co.threat)}`} />
+                  <span className={co.dir ? `wdot ${co.dir}` : "wdot"} />
                   {co.name}
                 </span>
                 <span className="pli-c">{nPartners}</span>
@@ -522,8 +549,17 @@ export default function Partnerships() {
           ) : null}
           {/* review copy only: the client's own partners (they mark the overlapping partners) */}
           <ReviewList
-            title="KSSL partners"
+            title="Client partners"
             items={(data.KSSL_PARTNERS || []).map((x) => ({ src: x._src, label: [x.label, x.ptype].filter(Boolean).join(" · ") }))}
+          />
+          {/* review copy only: the field-level read (patterns across all competitors) is not drawn on this page,
+              so its records are reviewed here, whichever competitor is open */}
+          <ReviewList
+            title="Field-level patterns"
+            items={[
+              ...((data.FIELDSYN && data.FIELDSYN.patterns) || []).map((x) => ({ src: x._src, label: x.field || x.pattern })),
+              ...(data.FIELDSYN && data.FIELDSYN.bottomSrc ? [{ src: data.FIELDSYN.bottomSrc, label: data.FIELDSYN.bottom }] : []),
+            ]}
           />
         </div>
       </div>
@@ -531,14 +567,14 @@ export default function Partnerships() {
       {/* CENTER: thesis line + interactive graph + shared-partner read */}
       <div className="pg-canvas">
         <div className="pg-instrument-head">
-          <div className="pg-i-title">{byRegion ? `${gc ? gc.name : ""} · partners by region` : c ? `${c.name} · alliance network` : "Alliance network"}</div>
+          <div className="pg-i-title">{byRegion ? `${gc ? gc.name : clientName} · partners by region` : c ? `${c.name} · alliance network` : "Alliance network"}</div>
         </div>
         <div className="pg-graph-wrap" style={{ position: "relative" }}>
           {!gc ? (
             <div className="pg-empty">
               <div className="pg-empty-ic">◆</div>
               <div className="pg-empty-t">Select a competitor</div>
-              <div className="pg-empty-s">Choose from the list to map their alliance network, then group it by category or region</div>
+              <div className="pg-empty-s">Choose from the list to map their alliance network, or pick Regions to see {clientName}&apos;s partners by country</div>
             </div>
           ) : null}
           {(
@@ -744,14 +780,24 @@ export default function Partnerships() {
               </button>
             </div>
             <div className="pg-drawer-head" style={{ paddingRight: "110px", paddingBottom: "16px" }} dangerouslySetInnerHTML={{ __html: drawerHeadText() }} />
-            {/* review copy only: the drawer draws its partners as HTML, so the same records are listed here */}
-            {gc ? (
-              <ReviewList
-                title={`${gc.name} partners`}
-                items={(gc.partners || [])
-                  .filter((x) => !tie || x.id === tie)
-                  .map((x) => ({ src: x._src, label: [x.label, x.ptype].filter(Boolean).join(" · ") }))}
-              />
+            {/* review copy only: the drawer draws its records as HTML, so the same records are listed here */}
+            {gc && mode !== "field" ? (
+              <>
+                <ReviewList
+                  title={`${gc.name} partners`}
+                  items={(gc.partners || [])
+                    .filter((x) => !tie || x.id === tie)
+                    .map((x) => ({ src: x._src, label: [x.label, x.ptype].filter(Boolean).join(" · ") }))}
+                />
+                {!tie && data.COMPSYN && data.COMPSYN[gcid] ? (
+                  /* the intelligence read (thesis, vulnerabilities, traces) is part of the competitor's own card:
+                     the review API approves it only through that card, so the one bar here is the competitor's */
+                  <ReviewList
+                    title={`${gc.name} intelligence (approved with the competitor card)`}
+                    items={[{ src: gc._src, label: (data.COMPSYN[gcid].strat && data.COMPSYN[gcid].strat.thesis) || gc.name }]}
+                  />
+                ) : null}
+              </>
             ) : null}
             <HtmlBlock
               className="pg-drawer-body"
@@ -760,6 +806,7 @@ export default function Partnerships() {
                   setTie(null);
                   setMode("syn");
                 },
+                "[data-fieldread]": () => setMode("field"),
                 "[data-relcard]": (el) => {
                   const ix = Number(el.getAttribute("data-relcard"));
                   setRelCardIndex(ix);
@@ -768,10 +815,29 @@ export default function Partnerships() {
                   setRelCardIndex(null);
                 },
                 ".pg-partner-roster-card[data-pid]": (el) => selectPartner(el.getAttribute("data-pid")),
+                ".pg-ov-tie[data-pid]": (el) => selectPartner(el.getAttribute("data-pid")),
+                ".sib-row[data-pid]": (el) => selectPartner(el.getAttribute("data-pid")),
+                ".pg-rel[data-pid]": (el) => selectPartner(el.getAttribute("data-pid")),
+                "[data-vulnclick]": (el) => {
+                  const ix = Number(el.getAttribute("data-vulnclick"));
+                  const body = el.nextElementSibling;
+                  if (body) body.classList.toggle("open");
+                  el.closest(".pg-drawer-body")
+                    ?.querySelectorAll(".syn-vuln")
+                    .forEach((v) => v.classList.remove("traceactive"));
+                  el.closest(".syn-vuln")?.classList.add("traceactive");
+                  applyHighlight(null, partners.traceNodeIds(gc, gcid, ix));
+                },
               }}
               html={drawerBody()}
               id="pg-r-body"
             />
+            {/* REMOVED ON REQUEST: the "What an overlapping <kind> partner costs KSSL"
+                explainer that used to sit under the drawer. It was generic interpretation
+                keyed off the overlap kind -- the same two paragraphs for every rival that
+                shared a partner of that kind -- and it said nothing the drawer above does
+                not already state about THIS rival. partners.overlapDefsHtml and OV_DEF are
+                left intact, so restoring it is putting this element back. */}
           </div>
         </div>
       </div>

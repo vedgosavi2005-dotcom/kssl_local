@@ -19,13 +19,24 @@ For a competitor (and optionally its products) and a date or date range it
 
 Date range: `date` (one day) or `from`/`to` (YYYY-MM-DD, inclusive). With none of them: the
 last 30 days. Only `from`: up to today. Only `to`: the 30 days ending then.
+The range is searched in 2-day windows (SLICE_DAYS; a window whose query returns the RSS cap of 100 is halved,
+down to one day) and merged by link. Limit: a daily run (<= 2 days) keeps DAILY_LIMIT (20) articles per company /
+product; a backfill has no limit; an explicit --limit always counts.
+
+Names (db/news_aliases.csv, read by load_aliases / subject_for; the DB supplies display / legal / short name):
+  search_name         the quoted name of the Google query; aliases: more accepted names (also searched, in one OR query)
+  match_terms_needed  "alias: co-term / co-term | alias: ..." an alias that counts only with a co-term ("Hanwha" + Army)
+  exclude_terms       phrases blanked out before matching (sister companies: "Hanwha Ocean", "L&T Finance")
+  domains             the company's own sites: tier primary and never "not about" (match_via 'own site')
+A product matches loosely ("K9 Vajra-T" ~ "K9 Vajra"). A page that only the page title / description / url names is
+kept with match_via 'page' (the news prompt sees it). The client's own domains: backend/sources.py CLIENT_DOMAINS.
 
 Where things go (no columns are added to ui/serving tables):
   * staging.news_candidate (db/setup/06_news_candidate.sql): candidate_id (= row_id(url, owner), the id
     the story row gets when this candidate is its main article), competitor_id / product_id (NULL =
     company news), headline, article_url, published_date, publisher, image_url, image_local_path
     (relative to the media dir, e.g. news/<sha1>.jpg), source_tier ("primary" | "independent"),
-    pre_group, status 'new'. A URL already stored for the same owner is not re-added (status kept).
+    pre_group, match_via, page_note, status 'new'. A URL already stored for the same owner is not re-added (status kept).
   * pre_group: code pre-grouping of obvious copies. A new candidate whose headline is >= 85% similar
     (near_copy) to an earlier candidate of the SAME owner within +-3 days points at it; the model
     run only has to group the rest.
@@ -35,9 +46,8 @@ Where things go (no columns are added to ui/serving tables):
 
 Connection: env KSSL_STAGING_DSN, falling back to KSSL_DSN. Writes go to schema `staging` only
 (the GET reads KSSL_SERVING_DSN on the live backend).
-Competitor names come from staging.competitive_competitor (display_name, legal_name,
-short_name); there is no website column, so company domains are only learnt from the RSS
-publisher when it is the company itself (or passed with --domain).
+Competitor names come from staging.competitive_competitor (display_name, legal_name, short_name) plus the aliases
+file above; company domains come from the file, from the RSS publisher when it is the company itself, or --domain.
 
 CLI:  python -m backend.news --competitor <uuid|all> [--products] [--date 2026-10-01 |
           --from 2026-09-01 --to 2026-09-30] [--limit N] [--dry-run]
@@ -45,6 +55,7 @@ CLI:  python -m backend.news --competitor <uuid|all> [--products] [--date 2026-1
 API:  POST /api/news/refresh?competitor_id=<uuid|all>&products=true&date=... | &from=..&to=..&limit=..
       GET  /api/news?competitor_id=&from=&to=   (reads staging when KSSL_VIEW=review, else serving)
       python -m backend.news --regroup   (pre-group the existing 'new' candidates; one-off after a bulk move)
+      python -m backend.news --renormalise   (https / desktop urls, headline suffixes, match_via of the 'new' candidates)
 
 Stdlib only (urllib, html.parser, json, concurrent.futures) + psycopg2 + FastAPI (router).
 """
@@ -53,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import gzip
 import hashlib
 import html
@@ -78,7 +90,7 @@ from xml.etree import ElementTree
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.sources import classify_reason, host_of
+from backend.sources import classify_reason, client_domains, desktop_host, hard_to_fetch, host_of, outlet_rank
 
 router = APIRouter()
 
@@ -235,6 +247,16 @@ def date_ops(rng: tuple[date, date]) -> str:
 
 # ----------------------------------------------------------------------------- RSS
 
+def strip_publisher(title: str, source: str) -> str:
+    """Drop a trailing " - PUBLISHER" from a headline; case-insensitive ("Chosunbiz" vs " - CHOSUNBIZ")."""
+    title, source = (title or "").strip(), (source or "").strip()
+    if source:
+        suffix = " - " + source.lower()
+        if title.lower().endswith(suffix) and len(title) > len(suffix):
+            return title[: -len(suffix)].strip()
+    return title
+
+
 def parse_rss(body: bytes) -> list[dict]:
     try:
         root = ElementTree.fromstring(body)
@@ -245,8 +267,7 @@ def parse_rss(body: bytes) -> list[dict]:
         title = (it.findtext("title") or "").strip()
         src = it.find("source")
         source = (src.text or "").strip() if src is not None else ""
-        if source and title.endswith(" - " + source):
-            title = title[: -(len(source) + 3)].strip()
+        title = strip_publisher(title, source)
         pub = None
         try:
             pub = parsedate_to_datetime(it.findtext("pubDate") or "").date()
@@ -262,10 +283,32 @@ def parse_rss(body: bytes) -> list[dict]:
     return out
 
 
+class RssError(Exception):
+    """Google News RSS refused / failed a search (after retries). A failed search is reported, never read as 'no news'."""
+
+
+_rss_state = {"streak": 0}          # consecutive failed searches; Google answers 503 "Sorry..." when it rate-limits an IP
+RSS_BLOCKED_STREAK = 8              # this many failures in a row: stop the run (refresh_many raises) instead of grinding on
+
+
 def rss_search(query: str) -> list[dict]:
+    """Google News RSS items for a query (max 100). 429 / 5xx are retried (2 s, 6 s; once only while Google keeps
+    refusing); then RssError. Never returns [] for a failure."""
     url = f"https://news.google.com/rss/search?q={quote(query)}&{EDITION}"
-    r = http(url, headers={"Accept": "application/rss+xml,application/xml"})
-    return parse_rss(r.body) if r.status == 200 else []
+    attempts = 1 if _rss_state["streak"] >= 3 else 3
+    status = 0
+    for attempt in range(attempts):
+        r = http(url, headers={"Accept": "application/rss+xml,application/xml"})
+        status = r.status
+        if status == 200:
+            _rss_state["streak"] = 0
+            return parse_rss(r.body)
+        if status not in (0, 429) and status < 500:
+            break
+        if attempt < attempts - 1:
+            time.sleep(2 * 3 ** attempt)
+    _rss_state["streak"] += 1
+    raise RssError(f"http {status}")
 
 
 # ----------------------------------------------------------------------------- resolve
@@ -439,12 +482,19 @@ TRACKING = re.compile(r"^(utm_\w+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|ocid|
 
 
 def clean_url(url: str) -> str:
+    """Tracking parameters, fragment and /amp removed; https preferred; a mobile host (m.economictimes.com) becomes
+    the desktop host (economictimes.indiatimes.com)."""
     p = urlsplit(url.strip())
     q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if not TRACKING.match(k)]
     path = p.path
     if path.endswith("/amp") or path.endswith("/amp/"):
         path = path.rsplit("/amp", 1)[0] or "/"
-    return urlunsplit((p.scheme.lower(), p.netloc.lower(), path, urlencode(q), ""))
+    scheme = "https" if p.scheme.lower() == "http" else p.scheme.lower()
+    netloc = p.netloc.lower()
+    if scheme == "https" and "@" not in netloc:
+        host, _, port = netloc.partition(":")
+        netloc = desktop_host(host) + (":" + port if port and port != "443" else "")
+    return urlunsplit((scheme, netloc, path, urlencode(q), ""))
 
 
 def is_homepage(url: str) -> bool:
@@ -527,7 +577,19 @@ def _ld_images(img):
 
 
 BAD_IMG = re.compile(r"(logo|sprite|placeholder|favicon|icon|blank|pixel|1x1|spacer|avatar|"
-                     r"emblem|default[-_]?(image|img|og|share)|fallback|no[-_]?image|og[-_]default)", re.I)
+                     r"emblem|default[-_]?(image|img|og|share)|fallback|no[-_]?image|og[-_]default|"
+                     r"og[-_]?image|site[-_]?(image|banner)|share[-_]?(image|img))", re.I)
+# generic site art that is the same on every page of a site (matched on the whole url, case-insensitive)
+BAD_IMG_URLS = ("business-standard.com/assets/web-assets/images/business_standard",
+                "thehindu.com/theme/images/",
+                "/static/images/logo", "/assets/images/default", "/images/default-", "/default_thumbnail")
+
+
+def bad_image(u: str) -> bool:
+    """A logo / placeholder / site-wide banner, not an article picture."""
+    name = urlsplit(u).path.rsplit("/", 1)[-1]
+    low = u.lower()
+    return name.lower().endswith(".svg") or bool(BAD_IMG.search(name)) or any(x in low for x in BAD_IMG_URLS)
 
 
 def _int(s):
@@ -593,8 +655,7 @@ def parse_page(html_text: str, base: str) -> PageInfo:
         if not ABS_OR_ROOT.match(u):      # "https:/x" or "www.x/..." are publisher typos
             continue
         u = urljoin(base, u)
-        name = urlsplit(u).path.rsplit("/", 1)[-1]
-        if name.lower().endswith(".svg") or BAD_IMG.search(name) or 0 < w < 200 or u in info.images:
+        if bad_image(u) or 0 < w < 200 or u in info.images:
             continue
         info.images.append(u)
     info.image = info.images[0] if info.images else ""
@@ -690,20 +751,162 @@ def name_key(name: str) -> str:
     return " ".join(toks)
 
 
-def mentions(text: str, names) -> bool:
-    t = " " + norm(text) + " "
+def _mask(t: str, mask) -> str:
+    """Blank out whole-word phrases (an excluded sister company: "Hanwha Ocean") in a normalised, space-padded text."""
+    for m in mask:
+        k = norm(m)
+        if k:
+            t = re.sub(rf"(?<!\S){re.escape(k)}(?!\S)", " ", t)
+    return t
+
+
+def _has_name(t: str, compact: str, key: str) -> bool:
+    if not key:
+        return False
+    if f" {key} " in t:
+        return True
+    # "K9 Vajra" vs "K-9 Vajra-T": compare without spaces, only for distinctive names
+    ck = key.replace(" ", "")
+    return bool((any(c.isdigit() for c in ck) or len(ck) >= 8) and ck in compact)
+
+
+def mentions(text: str, names, cond=(), mask=()) -> bool:
+    """Does `text` name the subject?  names: always accepted (whole words, suffixes like Ltd/Group ignored);
+    cond: [(alias, [co-terms])] accepted only when the text also holds one of the co-terms ("Hanwha" + "Army");
+    mask: phrases removed first (sister companies that share the name: "Hanwha Ocean")."""
+    t = _mask(" " + norm(text) + " ", mask)
     compact = t.replace(" ", "")
-    for n in names:
-        k = name_key(n)
-        if not k:
-            continue
-        if f" {k} " in t:
-            return True
-        # "K9 Vajra" vs "K-9 Vajra-T": compare without spaces, only for distinctive names
-        ck = k.replace(" ", "")
-        if (any(c.isdigit() for c in ck) or len(ck) >= 8) and ck in compact:
-            return True
+    if any(_has_name(t, compact, name_key(n)) for n in names):
+        return True
+    for alias, terms in cond:
+        if _has_name(t, compact, name_key(alias)):
+            for term in terms:
+                k = norm(term)
+                if k and (f" {k} " in t or f" {k}s " in t):
+                    return True
     return False
+
+
+def url_text(url: str) -> str:
+    """Words of a url's path ("/hanwha-wins-us-army-mtc-contract" -> "hanwha wins us army mtc contract")."""
+    try:
+        path = urlsplit(url or "").path
+    except ValueError:
+        return ""
+    return re.sub(r"[-_/+.]+", " ", path).strip()
+
+
+_VARIANT_TAIL = re.compile(r"^(mk\d*|i{1,3}|iv|vi{0,3}|v\d+|a\d|er|block|ver\d*)$")
+
+
+def product_names(product: str) -> list[str]:
+    """The product name and its looser forms: a trailing variant letter / mark is optional, so "K9 Vajra-T" also
+    matches "K9 Vajra" (and "K-9 Vajra"). A form must stay distinctive (two words, a digit, or 6+ letters)."""
+    out = [product]
+    toks = norm(product).split()
+    while len(toks) > 1 and (len(toks[-1]) <= 2 or _VARIANT_TAIL.match(toks[-1])):
+        toks.pop()
+        cand = " ".join(toks)
+        if len(cand) >= 4 and (len(toks) >= 2 or any(c.isdigit() for c in cand) or len(cand) >= 6):
+            out.append(cand)
+    return list(dict.fromkeys(out))
+
+
+def _split(s: str, sep: str = " | ") -> list[str]:
+    return [x.strip() for x in (s or "").split(sep) if x.strip()]
+
+
+def _parse_cond(s: str) -> list[tuple[str, list[str]]]:
+    """"Hanwha: Aerospace / K9 / Army | KMW: Leopard / tank" -> [("Hanwha", [...]), ("KMW", [...])]"""
+    out = []
+    for seg in _split(s):
+        alias, _, terms = seg.partition(":")
+        terms = [t.strip() for t in terms.split("/") if t.strip()]
+        if alias.strip() and terms:
+            out.append((alias.strip(), terms))
+    return out
+
+
+def query_aliases(search: str, aliases) -> list[str]:
+    """Aliases worth their own search: not already covered by the search name or another alias (a quoted phrase
+    "Adani Defence" also finds "Adani Defence & Aerospace")."""
+    out: list[str] = []
+    for a in aliases:
+        ka = name_key(a)
+        if not ka or any(ka == k or ka.startswith(k + " ") for k in [name_key(search), *map(name_key, out)]):
+            continue
+        out = [x for x in out if not name_key(x).startswith(ka + " ")]
+        out.append(a)
+    return out
+
+
+@dataclass
+class Subject:
+    """Who a news search is about: the name to search, every accepted name, the conditional names and the masks."""
+    search: str                                           # the quoted name used in the Google query
+    names: list = field(default_factory=list)             # accepted names
+    cond: list = field(default_factory=list)              # [(alias, [co-terms])]: accepted only with a co-term
+    mask: list = field(default_factory=list)              # phrases blanked out before matching
+    domains: list = field(default_factory=list)           # the company's own domains (tier primary)
+    aliases: list = field(default_factory=list)           # extra names to search (unconditional)
+    display: str = ""
+    competitor_id: str = ""
+    product: str = ""
+
+    def hit(self, text: str) -> bool:
+        return mentions(text, self.names, self.cond, self.mask)
+
+    def matches(self, headline: str, *page_texts: str) -> str:
+        """"headline" when the headline names the subject, "page" when only the page title / description / url do
+        (the conditional names may also be completed by the other texts), else ""."""
+        if self.hit(headline):
+            return "headline"
+        texts = [t for t in page_texts if t]
+        if any(self.hit(t) for t in texts) or self.hit(" . ".join([headline or "", *texts])):
+            return "page"
+        return ""
+
+    def company_names(self) -> list[str]:
+        return [*self.names, *(a for a, _ in self.cond)]
+
+    def for_product(self, product: str) -> "Subject":
+        return Subject(search=self.search, names=product_names(product), domains=self.domains, display=self.display,
+                       competitor_id=self.competitor_id, product=product)
+
+
+ALIASES_FILE = Path(os.getenv("KSSL_NEWS_ALIASES", Path(__file__).resolve().parent.parent / "db" / "news_aliases.csv"))
+_alias_rows: dict | None = None
+
+
+def load_aliases(path=None, fresh=False) -> dict[str, dict]:
+    """db/news_aliases.csv -> {competitor_id: row} (search_name, aliases, match_terms_needed, exclude_terms, domains ...)."""
+    global _alias_rows
+    if path is None and _alias_rows is not None and not fresh:
+        return _alias_rows
+    try:
+        with open(path or ALIASES_FILE, encoding="utf-8", newline="") as f:
+            rows = {r["competitor_id"].strip(): r for r in csv.DictReader(f) if (r.get("competitor_id") or "").strip()}
+    except OSError:
+        rows = {}
+    if path is None:
+        _alias_rows = rows
+    return rows
+
+
+def subject_for(competitor_id: str, display_name: str, legal_name: str = "", short_name: str = "", rows=None) -> Subject:
+    """The Subject of a competitor: its aliases-file row (when it has one) plus the names stored in the DB."""
+    row = (load_aliases() if rows is None else rows).get(str(competitor_id)) or {}
+    search = (row.get("search_name") or "").strip() or display_name
+    aliases = _split(row.get("aliases"))
+    names: list[str] = []
+    for n in (search, *aliases, display_name, legal_name, short_name):
+        if n and name_key(n) and name_key(n) not in [name_key(x) for x in names]:
+            names.append(n)
+    cond = [(a, t) for a, t in _parse_cond(row.get("match_terms_needed")) if name_key(a) not in [name_key(x) for x in names]]
+    return Subject(search=search, names=names, cond=cond, mask=_split(row.get("exclude_terms")),
+                   domains=[d.lower() for d in _split(row.get("domains"))],
+                   aliases=query_aliases(search, [*aliases, *[x for x in (legal_name, short_name) if x]]),
+                   display=display_name, competitor_id=str(competitor_id))
 
 
 # ----------------------------------------------------------------------------- pipeline
@@ -724,22 +927,24 @@ class Item:
     image_local_path: str = ""
     image_note: str = ""
     image_ok: bool = False
+    match_via: str = ""            # headline | page | own site: where the subject's name was found
+    page_note: str = ""            # why the page could not be read (http 401 ...), "" = read
     status: str = "dropped"
     reason: str = ""
     secs: float = 0.0
 
 
-def process(it: Item, names, company_domains, fetch_images=True) -> Item:
+def process(it: Item, subj: Subject, company_domains, fetch_images=True) -> Item:
     t0 = time.monotonic()
     try:
-        _process(it, names, company_domains, fetch_images)
+        _process(it, subj, company_domains, fetch_images)
     except Exception as e:  # one bad page must not stop the run
         it.status, it.reason = "dropped", f"error: {type(e).__name__}: {e}"[:120]
     it.secs = round(time.monotonic() - t0, 1)
     return it
 
 
-def _process(it: Item, names, company_domains, fetch_images):
+def _process(it: Item, subj: Subject, company_domains, fetch_images):
     url, method = it.url, it.resolve_method
     if not method:
         url, method = resolve(it.link)
@@ -747,6 +952,7 @@ def _process(it: Item, names, company_domains, fetch_images):
     if not url:
         it.reason = f"unresolved ({method})"
         return
+    raw_url = url
     url = clean_url(url)
     if is_homepage(url):
         it.reason = "resolved to a homepage"
@@ -756,20 +962,32 @@ def _process(it: Item, names, company_domains, fetch_images):
         it.url, it.reason = url, f"source: {why}"
         return
     it.url, it.tier = url, tier
+    own = why == "company domain"
     r = http(url)
+    if r.status == 0 and raw_url.lower().startswith("http://") and url.startswith("https://"):
+        r = http(raw_url)                                       # the site has no https: keep its http url
+        if r.status:
+            it.url = url = clean_url(raw_url).replace("https://", "http://", 1)
     if r.status == 0 or r.status >= 500:          # one retry for transient failures
         time.sleep(1)
         r = http(url)
     blocked = page_blocked(r)
+    it.page_note = blocked
     info = PageInfo()
     if not blocked:
         info = parse_page(r.text(), r.url)
         canon = clean_url(info.canonical) if info.canonical else ""
-        if canon and not is_homepage(canon) and classify_reason(canon, company_domains)[0]:
-            it.url, it.tier = canon, classify_reason(canon, company_domains)[0]
-    if not (mentions(it.title, names) or mentions(info.title, names) or mentions(info.description, names)):
-        it.reason = "not about " + " / ".join(names[:1])
-        return
+        if canon and not is_homepage(canon):
+            ctier, cwhy = classify_reason(canon, company_domains)
+            if ctier:
+                it.url, it.tier, own = canon, ctier, cwhy == "company domain"
+    if own:                                       # the company's own site: always about the company
+        it.match_via = "own site"
+    else:
+        it.match_via = subj.matches(it.title, info.title, info.description, url_text(it.url))
+        if not it.match_via:
+            it.reason = "not about " + subj.search
+            return
     it.publisher = it.source or info.site_name or host_of(it.url)
     if not it.date and info.published:
         try:
@@ -799,80 +1017,152 @@ def _process(it: Item, names, company_domains, fetch_images):
     it.status, it.reason = "kept", ""
 
 
-def queries_for(name: str, product: str = "", rng: tuple[date, date] | None = None) -> list[str]:
+def queries_for(name: str, product: str = "", rng: tuple[date, date] | None = None, aliases=(), cond=(),
+                variants=(), lean: bool = False) -> list[str]:
+    """Google News queries, in order of priority. Full set: the defence-qualified name, the bare name, the aliases
+    in one OR query, the conditional aliases (with a defence word) in another. lean=True drops the defence-qualified
+    query (NOT a subset of the bare name's results: measured 5-15% of allowlisted items come only from it, so the
+    job does not use lean; kept for tests and quick probes).
+    Products: the exact name, its looser forms (`variants`), and with the company name."""
     ops = f" {date_ops(rng)}" if rng else ""
+    q = lambda names: "(" + " OR ".join(f'"{a}"' for a in names) + ")"
     if product:
-        qs = [f'"{product}" "{name}" defence OR defense', f'"{product}" {name}', f'"{product}"']
+        qs = [f'"{product}"'] if lean else [f'"{product}" "{name}" defence OR defense', f'"{product}" {name}', f'"{product}"']
+        qs += [f'"{v}"' for v in variants if v != product]
     else:
-        qs = [f'"{name}" defence OR defense', f'"{name}"']
-    return [q + ops for q in qs]
+        qs = [] if lean else [f'"{name}" defence OR defense']
+        qs.append(f'"{name}"')
+        if aliases:
+            qs.append(q(aliases))
+        if cond:
+            qs.append(q([a for a, _ in cond]) + " (defence OR defense)")
+    return [x + ops for x in qs]
 
 
-def collect(name: str, aliases=(), product: str = "", company_domains=(), limit=10,
-            fetch_images=True, workers=WORKERS, rng: tuple[date, date] | None = None) -> list[Item]:
-    """Search, resolve and filter news for a company (or one of its products) in `rng`."""
+SLICE_DAYS = 2                 # a backfill is searched in windows of this many days (the RSS cap is 100 items per query)
+RSS_CAP = 100
+DAILY_LIMIT = 20               # kept articles per company / product on a daily run; a backfill has no limit
+WAVE = 60                      # articles resolved + read per round when there is no limit
+
+
+def day_slices(rng: tuple[date, date], days: int = SLICE_DAYS) -> list[tuple[date, date]]:
+    """Inclusive (start, end) windows of `days` days covering rng, oldest first."""
+    out, d = [], rng[0]
+    while d <= rng[1]:
+        e = min(d + timedelta(days=days - 1), rng[1])
+        out.append((d, e))
+        d = e + timedelta(days=1)
+    return out
+
+
+def effective_limit(limit, rng: tuple[date, date]):
+    """An explicit limit always counts; otherwise a daily run (<= SLICE_DAYS days) keeps DAILY_LIMIT, a backfill all."""
+    if limit:
+        return limit
+    return DAILY_LIMIT if (rng[1] - rng[0]).days < SLICE_DAYS else None
+
+
+def search_window(qfn, rng: tuple[date, date], deep: bool = False, errors: list | None = None) -> list[dict]:
+    """RSS items for one window. A query that returns the cap (100) is not trusted: the window is halved (down to
+    one day); a capped single day is searched once more with deep=True (qfn may then add queries)."""
+    items, capped = [], False
+    for q in qfn(rng, deep):
+        try:
+            got = rss_search(q)
+        except RssError as e:                       # recorded, the other queries still run
+            if errors is not None:
+                errors.append(f"{e}: {q}")
+            continue
+        items += [{**g, "query": q} for g in got]
+        capped = capped or len(got) >= RSS_CAP
+    if capped:
+        if rng[0] < rng[1]:
+            mid = rng[0] + timedelta(days=(rng[1] - rng[0]).days // 2)
+            return (items + search_window(qfn, (rng[0], mid), errors=errors)
+                    + search_window(qfn, (mid + timedelta(days=1), rng[1]), errors=errors))
+        if not deep:
+            return items + search_window(qfn, rng, deep=True, errors=errors)
+    return items
+
+
+def collect(name: str, aliases=(), product: str = "", company_domains=(), limit=None,
+            fetch_images=True, workers=WORKERS, rng: tuple[date, date] | None = None, spec: Subject | None = None,
+            slice_days: int = SLICE_DAYS) -> list[Item]:
+    """Search, resolve and filter news for a company (or one of its products) in `rng`.
+    spec: the company's Subject (aliases file); without it only `name` + `aliases` count. limit None = everything
+    (backfills); the range is searched in `slice_days`-day windows, merged by link."""
     rng = rng or date_range()
-    names = [product] if product else [name, *aliases]
-    domains = list(company_domains)
+    spec = spec or Subject(search=name, names=[name, *aliases])
+    subj = spec.for_product(product) if product else spec
+    domains = [*spec.domains, *company_domains]
+    company_names = [name_key(n) for n in spec.company_names()]
+    pq = subj.names[1:] if product else []
+
+    def qfn(r, deep):
+        # the defence-qualified query is kept in every window: it finds 5-15% items the bare name does not (measured)
+        return queries_for(name, product, r, aliases=spec.aliases, cond=spec.cond, variants=pq, lean=False)
+
+    windows = day_slices(rng, slice_days)
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(8, len(windows))) as ex:
+        raws = [x for chunk in ex.map(lambda w: search_window(qfn, w, errors=errors), windows) for x in chunk]
     seen_links, seen_urls, seen_heads = set(), set(), set()
-    results: list[Item] = []
+    # a failed search is visible in the log and the counts, it is not "no news"
+    results: list[Item] = [Item(title="(search failed)", link="", source="", source_url="", date=None,
+                                reason=f"search failed: {e}"[:200]) for e in errors]
+    cands = []
+    for raw in raws:
+        if raw["link"] in seen_links or not raw["title"]:
+            continue
+        seen_links.add(raw["link"])
+        it = Item(**{k: v for k, v in raw.items()})
+        if not in_range(raw["date"], rng):      # the date range is enforced here, not only by the query
+            it.reason = f"outside date range ({raw['date']})"
+            results.append(it)
+            continue
+        # the RSS publisher is the company itself (or its parent group: "Hanwha" for
+        # "Hanwha Aerospace") -> its domain counts as a company domain
+        src_key = name_key(raw["source"])
+        if raw["source_url"] and src_key and any(k == src_key or k.startswith(src_key + " ") for k in company_names):
+            domains.append(host_of(raw["source_url"]))
+        # cheap pre-filters before any network work: publisher domain and headline
+        tier, why = classify_reason(raw["source_url"] or "", domains) if raw["source_url"] else (None, "")
+        if raw["source_url"] and not tier:
+            it.reason = f"source: {why} (publisher {host_of(raw['source_url'])})"
+            results.append(it)
+            continue
+        hk = norm(it.title)
+        if hk in seen_heads:
+            it.reason = "duplicate headline"
+            results.append(it)
+            continue
+        seen_heads.add(hk)
+        cands.append(it)
+    # headlines that already name the subject first; the rest only if still short
+    cands.sort(key=lambda i: not subj.hit(i.title))
     kept = 0
-    for q in queries_for(name, product, rng):
-        cands = []
-        for raw in rss_search(q):
-            if raw["link"] in seen_links or not raw["title"]:
-                continue
-            seen_links.add(raw["link"])
-            it = Item(**raw, query=q)
-            if not in_range(raw["date"], rng):      # the date range is enforced here, not only by the query
-                it.reason = f"outside date range ({raw['date']})"
-                results.append(it)
-                continue
-            # the RSS publisher is the company itself (or its parent group: "Hanwha" for
-            # "Hanwha Aerospace") -> its domain counts as a company domain
-            src_key = name_key(raw["source"])
-            if raw["source_url"] and src_key and any(
-                    k == src_key or k.startswith(src_key + " ") for k in (name_key(n) for n in [name, *aliases])):
-                domains.append(host_of(raw["source_url"]))
-            # cheap pre-filters before any network work: publisher domain and headline
-            tier, why = classify_reason(raw["source_url"] or "", domains) if raw["source_url"] else (None, "")
-            if raw["source_url"] and not tier:
-                it.reason = f"source: {why} (publisher {host_of(raw['source_url'])})"
-                results.append(it)
-                continue
-            hk = norm(it.title)
-            if hk in seen_heads:
-                it.reason = "duplicate headline"
-                results.append(it)
-                continue
-            seen_heads.add(hk)
-            cands.append(it)
-        # headlines that already name the subject first; the rest only if still short
-        cands.sort(key=lambda i: not mentions(i.title, names))
-        # process in waves of ~1.25x what is still missing, so few pages are fetched in vain
-        while cands and kept < limit:
-            budget = int((limit - kept) * 1.25) + 1
-            todo, cands = cands[:budget], cands[budget:]
-            resolved = resolve_many([i.link for i in todo], workers)
-            for i in todo:
-                i.url, i.resolve_method = resolved.get(i.link, ("", "unresolved"))
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                done = list(ex.map(lambda i: process(i, names, domains, fetch_images), todo))
-            for it in done:
-                if it.status == "kept":
-                    if not in_range(it.date, rng):
-                        it.status, it.reason = "dropped", f"outside date range ({it.date})"
-                    elif it.url in seen_urls or kept >= limit:
-                        it.status, it.reason = "dropped", ("duplicate url" if it.url in seen_urls else "over limit")
-                    else:
-                        seen_urls.add(it.url)
-                        kept += 1
-            results += done
-        for it in cands:
-            it.reason = "over limit (not processed)"
-        results += cands
-        if kept >= limit:
-            break
+    # process in waves (~1.25x what is still missing under a limit), so few pages are fetched in vain
+    while cands and (limit is None or kept < limit):
+        budget = WAVE if limit is None else int((limit - kept) * 1.25) + 1
+        todo, cands = cands[:budget], cands[budget:]
+        resolved = resolve_many([i.link for i in todo], workers)
+        for i in todo:
+            i.url, i.resolve_method = resolved.get(i.link, ("", "unresolved"))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            done = list(ex.map(lambda i: process(i, subj, domains, fetch_images), todo))
+        for it in done:
+            if it.status == "kept":
+                if not in_range(it.date, rng):
+                    it.status, it.reason = "dropped", f"outside date range ({it.date})"
+                elif it.url in seen_urls or (limit is not None and kept >= limit):
+                    it.status, it.reason = "dropped", ("duplicate url" if it.url in seen_urls else "over limit")
+                else:
+                    seen_urls.add(it.url)
+                    kept += 1
+        results += done
+    for it in cands:
+        it.reason = "over limit (not processed)"
+    results += cands
     return results
 
 
@@ -936,10 +1226,10 @@ def save(cur, items: list[Item], competitor_id: str, product_id: str | None = No
         cur.execute("SAVEPOINT news_row")
         try:
             cur.execute("INSERT INTO staging.news_candidate (candidate_id, competitor_id, product_id, headline, article_url, "
-                        "published_date, publisher, image_url, image_local_path, source_tier, pre_group) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                        "published_date, publisher, image_url, image_local_path, source_tier, pre_group, match_via, page_note) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                         (cid, competitor_id, product_id, it.title[:300], it.url, it.date, publisher, it.image_url or None,
-                         it.image_local_path or None, it.tier, pg))
+                         it.image_local_path or None, it.tier, pg, it.match_via or None, it.page_note or None))
             if cur.rowcount:
                 n += 1
                 peers.append((cid, it.title, it.date, pg))
@@ -970,7 +1260,49 @@ def regroup(cur) -> int:
     return n
 
 
-def _load_subjects(competitor_id: str, products: bool):
+def renormalise(cur) -> dict:
+    """One-off for the existing 'new' candidates (run before a re-merge): https + desktop host in article_url (the
+    candidate id follows the url), " - PUBLISHER" off the headline, match_via from the headline. -> counts."""
+    cur.execute("SELECT candidate_id::text, competitor_id::text, product_id::text, headline, article_url, publisher, "
+                "match_via FROM staging.news_candidate WHERE status = 'new' ORDER BY found_at, candidate_id")
+    rows = cur.fetchall()
+    subjects: dict = {}
+    n = {"url": 0, "headline": 0, "match_via": 0, "duplicates_removed": 0}
+    for cid, comp, prod, head, url, pub, via in rows:
+        if comp not in subjects:
+            cur.execute("SELECT display_name, legal_name, short_name FROM staging.competitive_competitor WHERE competitor_id = %s", (comp,))
+            subjects[comp] = subject_for(comp, *(x or "" for x in cur.fetchone()))
+        subj = subjects[comp]
+        if prod:
+            cur.execute("SELECT product_name FROM staging.competitive_product WHERE product_id = %s", (prod,))
+            subj = subj.for_product(cur.fetchone()[0])
+        new_url, new_head = clean_url(url), strip_publisher(head, pub)
+        new_via = via or ("own site" if classify_reason(new_url, subj.domains)[1] == "company domain"
+                          else ("headline" if subj.hit(new_head) else "page"))
+        new_id = row_id(new_url, prod or comp)
+        if new_id != cid:
+            cur.execute("SELECT 1 FROM staging.news_candidate WHERE candidate_id = %s", (new_id,))
+            if cur.fetchone():                                    # the normalised url is already a candidate: drop this copy
+                cur.execute("UPDATE staging.news_candidate SET pre_group = %s WHERE pre_group = %s", (new_id, cid))
+                cur.execute("DELETE FROM staging.news_candidate WHERE candidate_id = %s", (cid,))
+                n["duplicates_removed"] += 1
+                continue
+            cur.execute("UPDATE staging.news_candidate SET candidate_id = %s, article_url = %s WHERE candidate_id = %s",
+                        (new_id, new_url, cid))
+            cur.execute("UPDATE staging.news_candidate SET pre_group = %s WHERE pre_group = %s", (new_id, cid))
+            n["url"] += 1
+        if new_head != head:
+            cur.execute("UPDATE staging.news_candidate SET headline = %s WHERE candidate_id = %s", (new_head, new_id))
+            n["headline"] += 1
+        if new_via != via:
+            cur.execute("UPDATE staging.news_candidate SET match_via = %s WHERE candidate_id = %s", (new_via, new_id))
+            n["match_via"] += 1
+    return n
+
+
+def load_subject(competitor_id: str, products: bool):
+    """(Subject, [(product_id, product_name)]) of a competitor: names from staging.competitive_competitor, aliases,
+    co-terms, masks and own domains from db/news_aliases.csv."""
     conn = _connect()
     try:
         with conn, conn.cursor() as cur:
@@ -979,17 +1311,13 @@ def _load_subjects(competitor_id: str, products: bool):
             row = cur.fetchone()
             if not row:
                 raise LookupError(f"competitor {competitor_id} not found")
-            name, legal, short = row
-            aliases = []
-            for a in (legal, short):
-                if a and name_key(a) != name_key(name) and a not in aliases:
-                    aliases.append(a)
+            subj = subject_for(competitor_id, *(x or "" for x in row))
             prods = []
             if products:
                 cur.execute("SELECT product_id::text, product_name FROM staging.competitive_product "
                             "WHERE competitor_id = %s ORDER BY product_name", (competitor_id,))
                 prods = cur.fetchall()
-            return name, aliases, prods
+            return subj, prods
     finally:
         conn.close()
 
@@ -1004,17 +1332,19 @@ def competitor_ids() -> list[str]:
         conn.close()
 
 
-def refresh(competitor_id: str, products=False, limit=10, dry_run=False, rng=None,
+def refresh(competitor_id: str, products=False, limit=None, dry_run=False, rng=None,
             company_domains=(), log=None) -> dict:
-    """Fetch and store news for one competitor (and optionally its products) inside `rng`."""
+    """Fetch and store news for one competitor (and optionally its products) inside `rng`.
+    limit None: a daily run keeps DAILY_LIMIT per company / product, a backfill has no limit."""
     t0 = time.monotonic()
     rng = rng or date_range()
-    name, aliases, prods = _load_subjects(competitor_id, products)
+    subj, prods = load_subject(competitor_id, products)
+    name, limit = subj.display or subj.search, effective_limit(limit, rng)
     runs = []
     for kind, label, pid, product in [("company", name, None, "")] + [("product", pn, pi, pn) for pi, pn in prods]:
         t1 = time.monotonic()
-        items = collect(name, aliases, product=product, company_domains=company_domains, limit=limit,
-                        fetch_images=not dry_run, rng=rng)
+        items = collect(subj.search, product=product, company_domains=company_domains, limit=limit,
+                        fetch_images=not dry_run, rng=rng, spec=subj)
         runs.append((kind, label, pid, items, round(time.monotonic() - t1, 1)))
     out = {"competitor_id": competitor_id, "name": name, "dry_run": dry_run, "runs": []}
     conn = None if dry_run else _connect()
@@ -1026,6 +1356,7 @@ def refresh(competitor_id: str, products=False, limit=10, dry_run=False, rng=Non
                     saved, errors = save(cur, items, competitor_id, pid)
             out["runs"].append({"kind": kind, "name": label, "product_id": pid, "seconds": secs,
                                 "seen": len(items), "kept": sum(i.status == "kept" for i in items), "saved": saved,
+                                "search_failed": sum(i.reason.startswith("search failed") for i in items),
                                 "errors": errors, "items": [_item_dict(i) for i in items]})
             if log:
                 log(kind, label, items)
@@ -1040,12 +1371,20 @@ def _item_dict(i: Item) -> dict:
     return {"status": i.status, "reason": i.reason, "headline": i.title, "url": i.url,
             "publisher": i.publisher or i.source, "tier": i.tier, "date": str(i.date) if i.date else None,
             "image_url": i.image_url or None, "image_local_path": i.image_local_path or None,
-            "image_note": i.image_note or None, "resolve": i.resolve_method}
+            "image_note": i.image_note or None, "resolve": i.resolve_method,
+            "match_via": i.match_via or None, "page_note": i.page_note or None}
 
 
-def refresh_many(competitor_id: str, products=False, limit=10, dry_run=False, rng=None, company_domains=(), log=None):
+def refresh_many(competitor_id: str, products=False, limit=None, dry_run=False, rng=None, company_domains=(), log=None):
     ids = competitor_ids() if competitor_id == "all" else [competitor_id]
-    return [refresh(c, products, limit, dry_run, rng, company_domains, log) for c in ids]
+    out = []
+    for c in ids:
+        out.append(refresh(c, products, limit, dry_run, rng, company_domains, log))
+        if _rss_state["streak"] >= RSS_BLOCKED_STREAK:
+            raise RuntimeError(f"Google News is refusing searches (http 503 'Sorry...'): {_rss_state['streak']} in a row after "
+                               f"{len(out)} competitor(s). Stop, wait (minutes to hours) and run the same range again; "
+                               "candidates already saved are kept.")
+    return out
 
 
 # ----------------------------------------------------------------------------- API
@@ -1059,7 +1398,7 @@ def _is_uuid(s: str) -> bool:
 
 
 @router.post("/api/news/refresh")
-def api_refresh(competitor_id: str = "all", products: bool = False, limit: int = Query(10, ge=1, le=50),
+def api_refresh(competitor_id: str = "all", products: bool = False, limit: int | None = Query(None, ge=1, le=1000),
                 day: str | None = Query(None, alias="date"), from_: str | None = Query(None, alias="from"),
                 to: str | None = None, dry_run: bool = False):
     """Fetch news for a competitor (or 'all') and store the kept items as staging.news_candidate rows (`saved` =
@@ -1154,7 +1493,7 @@ def print_table(kind, label, items: list[Item], file=sys.stdout):
         if i.status == "kept":
             img = "img:saved" if i.image_local_path else ("img:ok" if i.image_ok else ("img:url" if i.image_url else "img:none"))
             note = f" ({i.image_note})" if i.image_note else ""
-            print(f"  KEPT {i.tier[:4]:4} {img:9} {str(i.date or ''):10} {i.secs:4}s {i.url}{note}\n"
+            print(f"  KEPT {i.tier[:4]:4} {img:9} {str(i.date or ''):10} {i.secs:4}s {i.match_via or '-':9} {i.url}{note}\n"
                   f"       {i.title[:110]}", file=file)
         else:
             print(f"  drop [{i.reason}] {i.url or i.source} | {i.title[:80]}", file=file)
@@ -1202,6 +1541,8 @@ def _selftest():
     assert mentions("L&T unveils K-9 Vajra-T", ["K9 Vajra"]) and not mentions("Forging ahead", ["Bharat Forge"])
     assert classify("https://www.thehindu.com/x") == "independent" and classify("https://news.google.com/x") is None
     assert classify("https://www.reddit.com/r/x") is None
+    assert classify("https://idrw.org/x/") is None and classify("https://www.ajaishukla.com/2016/x.html") is None     # blocked blogs
+    assert classify("https://idrw.org/x/", ("idrw.org",)) is None
     pg = parse_page('<meta property="og:image" content="/i/a.jpg"><meta property="og:site_name" content="S">'
                     '<link rel="canonical" href="https://s.test/a">', "https://s.test/a?x=1")
     assert pg.image == "https://s.test/i/a.jpg" and pg.site_name == "S" and pg.canonical == "https://s.test/a"
@@ -1216,6 +1557,167 @@ def _selftest():
     assert pre_group_of("Adani bags AK-203 ammunition order", date(2026, 10, 9), peers) is None     # too far apart
     assert pre_group_of("Adani bags AK-203 ammunition order", None, peers) is None
     assert pre_group_of("Something else entirely", date(2026, 10, 2), peers) is None
+    # --- publisher suffix: case-insensitive; headline kept when it is only the suffix
+    assert strip_publisher("Veland wins order - CHOSUNBIZ", "Chosunbiz") == "Veland wins order"
+    assert strip_publisher("Veland wins order - The Hindu", "The Hindu") == "Veland wins order"
+    assert strip_publisher("Veland wins order - Other Paper", "The Hindu") == "Veland wins order - Other Paper"
+    assert strip_publisher("- CHOSUNBIZ", "Chosunbiz") == "- CHOSUNBIZ" and strip_publisher("", "x") == ""
+    assert parse_rss(b"<rss><channel><item><title>Veland tank trial - ETINFRA</title><link>https://x.test/a</link>"
+                     b"<source url='https://x.test'>EtInfra</source></item></channel></rss>")[0]["title"] == "Veland tank trial"
+    # --- urls: https preferred, mobile host -> desktop host, tracking and amp removed
+    assert clean_url("http://www.thehindu.com/x/y") == "https://www.thehindu.com/x/y"
+    assert clean_url("https://m.economictimes.com/news/defence/x/articleshow/1.cms?utm_source=a") == \
+        "https://economictimes.indiatimes.com/news/defence/x/articleshow/1.cms"
+    assert clean_url("http://m.economictimes.com/a") == "https://economictimes.indiatimes.com/a"
+    assert clean_url("https://m.unknown-site.test/a") == "https://m.unknown-site.test/a"
+    # --- logos / site banners are never article pictures
+    for bad in ("https://www.business-standard.com/assets/web-assets/images/Business_Standard_1_685x385.jpg",
+                "https://www.thehindu.com/theme/images/og-image.png", "https://x.test/img/logo-big.jpg",
+                "https://x.test/img/og_image.jpg", "https://x.test/a/placeholder.png", "https://x.test/a/site-banner.jpg"):
+        assert bad_image(bad), bad
+    for ok in ("https://image.x.test/12832814.jpg", "https://x.test/uploads/2026/10/howitzer-trial.jpg"):
+        assert not bad_image(ok), ok
+    assert parse_page('<meta property="og:image" content="/theme/images/og-image.png">'
+                      '<meta name="twitter:image" content="https://x.test/i/real.jpg">', "https://x.test/a").image == "https://x.test/i/real.jpg"
+    # --- aliases file -> Subject (fictional company): aliases, co-terms, masks, own domain
+    rows = {"c1": {"search_name": "Veland", "aliases": "Veland Land Systems | VLS | Veland-Tarn",
+                   "match_terms_needed": "Veland: Army / howitzer / Navy | Tarn: howitzer / tank",
+                   "exclude_terms": "Veland Ocean | Veland Insurance | VLS Finance", "domains": "veland.test | veland-def.test"},
+            "c2": {"search_name": "Orrin Dynamics", "aliases": "", "match_terms_needed": "", "exclude_terms": "", "domains": ""}}
+    sv = subject_for("c1", "Veland Aerospace", "Veland Aerospace Co., Ltd.", "", rows)
+    assert sv.search == "Veland" and sv.domains == ["veland.test", "veland-def.test"] and sv.mask[0] == "Veland Ocean"
+    assert sv.cond == [("Tarn", ["howitzer", "tank"])]        # "Veland" is already an unconditional name (the search name), so it needs no co-term
+    assert sv.hit("Veland Land Systems unveils turret") and sv.hit("VLS wins export order") and sv.hit("Veland-Tarn teaming signed")
+    assert sv.hit("Veland opens a bakery") and sv.hit("Tarn howitzers delivered") and not sv.hit("Tarn opens a bakery")        # co-term, plural
+    assert not sv.hit("Veland Ocean wins Army order") and not sv.hit("Veland Insurance shares rise; Army ties")   # masked sister companies
+    assert sv.hit("Veland Ocean and Veland Land Systems sign MoU") and not sv.hit("VLS Finance posts profit")
+    assert sv.matches("Veland Land Systems wins order") == "headline"
+    assert sv.matches("Army picks howitzer", "Veland to build prototypes") == "page"                  # only the page names it
+    assert sv.matches("Tarn picks", "Army buys a howitzer") == "page"                                  # co-term completed from the page
+    assert sv.matches("Army picks howitzer", "Something else") == "" and sv.matches("", "") == ""
+    assert sv.matches("Army selects a gun", "", "", url_text("https://x.test/news/veland-land-systems-wins-prototypes")) == "page"
+    so = subject_for("c2", "Orrin Dynamics Group", rows=rows)
+    assert so.hit("Orrin Dynamics Ltd results") and not so.hit("Orrin wins order") and so.cond == []
+    zs = subject_for("unknown", "Zed Corp", "Zed Corporation Ltd", "", rows)                           # not in the file: the DB names only
+    assert zs.search == "Zed Corp" and zs.hit("Zed Corporation Ltd results") and not zs.mask and not zs.domains
+    # a conditional alias needs a co-term (fictional "Hexa" row)
+    rows["c3"] = {"search_name": "Hexa Armour", "aliases": "", "match_terms_needed": "Hexa: Army / tank", "exclude_terms": "", "domains": ""}
+    sh = subject_for("c3", "Hexa Armour", rows=rows)
+    assert sh.hit("Hexa wins Army order") and not sh.hit("Hexa launches phone") and sh.hit("Hexa Armour launches phone")
+    # queries: bare name, aliases in one OR query (an alias already covered by the search name is not repeated),
+    # conditional aliases in another with a defence word
+    assert query_aliases("Veland", ["Veland Land Systems", "VLS", "Veland-Tarn", "VLS Group"]) == ["VLS"]
+    assert query_aliases("Adani Defence", ["Adani Defence & Aerospace", "Adani Defense", "Adani-Elbit", "Adani Elbit"]) == ["Adani Defense", "Adani-Elbit"]
+    qs = queries_for("Veland", "", (d, d), aliases=["VLS", "Veland-Tarn"], cond=[("KMW", ["tank"])])
+    assert qs[0] == '"Veland" defence OR defense after:2026-10-16 before:2026-10-17' and qs[1].startswith('"Veland" after:')
+    assert qs[2].startswith('("VLS" OR "Veland-Tarn") after:') and qs[3].startswith('("KMW") (defence OR defense) after:')
+    ql = queries_for("Veland", "", (d, d), aliases=["VLS"], lean=True)
+    assert len(ql) == 2 and ql[0].startswith('"Veland" after:')                                   # lean: no defence-qualified query
+    assert queries_for("Veland", "Zel-9 Falcon-T", (d, d), variants=["zel 9 falcon"], lean=True)[0].startswith('"Zel-9 Falcon-T" after:')
+    # --- products: a trailing variant letter / mark is optional ("K9 Vajra-T" ~ "K9 Vajra")
+    assert product_names("Zel-9 Falcon-T")[:2] == ["Zel-9 Falcon-T", "zel 9 falcon"]
+    assert "pinaka" in product_names("Pinaka Mk-II") and product_names("AK-203") == ["AK-203"] and product_names("T-90") == ["T-90"]
+    pn = product_names("Zel-9 Falcon-T")
+    assert mentions("300 more Zel-9 Falcon ordered", pn) and mentions("Zel 9 Falcon-T trial", pn) and mentions("Zel9 Falcon fires", pn)
+    assert not mentions("Falcon heavy launch", pn)
+    # --- search windows: 2-day slices; a capped window is halved; limit only on a daily run
+    assert day_slices((date(2026, 10, 1), date(2026, 10, 5))) == [(date(2026, 10, 1), date(2026, 10, 2)),
+                                                                   (date(2026, 10, 3), date(2026, 10, 4)), (date(2026, 10, 5), date(2026, 10, 5))]
+    assert day_slices((d, d)) == [(d, d)] and len(day_slices((date(2026, 1, 1), date(2026, 9, 30)))) == 137
+    assert effective_limit(None, (d, d)) == DAILY_LIMIT and effective_limit(None, (d - timedelta(days=1), d)) == DAILY_LIMIT
+    assert effective_limit(None, (d - timedelta(days=29), d)) is None and effective_limit(7, (d - timedelta(days=29), d)) == 7
+    calls = []
+    real_rss = rss_search
+    try:
+        def fake_rss(q):
+            calls.append(q)
+            n = RSS_CAP if "after:2026-10-01 before:2026-10-03" in q else 3
+            return [{"title": "x", "link": f"l{len(calls)}-{i}", "source": "", "source_url": "", "date": d} for i in range(n)]
+        globals()["rss_search"] = fake_rss
+        qf = lambda r, deep: queries_for("Veland", "", r, lean=not deep)
+        items = search_window(qf, (date(2026, 10, 1), date(2026, 10, 2)))
+        assert len(calls) == 3 and len(items) == RSS_CAP + 3 + 3                 # capped 2-day window -> halved into two 1-day windows
+        assert any("after:2026-10-01 before:2026-10-02" in c for c in calls) and any("after:2026-10-02 before:2026-10-03" in c for c in calls)
+        calls.clear()
+        search_window(qf, (date(2026, 10, 5), date(2026, 10, 6)))
+        assert len(calls) == 1                                                 # not capped: one lean query
+    finally:
+        globals()["rss_search"] = real_rss
+    # a failed search is an error that is reported, never an empty answer
+    try:
+        def failing_rss(q):
+            raise RssError("http 503")
+        globals()["rss_search"] = failing_rss
+        errs: list = []
+        assert search_window(qf, (date(2026, 10, 5), date(2026, 10, 6)), errors=errs) == [] and len(errs) == 1 and errs[0].startswith("http 503: ")
+    finally:
+        globals()["rss_search"] = real_rss
+    real_http_rss, real_sleep = http, time.sleep
+    try:
+        sleeps: list = []
+        globals()["http"] = lambda url, **k: Resp(503, url, {}, b"Sorry...")
+        time.sleep = lambda x: sleeps.append(x)
+        _rss_state["streak"] = 0
+        try:
+            rss_search('"x"')
+            raise AssertionError("503 must raise")
+        except RssError as e:
+            assert str(e) == "http 503" and sleeps == [2, 6] and _rss_state["streak"] == 1
+        _rss_state["streak"] = 3
+        sleeps.clear()
+        try:
+            rss_search('"x"')
+        except RssError:
+            assert sleeps == []                                          # while Google keeps refusing: one try, no waiting
+        globals()["http"] = lambda url, **k: Resp(200, url, {}, b"<rss><channel><item><title>t</title><link>https://x.test/a</link></item></channel></rss>")
+        assert len(rss_search('"x"')) == 1 and _rss_state["streak"] == 0
+    finally:
+        time.sleep = real_sleep
+        globals()["http"] = real_http_rss
+        _rss_state["streak"] = 0
+    # --- a company's own domain is primary and never "not about"; an outsider page must name the subject
+    real_http, real_resolve, real_dl = http, resolve, download_image
+    page = lambda title: Resp(200, "", {"content-type": "text/html"},
+                              f'<html><head><meta property="og:title" content="{title}"></head><body>x</body></html>'.encode())
+    try:
+        globals()["http"] = lambda url, **k: Resp(200, url, {"content-type": "text/html"}, page("Sustainable Infrastructure Company").body)
+        globals()["resolve"] = lambda link: (link, "direct")
+        globals()["download_image"] = lambda *a, **k: ("", "image http 404")
+        own = process(Item("Sustainable Infrastructure Company", "https://veland.test/news/a", "Veland", "", d), sv, sv.domains, False)
+        assert own.status == "kept" and own.tier == "primary" and own.match_via == "own site", (own.status, own.reason)
+        out = process(Item("Sustainable Infrastructure Company", "https://www.thehindu.com/a", "The Hindu", "", d), sv, sv.domains, False)
+        assert out.status == "dropped" and out.reason.startswith("not about"), out.reason
+        globals()["http"] = lambda url, **k: Resp(200, url, {"content-type": "text/html"}, page("Army picks Veland guns").body)
+        pg = process(Item("Army picks guns", "https://www.thehindu.com/b", "The Hindu", "", d), sv, sv.domains, False)
+        assert pg.status == "kept" and pg.match_via == "page" and pg.tier == "independent"
+        globals()["http"] = lambda url, **k: Resp(401, url, {}, b"")
+        bl = process(Item("Veland Land Systems wins order", "https://www.reuters.com/c", "Reuters", "", d), sv, sv.domains, False)
+        assert bl.status == "kept" and bl.match_via == "headline" and bl.page_note == "http 401"
+    finally:
+        globals()["http"], globals()["resolve"], globals()["download_image"] = real_http, real_resolve, real_dl
+    # --- the real aliases file: the seven default decisions (db/news_aliases_REVIEW.md, "Decisions")
+    ar = load_aliases(fresh=True)
+    assert len(ar) == 50 and all(r["search_name"] for r in ar.values())
+    by_name = {r["display_name"]: subject_for(cid, r["display_name"], rows=ar) for cid, r in ar.items()}
+    H = by_name["Hanwha Aerospace"]
+    assert H.hit("Hanwha wins MTC contract") and H.hit("Hanwha's KAI review") and not H.hit("Hanwha plans a new office")      # 1 co-term
+    assert not H.hit("Hanwha Ocean wins submarine order") and not H.hit("Hanwha Life posts profit")
+    L = by_name["Larsen & Toubro"]
+    assert L.hit("L&T to invest in Tamil Nadu") and L.hit("L&T bags order") and not L.cond                                      # 2 no co-term
+    assert not L.hit("L&T Finance posts profit") and not L.hit("LTIMindtree wins deal") and L.search == "Larsen & Toubro"
+    B = by_name["BrahMos Aerospace"]
+    assert B.hit("BrahMos missile exports") and "BrahMos" in B.names                                                            # 3 accepted
+    K, N = by_name["KNDS Germany"], by_name["Nexter (KNDS France)"]
+    assert K.hit("KNDS plans IPO") and not N.hit("KNDS plans IPO") and N.hit("KNDS Leclerc upgrade")                           # 4 group-wide -> Germany
+    assert by_name["IDV (Iveco Defence)"].competitor_id != by_name["Leonardo"].competitor_id                                  # 5 separate rows
+    P, A = by_name["PLR Systems (IWI+Adani)"], by_name["Adani Defence & Aerospace"]
+    assert P.hit("Adani-IWI rifles for the Army") and not A.hit("Adani-IWI rifles for the Army")                                  # 6
+    assert A.hit("Adani-Elbit Hermes drones delivered") and not P.hit("Adani-Elbit Hermes drones delivered")
+    assert A.hit("Adani Defence wins order") and not A.hit("Adani Ports profit rises")
+    R = by_name["RTX (Raytheon)"]
+    assert R.search == "Raytheon" and R.hit("Raytheon wins Patriot order") and not R.hit("Collins Aerospace wins seats contract") \
+        and not R.hit("Pratt & Whitney GTF engine issue") and not R.hit("RTX GeForce launch")                                  # 7
+    assert "hanwha.com" in H.domains and "larsentoubro.com" in L.domains and "adanidefence.com" in A.domains
     print("selftest ok")
 
 
@@ -1226,14 +1728,18 @@ def main(argv=None):
     g.add_argument("--name", help="TEST: search an ad-hoc company name (no DB read/write)")
     g.add_argument("--selftest", action="store_true", help="run the assert-based self-check (no network, no DB)")
     g.add_argument("--regroup", action="store_true", help="pre-group the existing 'new' candidates (one-off after a bulk move)")
+    g.add_argument("--renormalise", action="store_true", help="https / desktop urls, headline suffixes and match_via of the existing 'new' candidates (one-off before a re-merge)")
     ap.add_argument("--alias", action="append", default=[], help="with --name: other names")
     ap.add_argument("--product", action="append", default=[], help="with --name: product name(s) to search")
     ap.add_argument("--products", action="store_true", help="with --competitor: also fetch news for its products")
     ap.add_argument("--domain", action="append", default=[], help="company's own domain(s) -> tier primary")
+    ap.add_argument("--client", action="store_true", help="with --name: the subject is the client, so kssl.in / bharatforge.com / kalyanigroup.com are primary")
     ap.add_argument("--date", help="a single day, YYYY-MM-DD")
     ap.add_argument("--from", dest="frm", help="range start, YYYY-MM-DD (inclusive)")
     ap.add_argument("--to", help="range end, YYYY-MM-DD (inclusive)")
-    ap.add_argument("--limit", type=int, default=10, help="max kept articles per company / product")
+    ap.add_argument("--limit", type=int, default=None,
+                    help=f"max kept articles per company / product. Default: {DAILY_LIMIT} on a daily run (<= {SLICE_DAYS} days), "
+                         "none for a backfill")
     ap.add_argument("--dry-run", action="store_true", help="don't write the DB or save images (images are still validated)")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     a = ap.parse_args(argv)
@@ -1242,6 +1748,12 @@ def main(argv=None):
     if a.selftest:
         _selftest()
         return 0
+    if a.renormalise:
+        conn = _connect()
+        with conn, conn.cursor() as cur:
+            print("renormalised:", renormalise(cur))
+        conn.close()
+        return 0
     if a.regroup:
         conn = _connect()
         with conn, conn.cursor() as cur:
@@ -1249,7 +1761,7 @@ def main(argv=None):
         conn.close()
         return 0
     if not (a.competitor or a.name):
-        ap.error("one of --competitor / --name / --selftest / --regroup is required")
+        ap.error("one of --competitor / --name / --selftest / --regroup / --renormalise is required")
     try:
         rng = date_range(a.date, a.frm, a.to)
     except ValueError as e:
@@ -1257,8 +1769,9 @@ def main(argv=None):
     print(f"date range {rng[0]} .. {rng[1]}  ({date_ops(rng)})")
 
     if a.name:
+        doms = [*a.domain, *(client_domains() if a.client else ())]
         for prod in [""] + a.product:
-            items = collect(a.name, a.alias, product=prod, company_domains=a.domain, limit=a.limit,
+            items = collect(a.name, a.alias, product=prod, company_domains=doms, limit=effective_limit(a.limit, rng),
                             fetch_images=not a.dry_run, rng=rng)
             print_table("product" if prod else "company", prod or a.name, items)
         return 0
@@ -1266,6 +1779,7 @@ def main(argv=None):
     for res in refresh_many(a.competitor, a.products, a.limit, a.dry_run, rng, a.domain, print_table):
         for r in res["runs"]:
             print(f"   {r['kind']} {r['name']}: seen {r['seen']}, kept {r['kept']}, candidates saved {r['saved']}, {r['seconds']}s"
+                  + (f", SEARCHES FAILED {r['search_failed']} (Google refused: not 'no news', run again)" if r.get("search_failed") else "")
                   + (f", errors {len(r['errors'])}: {r['errors'][:3]}" if r["errors"] else ""))
         print(f"   {res['name']}: {res['seconds']}s")
         if a.json:

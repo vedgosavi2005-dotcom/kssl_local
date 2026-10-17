@@ -1,14 +1,24 @@
-/* Company Profile: one rival's stored facts, assembled for the Profile page.
+/* Company Profile: everything the corpus holds about one rival, assembled in one place.
 
-   Everything comes from the competitor row (data.competitors[cid], built from
-   serving.competitive_competitor + _location + _leader + _leader_record by
-   backend/areas/a_competitive.py). A section appears only when it has rows; a field
-   with no stored value is left out by the page. Nothing here is a default, a rewrite
-   of a stored value, or a judgement. */
+   The rule this file exists to keep: a section appears only when it has rows. Four of
+   the things a profile is normally expected to carry — leadership, facilities, sales
+   figures, a forward timeline — are NOT in this corpus at all, and there is no field
+   they could be read from. They are named in `NOT_COLLECTED` and rendered as an
+   explicit absence, because an empty box under a heading reads as "nothing is
+   happening" when the truth is "nobody has collected this".
 
-import { unescapeEntities } from "./html.js";
-import { companyOrigin } from "./countryFacet.js";
+   Two joins here are easy to get wrong, and both have burnt this codebase before:
+     * `competitors` is keyed by SLUG, `companySources` by DISPLAY NAME. Joining a
+       profile on the wrong one returns undefined for all thirty companies.
+     * patents attach through `PATENTS.byCompetitor[cid]`, which adaptPatents() builds
+       by token-matching legal assignee names to trading names. `byAssignee[name]` is
+       the raw index and misses on exactly the cases the adapter exists to fix. */
+
 import { revenueTierOf } from "./revenueFacet.js";
+import { unescapeEntities } from "./html.js";
+import { companyCountries, companyOrigin } from "./countryFacet.js";
+import { compareCards } from "./overview.js";
+import { threatOf } from "./threat.js";
 
 /* These fields are rendered as TEXT, not injected as HTML, so an entity in the record
    ("Defence &amp; Aerospace" on Kongsberg) reaches the screen as the five literal
@@ -30,29 +40,10 @@ const txt = (s) => unescapeEntities(s || "").trim();
  * every competitor with no recorded HQ displayed its head office as 'Defence &
  * Aerospace' -- 136 of 178 served competitors have no hq value. A default belongs to
  * the field that wants one, not to the formatter every field shares. */
-const ACRONYMS = new Set([
-  "EW", "UAV", "UAS", "C-UAS", "CUAS", "C4I", "C4ISR", "C4", "C2", "OEM", "R&D", "PSU",
-  "MBT", "ARV", "HMV", "ICV", "ATGM", "BVR", "JV", "FCV", "RCWS", "RWS", "LMG", "SPH",
-  "AD", "OFB", "AI", "MRO", "EO/IR", "EO", "IR", "GPS", "GNSS", "RF", "VTOL", "HE",
-  "APFSDS", "ISR", "ISTAR", "SAR", "AESA", "AIS", "SATCOM", "HUD", "FLIR", "IRST",
-  "KSSL", "DRDO", "BDL", "BEL", "L&T", "IAF", "BAE", "IAI", "HAL", "JSW", "BHEL",
-  "ISRO", "ADA", "NAL", "USA", "US", "UK", "EU", "UN", "UAE", "NATO", "HQ",
-  // platform designations, from the product-name formatter this replaced: without
-  // them 'BMP-2' comes back 'Bmp-2' and 'MK1' comes back 'Mk1'
-  "BMP", "APC", "IFV", "SPG", "MK1", "MK2", "MK3", "T", "LCA", "ATV",
-  /* The acceptance sheet (FE 12, FE 32, FE 34, T 20): the roster and its products
-     carry these and the list did not, so the sector dropdown printed "Ari", "Mraps",
-     "Usvs" and "(Astt)" against a profile heading that printed them correctly.
-     Plurals are NOT listed -- the formatter keeps the small s itself (UAVs, MRAPs). */
-  "ARI", "SAM", "MRSAM", "LRSAM", "QRSAM", "SHORAD", "VSHORAD", "GBAD", "MANPADS",
-  "ASTT", "DSRV", "OPV", "USV", "UGV", "UUV", "AUV", "ROV", "MRAP", "FPV", "PRS",
-  "CTAS", "IHE", "HEAT", "ERA", "APS", "MLRS", "MRLS", "MBRL", "ATAGS", "FICV",
-  "LMV", "LAV", "JLTV", "ACV", "AMV", "LCH", "LAH", "HALE", "MALE", "NSM", "ESSM",
-  "THAAD", "NASAMS", "GMLRS", "MMP", "RPG", "HMG", "GPMG", "IWI", "CIWS", "ASW",
-  "AAW", "SSK", "SSN", "AIP", "SIGINT", "ELINT", "COMINT", "ECM", "ECCM", "ESM",
-  "DIRCM", "EOD", "IED", "CBRN", "NBC", "NVG", "AR",
-]);
-
+/* No acronym list lives here (it held defence, currency and company abbreviations): casing follows the
+   stored text. The label rule below raises the first letter of a lower-case or mixed-case word and lower-cases
+   the rest of it; a word that carries a digit, and a word that is ALL capitals (ARI, BAE, UK), is kept exactly
+   as stored. An all-capitals token is never altered. */
 /* A separator that separates nothing is a defect, not a word. Partner labels arrive
    as "Saab," and "Merlin,", and one of those joined into a list prints "Saab,, Foo" --
    the double comma reported on L&T's product content (FE 31). Collapse a repeated
@@ -80,13 +71,6 @@ export function tidySeparators(raw) {
    it misfires on other acronyms: "EOS" is a company, not the plural of EO, and
    "IRS" is not two infrareds. Measured over the 482 company and partner labels in
    the served set, that was the only misreading the rule produced. */
-const acronymForm = (word) => {
-  const up = word.toUpperCase();
-  if (ACRONYMS.has(up)) return up;
-  if (up.length > 3 && up.endsWith("S") && ACRONYMS.has(up.slice(0, -1))) return up.slice(0, -1) + "s";
-  return null;
-};
-
 export function formatLabel(raw) {
   if (!raw) return "";
   // "Counterparty" is the extractor's term; the product speaks of "Competitor"
@@ -104,8 +88,6 @@ export function formatLabel(raw) {
     if (edge && (edge[1] || edge[3]) && edge[2]) {
       return edge[1] + token(edge[2]) + edge[3];
     }
-    const acr = acronymForm(word);
-    if (acr) return acr;
     if (word.includes("/")) return word.split("/").map(token).join("/");
     if (word.includes("-")) return word.split("-").map(token).join("-");
     if (word === "&" || word === "·") return word;
@@ -113,6 +95,9 @@ export function formatLabel(raw) {
        case is part of the name. No list can hold every designation, and lower-casing
        the tail of one is exactly how Eviden's receiver came to print "P3ts" (FE 32). */
     if (/\d/.test(word)) return word;
+    /* An all-capitals token of the stored text is kept as stored: ARI stays ARI, BAE stays BAE. Lower-casing
+       its tail was how a company acronym printed as "Ari". */
+    if (/[A-Z]/.test(word) && word === word.toUpperCase()) return word;
     const low = word.toLowerCase();
     // one spelling of the word this whole product is about
     if (low === "defense" || low === "defence") return "Defence";
@@ -187,24 +172,23 @@ export function formatProductName(raw) {
   if (!raw) return "";
   const s = tidySeparators(unescapeEntities(String(raw)).replace(/&amp;/g, "&"));
   if (!s) return "";
-  return titleCaseHeadline(s).replace(/[A-Za-z][A-Za-z0-9&]*/g, (w) => acronymForm(w) || w);
+  return titleCaseHeadline(s);
 }
 
-/* PROPER title case for a notice/headline title (operator: "everything in proper Pascal
-   case"). Unlike titleCaseHeadline, which only RAISES, this also LOWERS ordinary all-caps
-   words (BRAND-NAME -> Brand-Name, ONLY -> Only) while PRESERVING what must not be touched:
-     - listed acronyms via acronymForm (USA, UAV, UAS, UAVs ...)
+/* Title case for a notice/headline title. A lower-case word is raised; the rest of a mixed word is
+   lowered. What must not be touched is kept exactly as stored (R15):
+     - an ALL-CAPITALS token (ARI, BAE, (TEST), OR) -- display reflects the stored text
      - mixed-case designations (sUAS, BrahMos)
      - any token carrying a digit (M109, K9, YFQ-44A)
-   Minor words (of, and, for ...) go lower unless they lead the title. A hyphen is a word
-   break, so each side is cased on its own. */
+   Minor words (of, and, for ...) go lower unless they lead the title, and unless they are all capitals.
+   A hyphen is a word break, so each side is cased on its own. */
+const allCaps = (t) => /[A-Z]/.test(t) && t === t.toUpperCase();
 const MINOR_WORDS = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "from",
   "in", "nor", "of", "on", "or", "per", "the", "to", "via", "vs", "with"]);
 const caseCore = (core) => {
-  const acr = acronymForm(core);
-  if (acr) return acr;
   if (/[a-z]/.test(core) && /[A-Z]/.test(core)) return core; // sUAS, BrahMos
   if (/\d/.test(core)) return core;                          // M109, K9
+  if (allCaps(core)) return core;                            // ARI, BAE, TEST
   return core.charAt(0).toUpperCase() + core.slice(1).toLowerCase();
 };
 const casePart = (part) => {
@@ -218,7 +202,7 @@ export function smartTitleCase(raw) {
   return String(raw).split(/(\s+)/).map((tok) => {
     if (tok === "" || /^\s+$/.test(tok)) return tok;
     wi += 1;
-    if (wi > 0 && MINOR_WORDS.has(tok.toLowerCase())) return tok.toLowerCase();
+    if (wi > 0 && MINOR_WORDS.has(tok.toLowerCase()) && !allCaps(tok)) return tok.toLowerCase();
     // A token carrying a digit is a platform designation (AH-64, KC-46, YFQ-44A, BMP-2,
     // 155mm). Case each hyphen part as a designation: the digit part stays verbatim, a
     // listed acronym is raised (bmp-2 -> BMP-2), an already-capitalised alpha part is kept
@@ -226,8 +210,6 @@ export function smartTitleCase(raw) {
     if (/\d/.test(tok)) {
       return tok.split("-").map((part) => {
         if (/\d/.test(part)) return part;
-        const acr = acronymForm(part);
-        if (acr) return acr;
         if (/[A-Z]/.test(part)) return part;
         return part.charAt(0).toUpperCase() + part.slice(1);
       }).join("-");
@@ -236,91 +218,239 @@ export function smartTitleCase(raw) {
   }).join("");
 }
 
-/* The sector label rule: house capitalisation, and "" when the row has none (no default). */
+/* Sector carries a default because a competitor with no sector is still in this
+   industry; headquarters and the rest use formatLabel directly and stay blank. */
 export function formatSectorName(rawSector) {
-  return formatLabel(rawSector);
+  return formatLabel(rawSector) || "";
 }
 
 /* Standardized company name formatting helper. Reads the ONE acronym list above:
-   it used to carry its own sixteen, which is how three lists came to disagree. */
+   no acronym list: the stored casing is kept for short capitals. */
 export function formatCompanyName(rawName) {
   if (!rawName) return "";
   let s = unescapeEntities(String(rawName)).trim();
   return s
     .split(/\s+/)
     .map((word) => {
-      const acr = acronymForm(word);
-      if (acr) return acr;
       if (word.includes("/")) {
         return word
           .split("/")
           .map((part) => formatCompanyName(part))
           .join(" / ");
       }
-      if (word.length <= 3 && word === word.toUpperCase() && /^[A-Z]+$/.test(word)) return word;
+      // an all-capitals token of the stored name is kept as stored (ARI, BAE, KONGSBERG)
+      if (/[A-Z]/.test(word) && word === word.toUpperCase()) return word;
       return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
     })
     .join(" ");
 }
 
-/* "USD 2,650": the stored annual_revenue with its stored currency code. The columns carry
-   no unit (thousands / millions), so none is printed. "" when there is no amount. */
-export function formatRevenue(amount, currency) {
-  if (amount == null || amount === "" || !Number.isFinite(Number(amount))) return "";
-  const n = Number(amount).toLocaleString("en-US");
-  return currency ? `${currency} ${n}` : n;
+/* Three of these four are now HARVESTED from the maker's own site — see
+   pipeline/harvest/. What remains genuinely uncollected is the forward timeline, and a
+   company with no harvested rows still shows the honest absence rather than an empty box.
+
+   `sourcedSections` decides per COMPANY, not globally: Saab has leadership and sales but
+   no facilities row, and printing "not collected" under a heading we did fill for the
+   company next to it would be worse than either. */
+export const NOT_COLLECTED = {
+  leadership: "no officer named on this company's own pages",
+  facilities: "no plant or site named on this company's own pages",
+  sales: "no revenue or order-book figure published on this company's own pages",
+  timeline: "no dated event series - news coverage on record, not a programme calendar",
+};
+
+/* A harvested field: [{value, detail, url, line}]. `line` is the VERBATIM sentence the
+   value was read from, so the panel can show its evidence exactly as the tender and
+   matchup surfaces do. Anything that is not that shape is ignored rather than rendered —
+   a half-written row is how a "sourced" badge ends up over nothing. */
+export function sourcedRows(c, field) {
+  const v = c && c[field];
+  if (!Array.isArray(v)) return [];
+  return v.filter((r) => r && r.value && r.url && r.line);
 }
 
-/* The rivals (every competitor row but the client's), in the dataset's own order. */
+/* `updates` is an HTML STRING on ten companies and an always-EMPTY ARRAY on the other
+   twenty, and `if ([])` is true — which is how a "Latest updates" heading came to sit
+   over nothing on twenty rivals. Read it through here or not at all. */
+export function updatesHtml(c) {
+  const u = c && c.updates;
+  if (typeof u === "string") return u.trim() || "";
+  if (Array.isArray(u) && u.length) return u.join("");
+  return "";
+}
+
+function nameKey(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/* The rivals, in the dataset's own order, with a density figure so the list can show
+   which companies are actually worth opening. */
 export function rosterOf(d) {
-  const clientCid = d.client && d.client.id;
+  const clientCid = (d.client && d.client.id);
+  /* the same country expression the Products and Partnerships sidebars filter on */
   const order = (d.compOrder || []).filter((cid) => d.competitors[cid]);
-  const rest = Object.keys(d.competitors).filter((cid) => order.indexOf(cid) < 0);
+  const rest = Object.keys(d.competitors).filter(
+    (cid) => order.indexOf(cid) < 0,
+  );
   return order
     .concat(rest)
     .filter((cid) => cid !== clientCid)
     .map((cid) => {
-      const c = d.competitors[cid];
+      const p = buildProfile(d, cid);
       return {
         cid,
-        name: txt(c.name) || cid,
-        short: txt(c.short),
-        legal: txt(c.legal),
-        hq: txt(c.hq),
-        threat: c.threat || "",
-        sector: txt(c.sector),
+        name: p.name,
+        threat: p.threat,
+        sector: p.sector,
+        countries: companyCountries(d, cid),
+        /* where it is FROM, for the Competitor filter. `countries` above is where
+           it is RECORDED -- a presence list, which is a different question. */
         origin: companyOrigin(d, cid),
-        revenueTier: revenueTierOf(c),
+        // revenue band (High / Mid / Emerging / not on record), as the Products sidebar uses
+        revenueTier: revenueTierOf(d.competitors[cid]),
+        /* how many of the seven backed sections this company actually fills —
+           the honest "is there anything here" signal */
+        filled: p.sections.filter((s) => s.rows).length,
+        total: p.sections.length,
       };
     });
 }
 
 export function buildProfile(d, cid) {
   const c = (d.competitors || {})[cid] || {};
+  const name = txt(c.name) || cid;
+  const nk = nameKey(name);
+
+  /* "everywhere", per the operator -- this list is the other place signal cards are
+     sequenced, and it was in serve order (signal_card.ord), which is a storage order:
+     rivals first, then coarse month. So a company's own page could open on a low-severity
+     card from the same month as a high-severity one. The SAME comparator as the feed,
+     not a second rule that happens to agree today. */
+  const cards = []
+    .concat(d.competitiveCards || [], d.marketCards || [], d.techCards || [])
+    .filter((x) => nameKey(x.company) === nk)
+    .sort(compareCards(d));
+
+  const matchups = Object.entries(d.matchups || {})
+    .filter(([, m]) => nameKey(m.compBy) === nk)
+    .map(([id, m]) => ({ id, ...m }));
+
+  const development = [];
+  Object.entries(d.innovations || {}).forEach(([domain, list]) => {
+    (list || []).forEach((iv) => {
+      if (nameKey(iv.driver) === nk) development.push({ domain, ...iv });
+    });
+  });
+
+  const presence = (d.geoPresence || []).filter((g) => nameKey(g.comp) === nk);
+
+  /* .records, NOT the index entry. adaptPatents builds byCompetitor[cid] as
+     { stats, records } -- an OBJECT -- so this handed the panel a thing whose .length
+     is undefined, the Patents section counted `undefined` rows for every rival that has
+     filings, and profileSelfCheck's "patents is object, not an array" threw on the
+     first such rival. DataProvider catches that, so the whole self-check suite has been
+     ending in a logged error and never reaching "self-checks complete". A rival with NO
+     filings took the `|| []` branch and looked fine, which is why this survived: it is
+     broken exactly where there is data. */
+  const patents = (((d.PATENTS && d.PATENTS.byCompetitor) || {})[cid] || {}).records || [];
+
+  const sources = (d.companySources || {})[name] || [];
+
+  const leadership = sourcedRows(c, "leadership");
+  const facilitiesRows = sourcedRows(c, "facilities");
+  const salesRows = sourcedRows(c, "sales");
+
+  const sections = [
+    { key: "updates", label: "Latest updates", rows: updatesHtml(c) ? 1 : 0 },
+    { key: "products", label: "Products", rows: (c.products || []).length },
+    { key: "matchups", label: "Matchups", rows: matchups.length },
+    { key: "development", label: "In development", rows: development.length },
+    { key: "news", label: "News", rows: cards.length },
+    { key: "partners", label: "Partnerships", rows: (c.partners || []).length },
+    { key: "presence", label: "Country presence", rows: presence.length },
+    { key: "patents", label: "Patents", rows: patents.length },
+    { key: "leadership", label: "Leadership", rows: leadership.length },
+    { key: "facilities", label: "Facilities", rows: facilitiesRows.length },
+    { key: "sales", label: "Sales", rows: salesRows.length },
+  ];
+
   return {
     cid,
     _src: c._src,
-    name: txt(c.name) || cid,
-    short: txt(c.short),
-    legal: txt(c.legal),
-    sector: txt(c.sector),
-    hq: txt(c.hq),
+    name,
+    sector: formatSectorName(c.sector),
+    /* NOT formatSectorName: that returns 'Defence & Aerospace' for an empty value, and
+       136 of 178 served competitors have no hq, so each of them displayed that sector
+       string as its head office. An absent headquarters must render as absent. */
+    hq: formatLabel(c.hq),
+    site: c.site || "",
+    /* The 2026-09-01 columns. They have to be listed here or they stop at this
+       function: the Profile panel reads the profile object, not the raw competitor
+       row, so a column can pass the view AND the backend allowlist and still never
+       reach the screen. That is exactly the gap the hand-typed dossiers filled. */
     starting_year: c.starting_year || null,
-    company_size: c.company_size != null && c.company_size !== "" ? Number(c.company_size).toLocaleString("en-US") : null,
-    revenue: formatRevenue(c.revenue, c.revenue_currency),
-    global_locations: txt(c.global_locations),
-    locations: Array.isArray(c.locations) ? c.locations : [],
-    threat: c.threat || "",
-    leaders: Array.isArray(c.leaders) ? c.leaders : [],
+    company_size: txt(c.company_size) || null,
+    strategic_positioning: txt(c.strategic_positioning) || null,
+    global_locations: c.global_locations || [],
+    threat: threatOf(c),
+    threatNote: txt(c.threatNote),
+    /* assess and updates are HTML by design and are injected, not printed */
+    assess: c.assess || "",
+    updates: updatesHtml(c),
+    products: (c.products || []).map((x) =>
+      typeof x === "string" ? txt(x) : x),
+    matchups,
+    development,
+    cards,
+    partners: c.partners || [],
+    presence,
+    patents,
+    leadership,
+    support_leadership: c.support_leadership || [],
+    facilities: facilitiesRows,
+    sales: salesRows,
+    sources,
+    sections,
   };
 }
 
-/* Lightweight self-check run from DataProvider: every roster row builds a named profile. */
+/* ── self-check ───────────────────────────────────────────────────────────────
+   Runs from DataProvider over the WHOLE roster, because the shape hazards here are
+   per-company: the ten string-`updates` rivals, the twenty empty-array ones, the
+   fourteen with no country rows and the twenty-four with no news card. A profile
+   builder that only ever ran on the first company would pass every one of them. */
 export function profileSelfCheck(d) {
-  rosterOf(d).forEach((r) => {
+  const roster = rosterOf(d);
+  if (!roster.length) throw new Error("profile: empty roster");
+  const clientCid = (d.client && d.client.id);
+  if (roster.some((r) => r.cid === clientCid))
+    throw new Error("profile: the client is listed as its own competitor");
+  roster.forEach((r) => {
     const p = buildProfile(d, r.cid);
     if (!p.name) throw new Error(`profile: ${r.cid} built with no name`);
-    if (!Array.isArray(p.leaders) || !Array.isArray(p.locations))
-      throw new Error(`profile: ${r.cid} leaders/locations are not arrays`);
+    /* A column can clear the serving_live view AND the backend allowlist and still
+       stop here, because the panel reads this object rather than the raw row --
+       which is how the Profile page ended up with hand-typed company facts. If the
+       dataset carries a value and the profile does not, say so loudly. */
+    ["starting_year", "company_size", "strategic_positioning"].forEach((k) => {
+      const src = (d.competitors || {})[r.cid] || {};
+      if (src[k] != null && src[k] !== "" && p[k] == null)
+        throw new Error(`profile: ${r.cid}.${k} is in the dataset but dropped by buildProfile`);
+    });
+    if (typeof p.updates !== "string")
+      throw new Error(`profile: ${r.cid} updates is ${typeof p.updates}, not a string`);
+    ["products", "matchups", "development", "cards", "partners", "presence", "patents", "sources"]
+      .forEach((k) => {
+        if (!Array.isArray(p[k]))
+          throw new Error(`profile: ${r.cid}.${k} is ${typeof p[k]}, not an array`);
+      });
   });
+  /* A profile keyed on the wrong id space returns undefined everywhere and still
+     renders — silently empty. If NOTHING in the roster has a single row, that is what
+     has happened, not a thin corpus. */
+  if (!roster.some((r) => r.filled > 0))
+    throw new Error("profile: every company is empty - check the cid/name join");
 }

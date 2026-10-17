@@ -323,6 +323,9 @@ def select(conn, spec: dict, args) -> tuple[list[dict], str]:
         elif not args.rerun and not args.print_prompt:
             subs = pending(cur, spec, subs)
     conn.rollback()
+    if getattr(args, "shard", None):                        # --shard K/N: worker K of N takes every N-th pending subject (parallel bulk runs)
+        k, n = (int(x) for x in args.shard.split("/"))
+        subs = [x for i, x in enumerate(subs) if i % n == k]
     why = "nothing pending: every subject has run at this version" if not subs else ""
     n = args.limit or (1 if args.print_prompt else None)
     return (subs[:n] if n else subs), why
@@ -395,6 +398,7 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, help="at most N subjects (newest first, as the prompt's query orders them)")
     ap.add_argument("--print-prompt", action="store_true", help="print the filled prompt, no model call")
     ap.add_argument("--dry-run", action="store_true", help="call the model and validate; roll back instead of loading")
+    ap.add_argument("--shard", help="K/N: take every N-th pending subject starting at K (run N workers in parallel)")
     ap.add_argument("--rerun", action="store_true", help="run subjects that already ran at this prompt version")
     ap.add_argument("--due", action="store_true", help="routine: every prompt whose cadence has elapsed")
     ap.add_argument("--list", action="store_true", help="prompts, cadence, last run, pending subjects")

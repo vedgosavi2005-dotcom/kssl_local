@@ -1,6 +1,15 @@
 /* Escaping + the source-chip helper, used by every panel.
    Every record in the generated dataset carries `srcs: [{label,url}]`. */
 
+/* A stored word as a CSS class: "Local production" -> "local-production". Pure formatting -- the word is
+   the data's, and a word with no rule is unstyled; nothing is substituted for it. */
+export function cssWord(s) {
+  return String(s == null ? "" : s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 /* Attribute-safe: quotes too, because these land inside href="" and title="". */
 export function attr(s) {
   return String(s == null ? "" : s)

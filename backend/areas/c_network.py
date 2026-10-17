@@ -1,12 +1,13 @@
-"""Area C: Partnerships, Projects, Geo footprint, Patents.
+"""Area C: Partnerships (+ synthesis reads), Projects, Geo footprint, Patents.
 
-Audit: docs/audit_v2/C_partners_projects_geo_patents.md.
-Every key below is a column of the table named in its `_src`; nothing is defaulted.
+Shapes follow docs/ui_port/MAPPING.md section A (partners, KSSL_PARTNERS, REL_LABEL, COMPSYN, TRACEIDS, FIELDSYN,
+projects, projectsConfig, geoComps/geoData/geoPresence/geoCountries/actLabel, PATENTS, techAreaMeta rows for the
+patent fields). Every key below is a column of the table named in its `_src`; nothing is defaulted.
 """
 
 from collections import defaultdict
 
-from backend.common import first_nonempty, table, text
+from backend.common import first_nonempty, slug, table, text
 
 
 def src(tbl: str, key: str, row: dict) -> dict:
@@ -29,118 +30,129 @@ def ordered(rows, *keys):
     return sorted(rows, key=k)
 
 
+def _shown(n):
+    if n is None:
+        return None
+    return str(int(n)) if n == int(n) else str(round(n, 6))
+
+
+def _with_unit(value, unit):
+    if value in (None, ""):
+        return None
+    return f"{value} {unit}" if unit not in (None, "") else value
+
+
 # --------------------------------------------------------------------------- Partnerships
 
 def build_partners(database, competitors):
     evidence = by(table(database, "serving", "competitive_partnership_evidence"), "relationship_id")
-    details = {text(r.get("relationship_id")): r for r in table(database, "serving", "competitive_partnership_relationship_detail")}
     per_comp = defaultdict(list)
     for row in ordered(table(database, "serving", "competitive_partnership"), "partner_name", "relationship_id"):
         cid = text(row.get("competitor_id"))
         rid = text(row.get("relationship_id"))
         if cid not in competitors or not rid:
             continue
-        ev = [{
-            "id": text(e.get("evidence_card_id")),
-            "n": e.get("card_number"),
-            "text": text(e.get("evidence_text")),
-            "type": text(e.get("evidence_type")),
-            "label": text(e.get("relationship_label")),
-            "scope": text(e.get("scope")),
-            "asOf": text(e.get("as_of_date")),
-            "basis": text(e.get("basis_for_type")),
-            "confidence": text(e.get("confidence")),
-            "srcNote": text(e.get("source_note")),
-            "srcType": text(e.get("source_type")),
-            "publisher": text(e.get("source_publisher")),
-            "articleTitle": text(e.get("source_article_title")),
-            "articleUrl": text(e.get("source_article_url")),
-            "url": text(e.get("source_url")),
-            "_src": src("competitive_partnership_evidence", "evidence_card_id", e),
-        } for e in ordered(evidence.get(rid, []), "card_number")]
-        det = details.get(rid)
+        first_url = next((e.get("source_url") for e in ordered(evidence.get(rid, []), "card_number") if e.get("source_url")), None)
+        partner_id = text(row.get("partner_id"))
         per_comp[cid].append({
             "id": rid,
-            "pid": text(row.get("partner_id")),
-            "cid": cid,
-            "label": text(row.get("partner_name")),
-            "ptype": text(row.get("partner_type")),
-            "country": text(row.get("region")),
-            "confidence": text(row.get("relationship_confidence")),
-            "as_of": text(row.get("as_of_date")),
-            "date": text(row.get("as_of_date")),
-            "scope": text(row.get("relationship_scope")),
-            "note": text(row.get("description")),
-            "srcnote": text(row.get("source_note")),
-            "sourceCount": row.get("source_count"),
-            "evidence": ev,
-            "detail": None if det is None else {
-                "title": text(det.get("relationship_title")),
-                "label": text(det.get("detail_label")),
-                "type": text(det.get("type")),
-                "confidence": text(det.get("confidence")),
-                "scope": text(det.get("scope")),
-                "basis": text(det.get("basis_for_type")),
-                "statedAsOf": text(det.get("stated_as_of")),
-                "srcNote": text(det.get("source_note")),
-                "publisher": text(det.get("source_publisher_label")),
-                "articleUrl": text(det.get("source_article_url")),
-                "_src": src("competitive_partnership_relationship_detail", "detail_id", det),
-            },
+            "cid": partner_id if partner_id in competitors else None,
+            "label": row.get("partner_name"),
+            "ptype": row.get("partner_type"),
+            "rel": slug(row.get("partner_type")) or None,
+            "note": row.get("description"),
+            "date": row.get("as_of_date"),
+            "as_of": row.get("as_of_date"),
+            "country": row.get("region"),
+            "confidence": row.get("relationship_confidence"),
+            "srcnote": row.get("source_note"),
+            "verdict": row.get("client_verdict"),      # as stored (threat / watch / ...): the UI shows only threat and watch
+            "impact": row.get("client_impact"),        # the stored read of the tie for the client
+            "src": first_url,
             "_src": src("competitive_partnership", "relationship_id", row),
         })
     return per_comp
 
 
-def build_client_partners(database):
+def build_client_partners(database, competitors):
     rels = by(table(database, "serving", "client_partner_relationship"), "client_partner_id")
-    prods = by(table(database, "serving", "client_partner_product"), "client_partner_id")
-    sources = by(table(database, "serving", "client_partner_source"), "client_partner_id")
+    names = {}
+    for cid, c in competitors.items():
+        if c.get("dir") == "client":
+            continue
+        for n in (c.get("name"), c.get("legal")):
+            if n:
+                names.setdefault(str(n).strip().lower(), cid)
     out = []
     for row in ordered(table(database, "serving", "client_partner"), "partner_name", "client_partner_id"):
         pid = text(row.get("client_partner_id"))
         if not pid:
             continue
+        first_rel = rels.get(pid, [{}])[0]
+        pname = row.get("partner_name")
         out.append({
             "id": pid,
-            "label": text(row.get("partner_name")),
-            "legal": text(row.get("legal_name")),
-            "ptype": text(row.get("partner_type")),
-            "country": text(row.get("country")),
-            "region": text(row.get("region")),
-            "confidence": text(row.get("relationship_confidence")),
-            "scope": text(row.get("relationship_scope")),
-            "start": text(row.get("relationship_start_date")),
-            "status": text(row.get("relationship_status")),
-            "role": text(row.get("strategic_role")),
-            "relationships": [{
-                "id": text(r.get("relationship_id")),
-                "type": text(r.get("relationship_type")),
-                "category": text(r.get("category")),
-                "description": text(r.get("description")),
-                "territory": text(r.get("territory")),
-                "start": text(r.get("start_date")),
-                "end": text(r.get("end_date")),
-                "status": text(r.get("status")),
-                "read": text(r.get("kssl_read")),
-                "competitorOverlap": r.get("competitor_overlap"),
-            } for r in rels.get(pid, [])],
-            "products": [{
-                "activity": text(p.get("activity_type")),
-                "market": text(p.get("market")),
-                "scope": text(p.get("scope")),
-                "status": text(p.get("status")),
-            } for p in prods.get(pid, [])],
-            "sources": [{
-                "label": text(s.get("source_label")),
-                "url": text(s.get("source_url")),
-                "type": text(s.get("source_type")),
-                "note": text(s.get("source_note")),
-                "asOf": text(s.get("as_of_date")),
-            } for s in sources.get(pid, [])],
+            "label": pname,
+            "cid": names.get(str(pname).strip().lower()) if pname else None,
+            "ptype": row.get("partner_type"),
+            "rel": slug(row.get("partner_type")) or None,
+            "country": row.get("country"),
+            "note": first_rel.get("description"),
+            "role": row.get("strategic_role"),
+            "status": row.get("relationship_status"),
+            "date": row.get("relationship_start_date"),
+            "as_of": row.get("relationship_start_date"),
+            "mean": first_rel.get("kssl_read"),
+            "insight": first_rel.get("kssl_read"),
             "_src": src("client_partner", "client_partner_id", row),
         })
     return out
+
+
+def build_rel_label(database):
+    # The relationship legend (category and short labels, definitions) is front-end code (src/lib/chrome.js), not a
+    # ui table; the key stays in the dataset contract and is empty.
+    return {}
+
+
+def build_synthesis(database):
+    """COMPSYN (thesis, vulnerabilities, strategy per competitor), TRACEIDS (partner ties each vulnerability traces
+    to), FIELDSYN (the field-level read)."""
+    traces = by(table(database, "serving", "competitive_synthesis_vulnerability_trace"), "vulnerability_id")
+    vulns = by(table(database, "serving", "competitive_synthesis_vulnerability"), "competitor_id")
+    compsyn, traceids = {}, {}
+    for row in table(database, "serving", "competitive_synthesis"):
+        cid = text(row.get("competitor_id"))
+        if not cid:
+            continue
+        rows = ordered(vulns.get(cid, []), "display_order")
+        compsyn[cid] = {
+            "thesis": row.get("thesis"),
+            "vulns": [{
+                "title": v.get("title"),
+                "from": [x.strip() for x in str(v.get("from_labels") or "").splitlines() if x.strip()],
+                "intel": v.get("intel"),
+                "_src": src("competitive_synthesis_vulnerability", "vulnerability_id", v),
+            } for v in rows],
+            "strat": {"thesis": row.get("strategy_thesis"), "pattern": row.get("strategy_pattern"),
+                      "sowhat": row.get("strategy_sowhat")},
+            "_src": src("competitive_synthesis", "competitor_id", row),
+        }
+        traceids[cid] = [[text(t.get("relationship_id")) for t in traces.get(text(v.get("vulnerability_id")), [])
+                          if t.get("relationship_id")] for v in rows]
+    field_rows = ordered(table(database, "serving", "competitive_field_synthesis"), "display_order")
+    bottom_row = next((r for r in field_rows if r.get("row_kind") == "bottom_line" and r.get("bottom_line")), None)
+    bottom = bottom_row.get("bottom_line") if bottom_row else None
+    fieldsyn = {
+        "patterns": [{
+            "field": r.get("field_title"), "pattern": r.get("pattern"), "implication": r.get("implication"),
+            "n": r.get("support_count"), "total": r.get("support_total"),
+            "_src": src("competitive_field_synthesis", "synthesis_id", r),
+        } for r in field_rows if r.get("row_kind") == "pattern"],
+        "bottom": bottom,
+        "bottomSrc": src("competitive_field_synthesis", "synthesis_id", bottom_row) if bottom_row else None,
+    }
+    return compsyn, traceids, fieldsyn
 
 
 # --------------------------------------------------------------------------- Projects
@@ -158,130 +170,62 @@ def build_projects(database, competitors):
         cid = text(row.get("competitor_id"))
         st = ordered(stages.get(pid, []), "stage_order")
         current = next((s for s in st if s.get("is_current")), None)
+        read = [x for x in (row.get("assessment_read"), row.get("strategic_assessment")) if x]
         projects.append({
             "id": pid,
-            "cid": cid,
-            "company": text(row.get("company_display")) or text(competitors.get(cid, {}).get("name")),
-            "name": text(row.get("project_title")),
-            "customer": text(row.get("customer")),
-            "location": text(row.get("location")),
-            "kind": text(row.get("kind")),
-            "region": text(row.get("region")),
-            "stage": text(row.get("stage")),
-            "stageNote": text(row.get("stage_note")),
-            "summary": text(row.get("card_summary")),
-            "value": row.get("estimated_value"),
-            "grade": text(row.get("grade")),
-            "latest": {"date": text(row.get("latest_milestone_date")), "note": text(row.get("latest_milestone"))},
-            "assessment": {
-                "stance": text(row.get("assessment_stance")),
-                "read": text(row.get("assessment_read")),
-                "strategic": text(row.get("strategic_assessment")),
-            },
-            "ksslPlatform": text(row.get("kssl_platform")),
-            "ksslAdvantage": text(row.get("kssl_advantage")),
-            "overview": text(row.get("what_the_project_is")),
-            "researchedAsOf": text(row.get("researched_as_of")),
-            "stages": [{"name": text(s.get("stage_name")), "order": s.get("stage_order"), "current": bool(s.get("is_current"))} for s in st],
+            "cid": cid or None,
+            "company": first_nonempty(row, "company_display") or (competitors.get(cid) or {}).get("name"),
+            "name": row.get("project_title"),
+            "kind": row.get("kind"),
+            "region": row.get("region"),
+            "customer": row.get("customer"),
+            "location": row.get("location"),
+            "stage": row.get("stage"),
             "stageRank": None if current is None else current.get("stage_order"),
-            "specs": [{"k": text(s.get("spec_label")), "v": text(s.get("spec_value")), "u": text(s.get("unit"))}
+            "stageNote": row.get("stage_note"),
+            "specs": [{"k": s.get("spec_label"), "v": _with_unit(s.get("spec_value"), s.get("unit"))}
                       for s in ordered(specs.get(pid, []), "display_order", "project_spec_id")],
-            "timeline": [{"date": text(t.get("event_date")), "label": text(t.get("event_title")),
-                          "desc": text(t.get("event_description")), "expected": bool(t.get("is_expected"))}
+            "timeline": [{"date": t.get("event_date"), "label": t.get("event_title"), "expected": t.get("is_expected")}
                          for t in ordered(timeline.get(pid, []), "display_order", "event_date")],
-            "sources": [{"label": text(first_nonempty(s, "source_label", "source_domain")), "url": text(s.get("source_url")),
-                         "domain": text(s.get("source_domain")), "type": text(s.get("source_type"))}
+            "latest": {"date": row.get("latest_milestone_date"), "label": row.get("latest_milestone")},
+            "overview": [row.get("what_the_project_is")] if row.get("what_the_project_is") else [],
+            "assessment": {"stance": row.get("assessment_stance"), "read": read},
+            "sources": [{"label": first_nonempty(s, "source_label", "source_domain"), "url": s.get("source_url")}
                         for s in sources.get(pid, [])],
+            "researchedAsOf": row.get("researched_as_of"),
             "_src": src("competitive_project", "project_id", row),
         })
-    filters = [{"f": "all", "l": "All"}]
-    default_filter = "all"
-    for row in ordered(table(database, "ui", "ui_project_filter"), "display_order"):
-        code = text(first_nonempty(row, "filter_code", "filter_id"))
-        if code and code != "all":
-            filters.append({"f": code, "l": text(row.get("filter_label"))})
-        if code and row.get("is_default"):
-            default_filter = code
-    seq = []
-    default_seq = None
-    for row in ordered(table(database, "ui", "ui_project_sequence_option"), "display_order"):
-        if row.get("sequence_code"):
-            seq.append([text(row.get("sequence_code")), text(row.get("sequence_label"))])
-            if row.get("is_default"):
-                default_seq = text(row.get("sequence_code"))
-    stage_steps = [text(r.get("stage_name")) for r in ordered(table(database, "ui", "ui_project_stage_step"), "stage_order") if r.get("stage_name")]
-    competitor_rows = [
-        {"cid": cid, "name": competitors[cid].get("name"), "short": competitors[cid].get("short"), "threat": competitors[cid].get("threat")}
-        for cid in sorted({p["cid"] for p in projects if p.get("cid")}) if cid in competitors
-    ]
-    return projects, {"competitors": competitor_rows, "filters": filters, "defaultFilter": default_filter,
-                      "seqOptions": seq, "defaultSeq": default_seq, "stageSteps": stage_steps}
+    # The filter and sequence controls are front-end chrome (src/lib/chrome.js). The stage steps are DATA: the stages
+    # the projects themselves carry (serving.competitive_project_stage), one step per stage_order, in order.
+    steps = {}
+    for row in table(database, "serving", "competitive_project_stage"):
+        order, name = row.get("stage_order"), row.get("stage_name")
+        if order is not None and name and order not in steps:
+            steps[order] = name
+    stage_steps = [steps[k] for k in sorted(steps)]
+    return projects, {"stageSteps": stage_steps}
 
 
 # --------------------------------------------------------------------------- Geo
 
-def _source_row(s):
-    return {"label": text(s.get("source_label")), "url": text(s.get("source_url")), "type": text(s.get("source_type"))}
-
-
 def build_geo(database, competitors):
     loc_rows = table(database, "serving", "competitive_geo_location")
-    src_by_loc = by(table(database, "serving", "competitive_geo_source"), "location_id")
     src_by_product = by(table(database, "serving", "competitive_geo_source"), "geo_product_id")
-    src_by_match = by(table(database, "serving", "competitive_geo_source"), "match_id")
     news = by(table(database, "serving", "competitive_geo_product_news"), "geo_product_id")
-    specs = by(table(database, "serving", "competitive_geo_product_specification"), "match_id")
-    matches = by(table(database, "serving", "competitive_geo_product_match"), "geo_product_id")
     products = by(table(database, "serving", "competitive_geo_product"), "presence_id")
 
     locations = {}
-    geo_locations = []
     for row in loc_rows:
         lid = text(row.get("location_id"))
-        name = text(first_nonempty(row, "country_name", "map_label"))
-        if not lid or not name:
-            continue
-        locations[lid] = name
-        geo_locations.append({
-            "id": lid,
-            "name": name,
-            "label": text(row.get("map_label")),
-            "region": text(row.get("region_name")),
-            "lat": row.get("latitude"),
-            "lng": row.get("longitude"),
-            "presenceTypes": text(row.get("presence_types")),
-            "summary": text(row.get("kssl_presence_summary")),
-            "srcs": [_source_row(s) for s in src_by_loc.get(lid, [])],
-            "_src": src("competitive_geo_location", "location_id", row),
-        })
-    geo_locations.sort(key=lambda l: l["name"].lower())
-
-    def match_out(m):
-        mid = text(m.get("match_id"))
-        return {
-            "id": mid,
-            "title": text(m.get("comparison_title")),
-            "kssl": text(m.get("kssl_counter_label")),
-            "label": text(m.get("evaluation_label")),
-            "level": m.get("decision_level"),
-            "kssl_score": m.get("kssl_score"),
-            "rival_score": m.get("competitor_score"),
-            "delta": m.get("rating_delta"),
-            "basis": text(m.get("match_basis")),
-            "summary": text(m.get("qualitative_summary")),
-            "status": text(m.get("match_status")),
-            "specs": [{"name": text(s.get("spec_name")), "group": text(s.get("spec_group")), "kssl": text(s.get("kssl_value")),
-                       "rival": text(s.get("competitor_value")), "unit": text(s.get("unit")), "gap": text(s.get("gap_value")),
-                       "better": text(s.get("better_side"))}
-                      for s in ordered(specs.get(mid, []), "display_order", "comparison_spec_id")],
-            "srcs": [_source_row(s) for s in src_by_match.get(mid, [])],
-            "_src": src("competitive_geo_product_match", "match_id", m),
-        }
+        name = first_nonempty(row, "country_name", "map_label")
+        if lid and name:
+            locations[lid] = name
 
     geo_data = defaultdict(lambda: defaultdict(list))
-    geo_presence = defaultdict(lambda: defaultdict(list))
+    geo_presence = []
     geo_comps = []
     seen = set()
+    activities = []
     for row in ordered(table(database, "serving", "competitive_geo_company_presence"), "display_order", "presence_id"):
         client = row.get("company_role") == "client"
         company_id = text(row.get("client_id") if client else first_nonempty(row, "competitor_id", "client_id"))
@@ -289,116 +233,110 @@ def build_geo(database, competitors):
         if not company_id or not country:
             continue
         pid = text(row.get("presence_id"))
-        geo_presence[company_id][country].append({
+        geo_presence.append({
             "id": pid,
-            "activity": text(row.get("activity_type")),
-            "status": text(row.get("presence_status")),
-            "overlap": text(row.get("overlap_status")),
-            "ranges": text(row.get("matched_ranges")),
+            "comp": row.get("company_name"),
+            "cid": company_id,
+            "country": country,
+            "activity": row.get("activity_type"),
+            "status": row.get("presence_status"),
+            "overlap": row.get("overlap_status"),
+            "ranges": row.get("matched_ranges"),
             "productCount": row.get("product_count"),
-            "summary": text(row.get("products_summary")),
-            "relationship": text(row.get("relationship_text")),
+            "summary": row.get("products_summary"),
+            "relationship": row.get("relationship_text"),
             "_src": src("competitive_geo_company_presence", "presence_id", row),
         })
         rows = geo_data[company_id][country]
         for p in ordered(products.get(pid, []), "display_order", "geo_product_id"):
             gid = text(p.get("geo_product_id"))
+            srcs = [{"label": s.get("source_label"), "url": s.get("source_url")} for s in src_by_product.get(gid, [])]
+            if p.get("activity_type") and p.get("activity_type") not in activities:
+                activities.append(p.get("activity_type"))
             rows.append({
                 "id": gid,
                 "presenceId": pid,
-                "name": text(p.get("product_name")),
-                "c": text(p.get("activity_type")),
-                "since": text(p.get("since_date")),
-                "note": text(p.get("record_note")),
-                "value": text(p.get("reported_value")),
-                "qty": text(p.get("quantity")),
-                "range": text(p.get("product_range")),
-                "ratedPower": p.get("rated_power_value"),
-                "ratedUnit": text(p.get("rated_power_unit")),
-                "fuel": text(p.get("fuel_type")),
-                "hz": p.get("frequency_hz"),
-                "matches": [match_out(m) for m in ordered(matches.get(gid, []), "match_id")],
-                "news": [{"title": text(n.get("headline")), "publisher": text(n.get("publisher")), "date": text(n.get("published_date")),
-                          "url": text(n.get("article_url"))} for n in ordered(news.get(gid, []), "display_order", "news_id")],
-                "srcs": [_source_row(s) for s in src_by_product.get(gid, [])],
+                "name": p.get("product_name"),
+                "c": p.get("activity_type"),
+                "val": p.get("reported_value"),
+                "since": p.get("since_date"),
+                "qty": p.get("quantity"),
+                "stage": row.get("presence_status"),
+                "note": p.get("record_note"),
+                "srcnote": srcs[0]["label"] if srcs else None,
+                "srcs": srcs,
+                "geo_news": [{"title": n.get("headline"), "url": n.get("article_url"), "date": n.get("published_date"),
+                              "source": n.get("publisher")}
+                             for n in ordered(news.get(gid, []), "display_order", "news_id")],
                 "_src": src("competitive_geo_product", "geo_product_id", p),
             })
         if company_id not in seen:
             seen.add(company_id)
-            geo_comps.append({"id": company_id, "name": text(row.get("company_name")), "isBf": client})
-    countries = [l["name"] for l in geo_locations]
-    return ({k: dict(v) for k, v in geo_data.items()}, {k: dict(v) for k, v in geo_presence.items()},
-            geo_comps, geo_locations, countries)
+            comp = competitors.get(company_id) or {}
+            geo_comps.append({"id": company_id, "name": row.get("company_name"), "isBf": client,
+                              "dir": comp.get("threat"), "hq": comp.get("hq")})
+    countries = sorted(set(locations.values()), key=str.lower)
+    act_label = {a: a for a in activities}  # identity map over the stored activity words
+    return {k: dict(v) for k, v in geo_data.items()}, geo_presence, geo_comps, countries, act_label
 
 
 # --------------------------------------------------------------------------- Patents
 
 def build_patents(database, competitors):
-    filings = by(table(database, "serving", "competitive_patent_filing"), "portfolio_id")
-    classes = by(table(database, "serving", "competitive_patent_classification"), "portfolio_id")
-    by_competitor = {}
-    by_tech = {}
+    """Flat records grouped byArea / byAssignee, the shape dataset.js adaptPatents reads."""
+    portfolios = {text(p.get("portfolio_id")): p for p in table(database, "serving", "competitive_patent_portfolio")}
+    by_area, by_assignee, areas, providers = defaultdict(list), defaultdict(list), [], []
     total = 0
-    for pf in table(database, "serving", "competitive_patent_portfolio"):
-        cid = text(pf.get("competitor_id"))
-        pid = text(pf.get("portfolio_id"))
-        if not cid or not pid:
+    for f in ordered(table(database, "serving", "competitive_patent_filing"), "filed_date", "filing_id"):
+        pf = portfolios.get(text(f.get("portfolio_id")))
+        if pf is None:
             continue
-        records = [{
-            "id": text(f.get("publication_number")),
-            "fid": text(f.get("filing_id")),
-            "title": text(f.get("title")),
-            "jurisdiction": text(f.get("jurisdiction")),
-            "filed": text(f.get("filed_date")),
-            "status": text(f.get("status")),
-            "code": text(f.get("classification_code")),
-            "codeText": text(f.get("classification_text")),
-            "url": text(f.get("patent_url")),
-            "cid": cid,
+        cid = text(pf.get("competitor_id"))
+        assignee = (competitors.get(cid) or {}).get("name")
+        total += 1
+        rec = {
+            "no": first_nonempty(f, "publication_number", "filing_id"),
+            "title": f.get("title"),
+            "assignee": assignee,
+            "comp_id": cid or None,
+            "status": f.get("status"),
+            "filed": f.get("filed_date"),
+            "country": f.get("jurisdiction"),
+            "ipc": [f.get("classification_code")] if f.get("classification_code") else [],
+            "ipcText": f.get("classification_text"),
+            "area": f.get("area_label"),
+            "threat": f.get("threat_level"),
+            "relev": f.get("client_relevance"),
+            "url": f.get("patent_url"),
             # keyed like the review graph: publication_number, else filing_id
             "_src": src("competitive_patent_filing", "publication_number" if f.get("publication_number") is not None else "filing_id", f),
-        } for f in ordered(filings.get(pid, []), "filed_date", "filing_id")]
-        total += len(records)
-        cats = {}
-        for c in classes.get(pid, []):
-            label = text(c.get("category_label"))
-            if label and label not in cats:  # a label written under two lenses counts once
-                cats[label] = {"label": label, "count": c.get("filing_count"), "lens": text(c.get("lens"))}
-        by_competitor[cid] = {
-            "portfolioId": pid,
-            "lens": text(pf.get("lens")),
-            "filingCount": pf.get("filing_count"),
-            "grantedCount": pf.get("granted_count"),
-            "pendingCount": pf.get("pending_count"),
-            "grantStatusState": text(pf.get("grant_status_state")),
-            "statusNote": text(pf.get("status_note")),
-            "emptyMessage": text(pf.get("empty_message")),
-            "dataSourceNote": text(pf.get("data_source_note")),
-            "categories": list(cats.values()),
-            "records": records,
-            "_src": src("competitive_patent_portfolio", "portfolio_id", pf),
         }
-        for label, cat in cats.items():
-            tech = by_tech.setdefault(label, {"count": 0, "holders": [], "records": [], "notes": []})
-            tech["count"] += cat["count"] or 0
-            tech["holders"].append({"cid": cid, "filings": cat["count"]})
-            if text(pf.get("data_source_note")):
-                tech["notes"].append(text(pf.get("data_source_note")))
-            low = label.lower()
-            tech["records"].extend(r for r in records if low in (r["code"].lower(), r["codeText"].lower()))
-    return {"byCompetitor": by_competitor, "byTechnology": by_tech, "_meta": {"total": total}}
+        if assignee:
+            by_assignee[assignee].append(rec)
+        if rec["area"]:
+            by_area[rec["area"]].append(rec)
+            if rec["area"] not in areas:
+                areas.append(rec["area"])
+        note = pf.get("data_source_note")
+        if note and note not in providers:
+            providers.append(note)
+    return {"techAreas": sorted(areas, key=str.lower), "byArea": dict(by_area), "byAssignee": dict(by_assignee),
+            "_meta": {"total": total, "providers": providers}}
 
 
 def build(database, d):
     competitors = d["competitors"]
-    geo_data, geo_presence, geo_comps, geo_locations, geo_countries = build_geo(database, competitors)
+    geo_data, geo_presence, geo_comps, geo_countries, act_label = build_geo(database, competitors)
     projects, projects_config = build_projects(database, competitors)
     for cid, partners in build_partners(database, competitors).items():
         competitors[cid]["partners"] = partners
+    compsyn, traceids, fieldsyn = build_synthesis(database)
     d.update({
         "geoData": geo_data, "geoPresence": geo_presence, "geoComps": geo_comps,
-        "geoLocations": geo_locations, "geoCountries": geo_countries,
+        "geoCountries": geo_countries, "actLabel": act_label,
         "projects": projects, "projectsConfig": projects_config,
         "PATENTS": build_patents(database, competitors),
-        "KSSL_PARTNERS": build_client_partners(database),
+        "KSSL_PARTNERS": build_client_partners(database, competitors),
+        "REL_LABEL": build_rel_label(database),
+        "COMPSYN": compsyn, "TRACEIDS": traceids, "FIELDSYN": fieldsyn,
     })

@@ -24,7 +24,7 @@
   .geo-pick .pk-nm{flex:1;font-size:12.5px;color:var(--d-txt);font-weight:500}
   .geo-pick .pk-meta{font-family:var(--mono);font-size:10px;color:var(--d-txt-3)}
   .geo-pick .pk-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-  .geo-pick .pk-dot.threat{background:var(--threat)} .geo-pick .pk-dot.watch{background:var(--watch)} .geo-pick .pk-dot.fav{background:var(--fav)} .geo-pick .pk-dot.none{background:transparent}
+  .geo-pick .pk-dot.threat{background:var(--threat)} .geo-pick .pk-dot.watch{background:var(--watch)} .geo-pick .pk-dot.client{background:var(--ok)} .geo-pick .pk-dot.none{background:transparent}
   /* competitor dropdown: the dot marks overlap with KOEL, not threat level */
   /* The overlap dot in the country picker, on --overlap like every other overlap mark.
      This is the one place the operator can read an overlap "at a glance" without opening
@@ -36,7 +36,7 @@
   /* 'not assessed' is not 'no overlap': a dashed ring, so a rival nobody could test
      never wears the dot a rival earns by being tested and cleared. */
   .geo-pick .pk-dot.ovl-unk{background:transparent;border:1px dashed var(--d-txt-4);opacity:.75}
-  .geo-pick .pk-dot.bf{background:var(--fav)}
+  .geo-pick .pk-dot.bf{background:var(--ok)}
   .geo-content{flex:1;display:grid;grid-template-columns:1fr clamp(300px, 25vw, 380px);overflow:hidden;min-height:0;height:100%}
   .geo-content.empty{display:flex;align-items:center;justify-content:center}
   .geo-empty-state{text-align:center;color:var(--l-txt-4);font-family:var(--mono);font-size:12px;max-width:380px;line-height:1.6}
@@ -53,7 +53,7 @@
   .geo-rel-item:hover{background:var(--l-bg)}
   .geo-rel-item.active{background:var(--l-bg-2);box-shadow:inset 3px 0 0 var(--l-txt)}
   .geo-rel-item .ri-act{width:9px;height:9px;border-radius:2px;flex-shrink:0;margin-top:4px}
-  .geo-rel-item .ri-act.lp{background:rgba(181,52,31,.85)} .geo-rel-item .ri-act.pt{background:rgba(181,52,31,.42)} .geo-rel-item .ri-act.ex{background:rgba(154,106,8,.6)} .geo-rel-item .ri-act.sv{background:var(--l-bg-3)} .geo-rel-item .ri-act.bf{background:var(--fav)}
+  .geo-rel-item .ri-act.lp{background:rgba(181,52,31,.85)} .geo-rel-item .ri-act.pt{background:rgba(181,52,31,.42)} .geo-rel-item .ri-act.ex{background:rgba(154,106,8,.6)} .geo-rel-item .ri-act.sv{background:var(--l-bg-3)} .geo-rel-item .ri-act.bf{background:var(--ok)}
   .geo-rel-item .ri-main{flex:1}
   .geo-rel-item .ri-nm{font-size:13.5px;font-weight:600;color:var(--l-txt);margin-bottom:3px}
   .geo-rel-item .ri-desc{font-size:12px;color:var(--l-txt-2);line-height:1.45}
@@ -91,7 +91,7 @@
   .geo-ov-tbl th{font-family:var(--mono);font-size:8.5px;letter-spacing:.07em;text-transform:uppercase;
     color:var(--l-txt-4);text-align:left;font-weight:600;padding:0 10px 5px 0;border-bottom:1px solid var(--l-line)}
   .geo-ov-tbl td{padding:5px 10px 5px 0;border-bottom:1px solid var(--l-line);color:var(--l-txt-2);vertical-align:top}
-  .geo-ov-tbl td:first-child{white-space:nowrap}   /* "(> 1500 kVA)" must not break */
+  .geo-ov-tbl td:first-child{white-space:nowrap}   /* a range label must not break */
   .geo-ov-tbl .n{text-align:right;font-family:var(--mono);padding-right:14px}
   .geo-ov-tbl th.n{text-align:right}
   .gv-bad{color:#b5341f;font-weight:600}
@@ -109,15 +109,15 @@
     padding-top:7px;border-top:1px dotted var(--l-line)}
   .geo-rel-item.active .ri-chev{color:var(--l-txt-2)}
   .ri-actlab{font-weight:600}
-  .ri-counter{margin-top:6px;font-size:11px;line-height:1.4;padding:4px 8px;background:rgba(31,110,69,.08);border-left:2px solid var(--fav)}
+  .ri-counter{margin-top:6px;font-size:11px;line-height:1.4;padding:4px 8px;background:rgba(31,110,69,.08);border-left:2px solid var(--ok)}
   .ri-counter.none{background:var(--l-bg-2);border-left-color:var(--l-line-2)}
-  .ri-counter .rc-lab{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--fav)}
+  .ri-counter .rc-lab{font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ok)}
   .ri-counter.none .rc-lab{color:var(--l-txt-4)}
   .ri-counter .rc-prod{color:var(--l-txt);font-weight:600}
   .ri-counter .rc-prod.muted{color:var(--l-txt-4);font-weight:400;font-style:italic}
-  .geo-counter{background:rgba(31,110,69,.08);border:1px solid rgba(31,110,69,.3);border-left:3px solid var(--fav);padding:12px 15px;margin:14px 18px 0}
+  .geo-counter{background:rgba(31,110,69,.08);border:1px solid rgba(31,110,69,.3);border-left:3px solid var(--ok);padding:12px 15px;margin:14px 18px 0}
   .geo-counter.none{background:var(--l-bg-2);border-color:var(--l-line-2);border-left-color:var(--l-line-2)}
-  .geo-counter .tl{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fav);margin-bottom:6px}
+  .geo-counter .tl{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--ok);margin-bottom:6px}
   .geo-counter.none .tl{color:var(--l-txt-4)}
   .geo-counter .gc-prod{font-size:14px;font-weight:700;color:var(--l-txt);margin-bottom:4px}
   .geo-counter .gc-prod.muted{font-weight:500;color:var(--l-txt-3)}
@@ -126,14 +126,14 @@
   .geo-mix{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;margin-left:6px;vertical-align:middle}
   .geo-mix-chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;letter-spacing:.03em;color:#e2e8f0;background:rgba(255,255,255,0.1);border:1px solid #475569;padding:2px 7px;border-radius:4px;white-space:nowrap}
   .geo-mix-chip .mc-dot{width:7px;height:7px;border-radius:2px;flex-shrink:0}
-  .geo-mix-chip.lp .mc-dot{background:rgba(181,52,31,.85)}.geo-mix-chip.pt .mc-dot{background:rgba(181,52,31,.42)}.geo-mix-chip.ex .mc-dot{background:rgba(154,106,8,.6)}.geo-mix-chip.bf .mc-dot{background:var(--fav)}.geo-mix-chip.sv .mc-dot{background:var(--l-bg-3)}
+  .geo-mix-chip.lp .mc-dot{background:rgba(181,52,31,.85)}.geo-mix-chip.pt .mc-dot{background:rgba(181,52,31,.42)}.geo-mix-chip.ex .mc-dot{background:rgba(154,106,8,.6)}.geo-mix-chip.bf .mc-dot{background:var(--ok)}.geo-mix-chip.sv .mc-dot{background:var(--l-bg-3)}
   .geo-rel-empty{padding:40px 22px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--l-txt-4)}
   /* geo detail panel (light) */
   .geo-det{border-left:1px solid var(--d-line);background:var(--l-bg);color:var(--l-txt);overflow-y:auto;display:flex;flex-direction:column}
   .geo-d-h{padding:16px 18px;border-bottom:1px solid var(--l-line);background:var(--l-bg-2);border-left:3px solid transparent}
   .geo-d-h.dir-threat{border-left-color:var(--threat)}
   .geo-d-h.dir-watch{border-left-color:var(--watch)}
-  .geo-d-h.dir-fav{border-left-color:var(--fav)}
+  .geo-d-h.dir-client{border-left-color:var(--ok)}
   .geo-d-h .eyebrow{color:var(--l-txt-3);display:block;margin-bottom:8px}
   .geo-d-h .ct{font-size:16px;font-weight:600;letter-spacing:-.01em;color:var(--l-txt);line-height:1.25}
   .geo-d-h .gd-sub{font-size:11.5px;color:var(--l-txt-3);margin-top:6px;line-height:1.5}
@@ -143,7 +143,7 @@
   .geo-d-row:last-child{border-bottom:none}
   .geo-d-row .gm{width:8px;height:8px;border-radius:2px;flex-shrink:0;margin-top:4px}
   .geo-d-row .gm.lp{background:rgba(181,52,31,.85)} .geo-d-row .gm.pt{background:rgba(181,52,31,.42)}
-  .geo-d-row .gm.ex{background:rgba(154,106,8,.5)} .geo-d-row .gm.sv{background:var(--l-bg-3)} .geo-d-row .gm.bf{background:var(--fav)}
+  .geo-d-row .gm.ex{background:rgba(154,106,8,.5)} .geo-d-row .gm.sv{background:var(--l-bg-3)} .geo-d-row .gm.bf{background:var(--ok)}
   .geo-d-row .gt b{color:var(--l-txt);font-weight:600}
   .geo-d-row .gt{color:var(--l-txt-2)}
   .geo-d-row .gtype{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--l-txt-4);display:block;margin-top:2px}
@@ -215,7 +215,7 @@
   background: rgba(18, 22, 26, 0.96) !important;
   border: 1px solid rgba(255, 255, 255, 0.15) !important;
   border-radius: 8px !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6) !important;   /* was a 30px blur: costly to repaint under a moving pointer */
   color: var(--d-txt) !important;
   padding: 0 !important;
   max-width: 340px !important;
@@ -279,7 +279,7 @@
 
 .gm-koel-badge.present {
   background: rgba(63, 168, 106, 0.18);
-  color: var(--fav-badge);
+  color: var(--ok-badge);
   border: 1px solid rgba(63, 168, 106, 0.35);
 }
 
@@ -419,8 +419,13 @@
 }
 
 .geo-det-overlay-body.has-prod {
-  grid-template-columns: 340px 1fr;
+  /* wide enough for the overlap table: at 340px it clipped to its first column and stacked the rest */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);   /* 50 / 50: product list and comparison panel share the width equally */
 }
+.geo-det-overlay-body.has-prod .geo-ov-tbl { table-layout: auto; }
+.geo-det-overlay-body.has-prod .geo-ov-tbl td:first-child { white-space: normal; min-width: 120px; }
+.geo-det-overlay-body.has-prod .geo-ov-tests { gap: 6px; }
+.geo-det-overlay-body.has-prod .geo-ov-sp { margin-left: 0; width: 100%; }
 
 .geo-rel-overlay-list {
   height: 100%;
@@ -486,7 +491,7 @@
   white-space: nowrap;
 }
 /* a country the CLIENT holds and the map draws: the same green as its dot */
-.geo-note-chip.own { color: var(--fav-badge); border-color: rgba(63,168,106,.42) }
+.geo-note-chip.own { color: var(--ok-badge); border-color: rgba(63,168,106,.42) }
 .geo-note-chip.none { color: var(--d-txt-4); font-style: italic }
 /* every row behind this country is an analytical estimate, not a sourced activity */
 .geo-note-chip i {
@@ -521,7 +526,7 @@
   font-family: var(--mono);
   font-size: 10.5px;
   line-height: 1.45;
-  color: var(--fav-badge);
+  color: var(--ok-badge);
   background: rgba(9, 11, 13, 0.88);
   border: 1px solid #24262b;
   border-radius: 4px;
@@ -566,139 +571,124 @@
 .gm-comp-head { flex-wrap: wrap; gap: 2px 10px; }
 .gm-comp-name { min-width: 0; }
 
-/* KSSL footprint lookup panel. The content is deliberately tied to the served
-   footprint row shape: sparse source fields stay sparse instead of being filled by
-   inferred contract, budget, or host-entity text. */
-.geo-clear-action { margin: 0; padding: 7px 14px; height: 36px; display: inline-flex; align-items: center; }
-.geo-overlay-header { position: relative; background: #1c1c1f; color: #fff; padding: 14px 18px; border-bottom: 1px solid #2a2a2f; }
-.geo-hdr-controls { position: absolute; right: 18px; top: 12px; display: flex; align-items: center; gap: 10px; z-index: 30; }
-.geo-overlay-btn { position: static; margin: 0; color: #cbd5e1; border-color: #475569; background: rgba(255,255,255,.08); padding: 4px 10px; font-size: 11px; border-radius: 4px; }
-.geo-overlay-eyebrow { color: #94a3b8; display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
-.geo-overlay-header .geo-hdr-main { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-top: 4px; padding-right: 280px; }
-.geo-overlay-header .ct { font-size: 16px; color: #fff; font-weight: 700; margin: 0; line-height: 1.3; }
-.geo-overlay-header .geo-rel-sub { font-size: 12px; color: #cbd5e1; margin: 0; line-height: 1.4; }
-.geo-list-pad { padding: 14px 18px; }
-.geo-list-title { display: block; margin-bottom: 10px; }
-.geo-list-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
-.geo-inline-back { margin: 0; padding: 2px 8px; font-size: 10px; white-space: nowrap; }
-.geo-rel-overlay-list .geo-rel-item { padding: 12px 14px; border-radius: 6px; border: 1px solid var(--l-line); background: var(--l-bg); margin-bottom: 8px; }
-.geo-rel-overlay-list .geo-rel-item:hover { background: var(--l-bg-2); }
-.geo-rel-overlay-list .geo-rel-item.active { background: var(--l-bg-2); }
-.geo-rel-overlay-list .geo-rel-item .ri-nm { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.geo-empty, .geo-empty-inline { padding: 40px 22px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--l-txt-4); line-height: 1.6; }
-.geo-detail-content { padding: 20px 24px 32px; max-width: 980px; }
-.geo-detail-eyebrow { color: var(--l-txt-3); display: block; font-size: 10px; text-transform: uppercase; }
-.geo-detail-content h3 { font-size: 20px; font-weight: 700; color: var(--l-txt); margin: 4px 0 2px; line-height: 1.25; }
-.geo-detail-sub { font-size: 12.5px; color: var(--l-txt-3); margin-bottom: 18px; }
-.geo-data-card { padding: 14px 16px; background: var(--l-bg); border: 1px solid var(--l-line); border-left: 4px solid var(--l-line-2); border-radius: 6px; margin-bottom: 18px; }
-.geo-data-card.spec { background: rgba(181,52,31,.08); border-color: rgba(181,52,31,.3); border-left-color: #b5341f; }
-.geo-data-card.cat { background: rgba(154,106,8,.08); border-color: rgba(154,106,8,.3); border-left-color: #9a6a08; }
-.geo-data-card.none { background: var(--l-bg-2); }
-.geo-card-kicker, .geo-field-label { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--l-txt-3); }
-.geo-card-title { font-size: 14px; font-weight: 700; color: var(--l-txt); margin: 5px 0 4px; }
-.geo-card-copy, .geo-span-line { color: var(--l-txt-2); font-size: 12px; line-height: 1.5; }
-.geo-span-line { margin-top: 8px; font-size: 11px; }
-.geo-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--l-line); border: 1px solid var(--l-line); margin-bottom: 18px; }
-.geo-field { min-width: 0; padding: 10px 12px; background: var(--l-bg); }
-.geo-field-value { display: block; margin-top: 4px; font-size: 12.5px; color: var(--l-txt); line-height: 1.45; overflow-wrap: anywhere; }
-.geo-stat-value { display: block; margin-top: 5px; font-size: 18px; font-weight: 700; color: var(--l-txt); }
-.geo-note { padding: 12px 14px; margin-bottom: 18px; border: 1px solid var(--l-line); background: var(--l-bg); }
-.geo-note p, .geo-country-presence-row p, .geo-news-item p { margin: 5px 0 0; color: var(--l-txt-2); font-size: 12px; line-height: 1.55; }
-.geo-section-block { margin-top: 18px; }
-.geo-section-title { display: block; margin-bottom: 9px; }
-.geo-country-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.geo-country-presence-row { display: flex; gap: 10px; padding: 10px 12px; background: var(--l-bg); border: 1px solid var(--l-line); border-bottom: 0; color: var(--l-txt-2); font-size: 12px; line-height: 1.45; }
-.geo-country-presence-row:last-child { border-bottom: 1px solid var(--l-line); }
-.geo-country-presence-row .ri-act { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; margin-top: 4px; }
-.geo-country-presence-row b { display: block; color: var(--l-txt); font-weight: 600; }
-.geo-country-presence-row span { display: block; margin-top: 2px; font-family: var(--mono); font-size: 9px; color: var(--l-txt-3); text-transform: uppercase; letter-spacing: .04em; }
-.geo-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.geo-badge-inline { display: inline-block; padding: 5px 8px; border: 1px solid var(--l-line-2); background: var(--l-bg); color: var(--l-txt-2); font-size: 11px; border-radius: 4px; }
-.geo-source { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--l-line); background: var(--l-bg); border-bottom: 0; }
-.geo-source:last-of-type { border-bottom: 1px solid var(--l-line); }
-.geo-source a, .geo-news-item a { color: var(--link, #4d94d8); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
-.geo-source span { color: var(--l-txt-4); font-family: var(--mono); font-size: 9px; overflow-wrap: anywhere; }
-.geo-source-note { margin-top: 7px; color: var(--l-txt-3); font-size: 11px; line-height: 1.45; }
-.geo-band-table { width: 100%; border-collapse: collapse; font-size: 11.5px; background: var(--l-bg); border: 1px solid var(--l-line); }
-.geo-band-table th { padding: 7px 9px; text-align: left; border-bottom: 1px solid var(--l-line); color: var(--l-txt-3); font-family: var(--mono); font-size: 8.5px; letter-spacing: .07em; text-transform: uppercase; }
-.geo-band-table td { padding: 8px 9px; color: var(--l-txt-2); border-bottom: 1px solid var(--l-line); vertical-align: top; }
-.geo-band-table tr:last-child td { border-bottom: 0; }
-.geo-band-table td:first-child { color: var(--l-txt); font-weight: 600; }
-.geo-band-table small { display: block; margin-top: 3px; color: var(--l-txt-4); font-weight: 400; font-size: 9px; }
-.geo-news-item { padding: 10px 12px; margin-bottom: 7px; border: 1px solid var(--l-line); background: var(--l-bg); color: var(--l-txt); font-size: 12px; line-height: 1.45; }
-
-.geo-header-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-.geo-header-pill { padding: 4px 8px; border: 1px solid #4b5563; border-radius: 4px; background: rgba(255,255,255,.08); color: #d8dee7; font-family: var(--mono); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
-.geo-market-mode, .geo-products-mode { display: block; overflow: auto; }
-.geo-market-view { min-height: 100%; background: var(--l-bg); }
-.geo-market-list-head, .geo-products-list-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 16px 22px 12px; border-bottom: 1px solid var(--l-line); }
-.geo-market-list-head .geo-list-title, .geo-products-list-head .geo-list-title { margin: 0; color: var(--l-txt); font-family: var(--sans, inherit); font-size: 16px; font-weight: 700; letter-spacing: 0; text-transform: none; }
-.geo-market-count, .geo-products-count { flex: 0 0 auto; padding-top: 3px; color: var(--l-txt-3); font-family: var(--mono); font-size: 9px; letter-spacing: .08em; }
-.geo-market-row { display: flex; align-items: flex-start; gap: 12px; padding: 16px 22px; border-bottom: 1px solid var(--l-line); cursor: pointer; transition: background .15s ease; }
-.geo-market-row:hover { background: var(--l-bg-2); }
-.geo-market-row.own { cursor: default; }
-.geo-market-row.own:hover { background: var(--l-bg); }
-.geo-market-row .ri-act { width: 10px; height: 10px; flex: 0 0 auto; margin-top: 5px; border-radius: 2px; }
-.geo-market-row .ri-main { min-width: 0; flex: 1; }
-.geo-market-row .ri-nm { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--l-txt); font-size: 15px; font-weight: 700; }
-.geo-market-row .ri-desc { margin-top: 5px; color: var(--l-txt-2); font-size: 12px; line-height: 1.45; }
-.geo-market-row .ri-tag { display: block; margin-top: 7px; color: var(--l-txt-3); font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
-.geo-market-mark { padding-top: 4px; color: #147a4d; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
-.geo-market-footnote { padding: 16px 22px; color: var(--l-txt-3); font-family: var(--mono); font-size: 10px; line-height: 1.5; }
-.geo-products-view { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100%; }
-.geo-products-view:has(.geo-comparison-panel) { grid-template-columns: minmax(0, 1fr) minmax(420px, 46%); }
-.geo-products-list { min-width: 0; background: var(--l-bg); }
-.geo-products-list-head { align-items: center; }
-.geo-products-sub { margin-top: 4px; color: var(--l-txt-2); font-size: 12px; }
-.geo-product-record { display: flex; align-items: flex-start; gap: 12px; padding: 16px 22px; border-bottom: 1px solid var(--l-line); cursor: pointer; transition: background .15s ease; }
-.geo-product-record:hover, .geo-product-record.active { background: var(--l-bg-2); }
-.geo-product-record .ri-act { width: 10px; height: 10px; flex: 0 0 auto; margin-top: 5px; border-radius: 2px; }
-.geo-product-record .ri-act.indexed { background: #b08b37; }
-.geo-product-record-main { min-width: 0; flex: 1; }
-.geo-product-name { color: var(--l-txt); font-size: 15px; font-weight: 700; line-height: 1.35; }
-.geo-product-meta { margin-top: 4px; color: var(--l-txt-2); font-size: 12px; line-height: 1.4; }
-.geo-product-counter { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 7px 10px; border-left: 2px solid #267a52; background: rgba(38,122,82,.09); color: var(--l-txt-2); }
-.geo-product-counter.unmatched { border-left-color: #9ca3af; background: rgba(156,163,175,.12); }
-.geo-counter-label { color: #267a52; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; }
-.geo-product-counter.unmatched .geo-counter-label { color: var(--l-txt-3); }
-.geo-product-counter b { color: var(--l-txt); font-size: 11px; font-weight: 600; }
-.geo-verdict-pill { display: inline-flex; padding: 3px 7px; border: 1px solid currentColor; border-radius: 4px; font-size: 10px; line-height: 1.1; font-weight: 600; }
-.geo-verdict-pill.fav { color: #147a4d; }
-.geo-verdict-pill.threat { color: #c73721; }
-.geo-comparison-panel { min-width: 0; padding: 22px 24px 34px; border-left: 1px solid var(--l-line); background: var(--l-bg); overflow-y: auto; }
-.geo-comparison-panel h3 { margin: 5px 0 3px; color: var(--l-txt); font-size: 20px; line-height: 1.3; }
-.geo-comparison-verdict { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; color: var(--l-txt-2); font-size: 11px; }
-.geo-comparison-empty { padding: 10px 12px; border: 1px solid var(--l-line); background: var(--l-bg-2); color: var(--l-txt-2); font-size: 12px; line-height: 1.45; }
-.geo-advantage-line { margin: 12px 0 16px; color: #c73721; font-size: 12px; line-height: 1.55; font-weight: 600; }
-.geo-advantage-line span { display: block; }
-.geo-spec-table-wrap { overflow-x: auto; border: 1px solid var(--l-line); }
-.geo-spec-table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 11px; }
-.geo-spec-table th { padding: 8px 9px; text-align: left; border-bottom: 1px solid var(--l-line); background: var(--l-bg-2); color: var(--l-txt-3); font-family: var(--mono); font-size: 8.5px; letter-spacing: .06em; }
-.geo-spec-table th small { display: block; margin-top: 3px; color: var(--l-txt); font-family: inherit; font-size: 9px; letter-spacing: 0; }
-.geo-spec-table td { padding: 8px 9px; border-bottom: 1px solid var(--l-line); color: var(--l-txt-2); vertical-align: top; }
-.geo-spec-table tbody tr:last-child td { border-bottom: 0; }
-.geo-spec-table td:first-child { color: var(--l-txt); font-weight: 600; }
-.geo-spec-table td.winner { color: #c73721; font-weight: 700; }
-.geo-comparison-record { display: flex; flex-direction: column; gap: 4px; margin-top: 18px; padding: 12px 14px; border: 1px solid var(--l-line); background: var(--l-bg-2); color: var(--l-txt-2); font-size: 11px; line-height: 1.45; }
-.geo-comparison-record b { color: var(--l-txt); font-size: 13px; }
-.geo-comparison-record p { margin: 3px 0 0; }
-.geo-comparison-panel .geo-section-block { margin-top: 18px; }
-
-@media (max-width: 900px) {
-  .geo-det-overlay-body.has-prod { grid-template-columns: 280px 1fr; }
-  .geo-overlay-header .geo-hdr-main { padding-right: 150px; }
-  .geo-products-view:has(.geo-comparison-panel) { grid-template-columns: minmax(0, 1fr) 420px; }
+/* a site row (dealer branch, depot, factory) names who runs it instead of a product counter */
+.geo-rel-item .ri-counter.site { background: transparent; border-left-color: var(--l-line-2, #cfcdc3); }
+.geo-rel-item .ri-counter.site .rc-prod { font-weight: 600; }
+@media (max-width: 1200px) {
+  .geo-det-overlay-body.has-prod { grid-template-columns: 1fr; overflow-y: auto; }
+  .geo-det-overlay-body.has-prod .geo-rel-overlay-list { height: auto; max-height: 55%; border-right: 0; border-bottom: 1px solid var(--l-line); }
 }
 
-@media (max-width: 680px) {
-  .geo-det-overlay-body.has-prod { display: flex; flex-direction: column; overflow: auto; }
-  .geo-rel-overlay-list, .geo-det-product-sec { height: auto; max-height: none; overflow: visible; }
-  .geo-rel-overlay-list { border-right: 0; border-bottom: 1px solid var(--l-line); }
-  .geo-detail-content { padding: 18px 16px 28px; }
-  .geo-field-grid, .geo-country-stats { grid-template-columns: 1fr; }
-  .geo-overlay-header .geo-hdr-main { padding-right: 80px; }
-  .geo-hdr-controls { right: 12px; }
-  .geo-market-list-head, .geo-products-list-head { flex-direction: column; gap: 6px; }
-  .geo-products-view:has(.geo-comparison-panel) { display: flex; flex-direction: column; }
-  .geo-comparison-panel { border-left: 0; border-top: 1px solid var(--l-line); }
-}
+.geo-ov-tbl td:nth-child(3) { white-space: nowrap; }
+
+/* ---- product comparison on an overlap (lib/geo.js geoCompareHtml) ---- */
+.gc { margin: 4px 0 14px; }
+.gc-h { font-family: var(--mono); font-size: 8.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--l-txt-4); font-weight: 600; margin-bottom: 7px; }
+.gc-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin-bottom: 10px; }
+.gc-card { background: var(--l-bg); border: 1px solid var(--l-line); border-left: 3px solid var(--l-line-2); padding: 6px 9px; display: flex; flex-direction: column; gap: 2px; }
+.gc-card b { font-family: var(--mono); font-size: 18px; color: var(--l-txt); }
+.gc-card span { font-size: 10.5px; color: var(--l-txt-3); line-height: 1.3; }
+.gc-card.gc-rival { border-left-color: #b5341f; } .gc-card.gc-koel { border-left-color: #1f6e45; } .gc-card.gc-level { border-left-color: #9a6a08; }
+.gc-blk { margin-bottom: 8px; }
+.gc-bl { display: block; font-size: 11px; font-weight: 700; color: var(--l-txt-2); margin-bottom: 3px; }
+.gc-bl.rv { color: #b5341f; } .gc-bl.kv { color: #1f6e45; }
+.gc-blk ul { margin: 0; padding-left: 17px; } .gc-blk li { font-size: 11.5px; line-height: 1.45; color: var(--l-txt-2); margin-bottom: 2px; }
+.gc-s { color: var(--l-txt-3); font-family: var(--mono); font-size: 10px; }
+.gc-band { border-top: 1px solid var(--l-line); padding: 6px 0 2px; }
+.gc-band > summary, .gc-pair > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; color: var(--l-txt); list-style: none; }
+.gc-band > summary::-webkit-details-marker, .gc-pair > summary::-webkit-details-marker { display: none; }
+.gc-pair { margin: 5px 0 5px 10px; border-left: 2px solid var(--l-line); padding-left: 9px; }
+.gc-pair > summary { font-size: 11.5px; }
+.gc-names i { font-style: normal; color: var(--l-txt-4); }
+.gc-chip { font-family: var(--mono); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border: 1px solid currentColor; border-radius: 3px; }
+.gc-chip.gc-rival { color: #b5341f; } .gc-chip.gc-koel { color: #1f6e45; } .gc-chip.gc-level { color: #7a5406; } .gc-chip.gc-none { color: var(--l-txt-4); }
+.gc-score { font-family: var(--mono); font-size: 9.5px; color: var(--l-txt-3); }
+.gc-reason { font-size: 11px; color: var(--l-txt-3); margin: 5px 0; }
+.gc-tbl { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 6px; }
+.gc-tbl th { font-family: var(--mono); font-size: 8.5px; text-transform: uppercase; color: var(--l-txt-4); text-align: left; padding: 0 8px 4px 0; border-bottom: 1px solid var(--l-line); vertical-align: bottom; }
+.gc-tbl td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--l-line); color: var(--l-txt-2); vertical-align: top; }
+.gc-tbl td.gc-win { color: #1f6e45; font-weight: 700; } .gc-tbl td.gc-win.rv { color: #b5341f; }
+.gc-q { margin: 0 0 4px; padding-left: 16px; font-size: 11px; } .gc-q li.rv { color: #b5341f; } .gc-q li.kv { color: #1f6e45; }
+.gc-src { font-family: var(--mono); font-size: 9.5px; margin-bottom: 4px; } .gc-src a { color: var(--l-txt-3); }
+
+/* while a zoom gesture runs, the tooltip is hidden (GeoMap.jsx) and the map layers get their own compositor layer */
+.leaflet-container.geo-zooming .leaflet-tooltip-pane { visibility: hidden; }
+.leaflet-container .leaflet-tile-pane { will-change: transform; }
+
+/* the overlap panel's call to open the comparison popup, and its clickable band rows */
+.geo-cmp-open { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; background: var(--l-bg); color: var(--l-txt-2); border: 1px solid var(--l-line-2); padding: 6px 12px; cursor: pointer; margin: 0 0 10px; }
+.geo-cmp-open:hover { background: var(--l-bg-2); color: var(--l-txt); }
+.geo-ov-tbl tr.gr-click { cursor: pointer; } .geo-ov-tbl tr.gr-click:hover td { background: rgba(0,0,0,.04); }
+.gc-note { font-size: 11px; color: var(--l-txt-3); margin: 0 0 10px; line-height: 1.45; }
+.gc { padding: 14px 18px 4px; }
+.gc-blk { font-size: 11.5px; color: var(--l-txt-2); line-height: 1.5; margin: 0 0 8px; padding: 6px 9px; background: var(--l-bg-1); border-left: 3px solid var(--l-line-2); }
+
+/* beside the popup the list column is narrow: the client's answer column is shown in the popup, so drop it here */
+.geo-det-overlay-body.has-prod .geo-ov-tbl th:nth-child(4),
+.geo-det-overlay-body.has-prod .geo-ov-tbl td:nth-child(4) { display: none; }
+
+/* detailed comparison, in the 30% popup */
+.gc-sum { grid-template-columns: 1fr 1fr; }
+.gc-sect { font-family: var(--mono); font-size: 9px; letter-spacing: .07em; text-transform: uppercase; color: var(--l-txt-4); font-weight: 600; margin: 14px 0 6px; padding-top: 8px; border-top: 1px solid var(--l-line); }
+.gc-dim { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 8px; }
+.gc-dim th { font-family: var(--mono); font-size: 8.5px; text-transform: uppercase; color: var(--l-txt-4); text-align: left; padding: 0 6px 4px 0; border-bottom: 1px solid var(--l-line); }
+.gc-dim td { padding: 3px 6px 3px 0; border-bottom: 1px solid var(--l-line); color: var(--l-txt-2); }
+.gc-dim td:nth-child(n+2), .gc-dim th:nth-child(n+2) { text-align: right; }
+.gc-dim td.gc-win { color: #1f6e45; font-weight: 700; } .gc-dim td.gc-win.rv { color: #b5341f; }
+.gc-gap { font-family: var(--mono); font-size: 10px; color: var(--l-txt-3); text-align: right; white-space: nowrap; }
+.gc-lead { font-size: 11px; line-height: 1.45; margin: 3px 0; color: var(--l-txt-2); } .gc-lead.rv b { color: #b5341f; } .gc-lead.kv b { color: #1f6e45; }
+.gc-grp td { font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--l-txt-3); background: var(--l-bg-1); padding: 4px 6px !important; }
+.gc-ql { font-family: var(--mono); font-size: 9px; text-transform: uppercase; color: var(--l-txt-4); margin: 6px 0 2px; }
+.gc-tbl { font-size: 10.5px; table-layout: fixed; } .gc-tbl td, .gc-tbl th { word-break: break-word; }
+.gc-tbl th:first-child, .gc-tbl td:first-child { width: 34%; } .gc-tbl th:last-child, .gc-tbl td:last-child { width: 11%; }
+.gc-pair > summary { flex-direction: column; align-items: flex-start; gap: 3px; }
+
+/* READABILITY of the comparison popup: body text in the app's sans face at 12-13px, darker greys, sentence-case
+   chips; the mono face is kept only for short uppercase labels, at a size and contrast that can be read. */
+.gc { font-family: var(--sans); font-size: 13px; color: var(--l-txt-2); font-variant-numeric: tabular-nums; }
+.gc-card b { font-size: 22px; }
+.gc-card span { font-size: 12.5px; line-height: 1.35; color: var(--l-txt-2); }
+.gc-note { font-size: 12.5px; line-height: 1.55; color: var(--l-txt-2); }
+.gc-sect, .gc-ql, .gc-dim th, .gc-tbl th, .gc-grp td { font-size: 10.5px; color: var(--l-txt-3); letter-spacing: .05em; }
+.gc-dim { font-size: 12.5px; } .gc-dim td { padding: 5px 6px 5px 0; color: var(--l-txt); }
+.gc-gap, .gc-score { font-family: var(--sans); font-size: 12px; color: var(--l-txt-2); }
+.gc-band > summary { font-size: 14px; gap: 6px 10px; }
+.gc-pair > summary { font-size: 13px; gap: 4px; }
+.gc-names { font-size: 13.5px; color: var(--l-txt); line-height: 1.4; }
+.gc-chip { font-family: var(--sans); font-size: 11.5px; font-weight: 600; letter-spacing: 0; text-transform: none; padding: 2px 8px; border-radius: 4px; }
+.gc-reason, .gc-lead, .gc-blk { font-size: 12.5px; line-height: 1.55; color: var(--l-txt-2); }
+.gc-tbl { font-size: 12px; } .gc-tbl td { padding: 5px 6px 5px 0; color: var(--l-txt); line-height: 1.4; } .gc-tbl th { padding-bottom: 5px; }
+.gc-tbl td.gc-win { font-weight: 700; }
+.gc-q { font-size: 12.5px; line-height: 1.5; } .gc-src { font-family: var(--sans); font-size: 12px; } .gc-src a { color: var(--l-txt-2); text-decoration: underline; }
+.gc-pair { margin: 8px 0 8px 8px; padding-left: 12px; }
+
+/* the popup's scroll column is a flex column: without this its header and body shrank to fit and the header's
+   border cut through its own title once the body grew tall */
+.geo-det-product-scroll > * { flex-shrink: 0; }
+.geo-det-product-scroll > .geo-d-h { min-height: max-content; }
+
+/* HOVER CARD ROWS: the list is a flex column with a max-height, so its rows shrank to fit and clipped their own
+   second line ("Export / supply · Sales / service site" cut in half), and a role that fitted beside the name sat
+   beside it while a longer one dropped under it. Rows keep their height, every role sits under its name, and the
+   list scrolls only if it really is taller than the card allows (five rows is about 270px). */
+.gm-comp-list { max-height: 300px; }
+.gm-comp-row { flex-shrink: 0; }
+.gm-comp-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+.gm-comp-name { font-size: 13px; line-height: 1.3; }
+.gm-comp-role { font-family: var(--sans); font-size: 11px; line-height: 1.4; color: var(--d-txt-2); }
+.gm-mat-line { font-size: 11px; }
+.gm-more { font-size: 11px; color: var(--d-txt-3); padding: 2px 2px 0; }
+
+/* the competitor's product list that leads the market panel */
+.geo-pl-h { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; padding: 14px 22px 2px; }
+.geo-pl-t { font-size: 15px; font-weight: 700; color: var(--l-txt); }
+.geo-pl-n { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--l-txt-3, var(--l-txt-4)); }
+.geo-pl-hint { font-size: 12.5px; color: var(--l-txt-2); padding: 0 22px 10px; }
+.geo-rel-item[data-cmp-prod] .ri-nm { font-size: 14px; }
+.geo-rel-item[data-cmp-prod] .ri-counter .gc-chip { margin-left: 6px; white-space: nowrap; }
+
+/* The activity word is stored text ("Local production") and its slug is the class: the same four colours the old
+   two-letter codes carried, keyed on the stored words. A word with no rule here is simply unstyled. */
+.geo-rel-item .ri-act.local-production{background:rgba(181,52,31,.85)} .geo-rel-item .ri-act.licensed-production{background:rgba(181,52,31,.42)} .geo-rel-item .ri-act.export{background:rgba(154,106,8,.6)} .geo-rel-item .ri-act.sales-and-service{background:var(--l-bg-3)}
+.ri-actlab.local-production{color:#b5341f}.ri-actlab.licensed-production{color:#9a6a08}.ri-actlab.export{color:#9a6a08}.ri-actlab.sales-and-service{color:var(--l-txt-3)}
+.geo-mix-chip.local-production .mc-dot{background:rgba(181,52,31,.85)}.geo-mix-chip.licensed-production .mc-dot{background:rgba(181,52,31,.42)}.geo-mix-chip.export .mc-dot{background:rgba(154,106,8,.6)}.geo-mix-chip.sales-and-service .mc-dot{background:var(--l-bg-3)}

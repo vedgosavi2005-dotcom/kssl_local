@@ -1,98 +1,150 @@
 id: tender
-title: Tender extraction from one notice
-version: 1
+title: Tender extraction from one stored notice record
+version: 2
 fills: [market_tender, market_tender_requirement, market_tender_source, market_tender_closing_window]
 shows_on: Tenders page (card, drawer facts, "What the tender requires", sources, closing line), Market Intelligence, Top opportunity
 cadence: daily
-# HOW NEW NOTICES ARE FED. The model never searches for tenders; a routine or a person hands it a URL:
-#   1. insert a STUB staging.market_tender row: tender_id = any new bigint, title = the link text or the URL host
-#      (title and status are NOT NULL, so use that text and status 'open'), url_kind = 'notice' or 'award',
-#      source_url = the notice URL;
-#   2. insert one staging.market_tender_source row for it: tender_id, source_url = the same URL, is_primary = true,
-#      portal_name if known (source_id = any new bigint).
-# `python -m prompts.run --due` then picks the source row up (a source_id already run with this prompt version is
-# skipped), fetches the page, and the loader REPLACES the stub: same tender_id, real title/dates/status.
-# A corrigendum or award notice for a known tender = a new source row with the EXISTING tender_id and url_kind
-# 'notice' or 'award' (a different source_id, so it runs again and updates the same tender).
-# url_kind 'portal' rows (listing pages) are ignored here.
-# No web search: the notice text is the only document.
+# v2 (prompt rebuild, step 5; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.2.2, C):
+#  - the document is the STORED API RECORD of the notice (staging.tender_raw.raw, via prompts/tender_docs.py), not the web page:
+#    TED, GeM and the other portals answer a WAF challenge, a login or a PDF to plain HTTP. A stub with no raw row (a hand-fed
+#    link) still falls back to fetching the page (`fetch_url`).
+#  - the notice STATUS is not asked of the model: the stub's status (open / closing / awarded / closed) was set by code from the API's
+#    notice type and deadline (backend/harvest_tenders.py notice_state); the loader keeps it. The model reads dates and facts.
+#  - new: category judged from the 10 vocabulary categories, the KSSL product the item matches (kssl_model, a first hint; the
+#    assessment prompt confirms it), award facts (awarded_to, award_date, award_value_text; derive.award_to_signal turns an award
+#    to a tracked competitor into a competitive signal by rule), "Eligibility:" / "Evaluation:" requirement rows when the record states them.
+# HOW NEW NOTICES ARE FED. The model never searches for tenders. `python -m backend.harvest_tenders` fetches the APIs into
+# staging.tender_raw (tagging defence / KSSL relevance by code) and `stage` creates one STUB market_tender + market_tender_source
+# row per notice that is open, closing or awarded (or closed within the last 12 months). This prompt then fills the stub:
+# same tender_id, real title / dates / value / requirements. A corrigendum or award notice for a known tender = a new
+# market_tender_source row with the EXISTING tender_id. Subjects are ordered by KSSL priority (portfolio categories first, open
+# before awarded before closed, KSSL's own market first, soonest closing first), so `--limit N` always takes the best N.
 
 subject:
   key: source_id
   query: |
-    SELECT s.source_id, s.tender_id, s.source_url, s.portal_name, t.url_kind
+    SELECT s.source_id, s.tender_id, s.source_url, s.portal_name, t.url_kind, t.status AS stub_status,
+           r.raw_id, r.source_api, CASE WHEN r.raw_id IS NULL THEN s.source_url END AS fetch_url
     FROM staging.market_tender_source s
     JOIN staging.market_tender t ON t.tender_id = s.tender_id
+    LEFT JOIN staging.tender_raw r ON r.tender_id = s.tender_id
     WHERE s.source_url IS NOT NULL AND t.url_kind IN ('notice', 'award')
-    ORDER BY s.retrieved_at DESC NULLS FIRST, s.source_id
+      AND (r.raw_id IS NULL OR 'kssl_relevant' = ANY(r.defence_tags))
+      AND NOT (t.status = 'closed' AND coalesce(t.closing_date, t.published_date, current_date) < current_date - 365)
+    ORDER BY
+      CASE WHEN r.defence_tags && ARRAY['kssl:artillery','kssl:ammunition','kssl:precision_forgings','kssl:small_arms',
+                                        'kssl:protected_vehicles','kssl:armoured_vehicle_mro'] THEN 0
+           WHEN r.raw_id IS NULL THEN 0 ELSE 1 END,
+      CASE t.status WHEN 'open' THEN 0 WHEN 'closing' THEN 0 WHEN 'awarded' THEN 1 ELSE 2 END,
+      CASE WHEN t.country_name = (SELECT country FROM staging.client_account ORDER BY client_id LIMIT 1) THEN 0
+           WHEN t.country_name IN (SELECT l.country_name FROM staging.competitive_geo_company_presence p
+                                   JOIN staging.competitive_geo_location l ON l.location_id = p.location_id
+                                   WHERE p.company_role = 'client') THEN 1 ELSE 2 END,
+      t.closing_date NULLS LAST, s.source_id
   documents:
-    - from: url                  # the runner fetches the notice (page or PDF) text
-      field: source_url
+    - from: tender_raw           # the stored API record of the notice (no fetch) ...
+      field: raw_id
+    - from: url                  # ... else (a hand-fed stub with no raw row) the runner fetches the notice page
+      field: fetch_url
 
-context: [client, categories]
+context: [client, client_products, categories]
 
 task: |
-  TASK tender — extract one tender from the notice below. Use ONLY the notice text; web search is
-  off. Every value must be stated in the notice: quote it (url = {{subject.source_url}}). Do not judge
-  whether {{client.name}} should bid; that is another task.
+  TASK tender - extract one tender from the stored notice record below. The record is the API's own data for the notice, one
+  "field: value" line each. Use ONLY the record; web search is off. Every value must be stated in it. SOURCES (keep the answer short):
+  give "_sources" only for value_amount, quantity, closing_date, awarded_to, award_date and award_value_text, one entry each
+  (url = {{subject.source_url}}, quote = the record line as given, at most 100 characters). The loader records the notice itself as
+  the source of every other field. The notice text may be in any language: keep names and numbers exactly, and write descriptions
+  in plain English. Do not judge whether {{client.name}} should bid; that is another task.
 
-  If the notice is not a procurement of defence or security goods or services (office supplies,
-  catering, civil works): "records": [] and "skip_reason" = one sentence.
+  If the notice is not a procurement of goods or services for armed forces, security forces or the defence industry, or the item is
+  plainly outside defence hardware and its support (food, clothing, furniture, building and garden work, cleaning, medical supplies,
+  office IT, a grant or a decision that buys nothing): "records": [] and "skip_reason" = one sentence naming the item.
+  A defence item that fits none of the CATEGORIES is still a record (category empty).
 
   One record, table market_tender:
-   - title: the procurement title as published (English if the notice gives one, else the original
-     language); do not rewrite or shorten. title_localized: the title in the notice's original
-     language when the notice also gives an English title; else null
-   - buyer_name: the contracting authority as written. country_name: the buyer's country, English
-     short name (for a multinational agency, the country of the address in the notice)
-   - ref_category: JUDGEMENT. The one name from CATEGORIES the procured item belongs to, from the
-     item description; null if none fits (defence item outside the categories)
-   - description: 2-4 sentences: what is procured, for whom, quantity and place, as stated
-   - value_amount: the contract value stated for the whole tender as a plain number in FULL units of
-     value_currency ("EUR 12.5 M" -> 12500000). Do not add up lot values; if only lot values are
-     stated, null. Bid security / EMD is not the contract value. value_currency: ISO 4217.
-     value_text: the value exactly as written (amount, currency, scale only)
-   - quantity: a plain number, only when ONE total quantity is stated; quantity_unit: its unit word.
-     Per-lot quantities go to requirement rows
-   - status: from the notice type only: open (contract notice, solicitation, RFP, RFQ), awarded
-     (contract award notice), closed (cancellation, withdrawal, or the notice says bidding is
-     closed). Never change status because a date has passed. Allowed: open | awarded | closed
-   - published_date: the date the notice was published or dispatched
-   - closing_date: the deadline for submitting bids (not for questions, not the opening date);
-     give _precision. deadline_text: only when the deadline is not a calendar date ("30 days from
-     publication"); else null
-   - notice_reference: the notice number as written; tender_number: the buyer's own tender / RFP
-     number if different; else null
-   - frequency: one-off, framework, recurring or similar, as the notice states; else null
-   - latest_milestone: the latest procedural step the notice states (e.g. "Bids due 2026-10-20",
-     "Contract awarded 2026-09-30"); else null
+   - title: the procurement title as published. TED: the lot title (title-lot) when given, else notice-title without its
+     leading "Country - Category -" parts. Do not shorten or rewrite. title_localized: the title in the original language
+     when the record also gives an English one; else null
+   - buyer_name: the contracting authority as written; when the record gives only an identifier (a French SIRET), write
+     it as given. country_name: the buyer's country, English short name
+   - ref_category: JUDGEMENT. The one name from CATEGORIES that the procured ITEM belongs to (judge the item, not the buyer): Artillery
+     (guns, howitzers, mortars, barrels, gun parts), Ammunition (shells, fuzes, cartridges, rockets, grenades, explosives),
+     Protected & Armoured Vehicles, Armoured Vehicle MRO (repair, overhaul and spares of armoured vehicles), Small Arms (rifles,
+     pistols, machine guns, parts), UAVs & Drones, Missiles & Air Defence, Marine / Naval, Precision Components & Forgings (forged and
+     machined parts). "Other" only for an item like the CLIENT PRODUCTS listed under Other. A bid for several unrelated items: the
+     category of the first item. Empty when none fits
+   - ref_client_product: JUDGEMENT. The one CLIENT PRODUCTS name the item matches by kind (a 155 mm shell is not a 105 mm gun); empty
+     when no product is of that kind or the item is a spare part, service or accessory of a product not listed
+   - description: 2-4 plain sentences: what is procured, for whom, how many, where and by when, as the record states. No opinion
+   - value_amount: the contract value stated for the whole notice, a plain number in full units of value_currency ("EUR 12.5 M" ->
+     12500000). Take it from total-value, estimated-value, tender value or contract value. Do not add up lot values; if only lot
+     values are given, take the lot value only when there is one lot, else null. A bid security / EMD / guarantee is not the value.
+     value_currency: ISO 4217. value_text: the value exactly as written (amount, currency, scale only)
+   - quantity: a plain number, only when ONE total quantity is stated (GeM b_total_quantity, a single item line); quantity_unit its
+     unit word in English. Several items with different units: null (the item rows go to requirement rows)
+   - published_date: the date the notice was published (publication-date, harvest.published_at, date)
+   - closing_date: the deadline for bids (a tender-period end, deadline-receipt-tender-date-lot, final_end_date_sort, harvest.deadline_at);
+     give _precision. Not a question deadline and not a contract end date. deadline_text: only when the deadline is not a calendar date
+   - notice_reference: the notice number as written (harvest.notice_id); tender_number: the buyer's own number if different
+   - frequency: one-off, framework or similar, only as the record states; latest_milestone: the latest procedural step the record states
+     ("Bids due 2026-10-20", "Contract signed 2026-03-30")
    - local_presence_requirement, registration_requirement, submission_method: as stated; else null
+   - AWARD NOTICES only (the record has awards / winner / suppliers / contracts, or notice-type is a contract award): awarded_to = the
+     winning company's NAME as written (null when only an identifier is given), award_date = the signing or award date, award_value_text =
+     the awarded value as written with currency. Leave all three null on a call for bids.
    children:
-   market_tender_requirement (5-15 rows, one per stated requirement, in notice order): technical
-   requirements (calibre, range, standard), quantity per lot, delivery period and place,
-   eligibility (local content, domestic supplier, past performance, turnover), bid security,
-   warranty, offsets:
-   - requirement_type: short English name, e.g. "Calibre", "Delivery period", "Local content"
-   - description: the requirement and its value as written in the notice; null if the notice names
-     the requirement without giving its value (say so in source_text)
+   market_tender_requirement (0-12 rows, one per stated requirement, in record order; none when the record states none. Do not write
+   a row that repeats the title, the quantity or a date already given above; a record with only a title and a quantity has no rows): item and
+   technical requirements (what, calibre, standard), quantity per item or lot, delivery period and place, warranty, offsets, and
+   - eligibility rows, requirement_type starting "Eligibility: " (local content, domestic supplier, registration, past performance,
+     turnover, bid security / EMD, certification, security clearance), and
+   - evaluation rows, requirement_type starting "Evaluation: " (lowest price, quality-price weights, award criteria),
+   each only when the record states it. For each row:
+   - requirement_type: short English name, e.g. "Calibre", "Delivery period", "Eligibility: local content", "Evaluation: award criteria"
+   - description: the requirement and its value as the record gives it (in English); null if the record names it without a value
    - quantity, quantity_unit: only for a quantity requirement
-   - equipment_scope: the lot or item it applies to when lots differ; use_case: intended use or
-     platform as stated; else null
-   - source_text: the verbatim notice sentence (max 300 characters)
+   - equipment_scope: the lot or item it applies to when lots differ; use_case: intended use as stated; else null
+   - source_text: the verbatim record line it comes from (max 300 characters)
    market_tender_source (exactly one row, the notice itself):
-   - publisher: the issuing organisation; portal_name: the portal as named in the notice;
-     source_type: notice, award or annex; access_note: login or registration needed to read the
-     documents, as stated; status_check_url: a URL the notice gives for checking status; else null
+   - publisher: the issuing organisation; portal_name: the portal as named in the record or {{subject.portal_name}};
+     source_type: notice or award; access_note: login or registration needed to read the documents, only if the record says so
    market_tender_closing_window (exactly one row):
-   - milestone_text: the dates the notice states, in order, e.g. "Questions by 2026-10-05; bids due
-     2026-10-20; opening 2026-10-21"
-   - is_extension_confirmed: true only when the notice (a corrigendum) states the deadline was extended
+   - milestone_text: the dates the record states, in order, e.g. "Published 2026-10-02; bids due 2026-10-20"
+   - clarification_deadline, opening_date: the dates when stated, else null
+   - is_extension_confirmed: true only when the record states the deadline was extended
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, one idea each. Name the thing and the
+  number with its unit. No hype, no "leverage", "robust", "state-of-the-art", "end-to-end". If a value is not in the record, leave it
+  null; do not write "not stated" sentences into description.
+
+  EXAMPLE of the shape only. Every name and figure in it is fictional; do not reuse any of them.
+  {"prompt_id": "tender", "subject": "Veland MoD: 24 towed 155 mm guns", "skip_reason": null, "records": [
+   {"table": "market_tender", "values": {"title": "Supply of 24 towed 155 mm howitzers", "buyer_name": "Ministry of Defence of Veland",
+     "country_name": "Veland", "ref_category": "Artillery", "ref_client_product": null,
+     "description": "The Veland army buys 24 towed 155 mm howitzers with 52 calibre barrels. Delivery is within 36 months of signing.",
+     "value_amount": 310000000, "value_currency": "EUR", "value_text": "EUR 310,000,000", "quantity": 24, "quantity_unit": "howitzers",
+     "published_date": "2026-10-02", "closing_date": "2026-12-15", "notice_reference": "123456-2026", "frequency": "one-off",
+     "latest_milestone": "Bids due 2026-12-15", "awarded_to": null,
+     "_reason": {"ref_category": "Towed 155 mm howitzers are Artillery.", "ref_client_product": "No listed product is a towed 155 mm gun of 52 calibre."},
+     "_precision": {"closing_date": "day"},
+     "_sources": {"closing_date": [{"url": "{{subject.source_url}}", "quote": "deadline-receipt-tender-date-lot: 2026-12-15"}],
+                  "value_amount": [{"url": "{{subject.source_url}}", "quote": "total-value: 310000000"}]}},
+    "children": {
+     "market_tender_requirement": [
+      {"requirement_type": "Calibre", "description": "155 mm, barrel 52 calibres", "source_text": "description-lot: Towed howitzer 155 mm, 52 calibres"},
+      {"requirement_type": "Eligibility: local content", "description": "30 percent local content", "source_text": "description-lot: ... minimum 30 percent local content"}],
+     "market_tender_source": [{"publisher": "Ministry of Defence of Veland", "portal_name": "TED", "source_type": "notice"}],
+     "market_tender_closing_window": [{"milestone_text": "Published 2026-10-02; bids due 2026-12-15", "is_extension_confirmed": false}]}}],
+   "not_found": ["market_tender.awarded_to"], "conflicts": []}
 
   CLIENT: {{context.client}}
+  CLIENT PRODUCTS ("name (category)"):
+  {{context.client_products}}
   CATEGORIES:
   {{context.categories}}
 
-  DOCUMENT (notice text, {{subject.source_url}}, portal {{subject.portal_name}}):
+  NOTICE ({{subject.source_url}}, portal {{subject.portal_name}}):
   {{documents}}
 
 output:
@@ -105,25 +157,29 @@ output:
       buyer_name: {required: true}
       country_name: {required: true, max: 160}
       category_id: {judgement: true, from_ref: ref_category}
-      description: {}
+      kssl_model: {judgement: true, from_ref: ref_client_product}
+      description: {plain: warn}
       value_amount: {type: number}
       value_currency: {max: 3}
       value_text: {}
       quantity: {type: number}
       quantity_unit: {max: 80}
-      status: {required: true, enum: [open, awarded, closed]}
       published_date: {type: date}
       closing_date: {type: date}
-      deadline_text: {max: 255}
-      notice_reference: {max: 255}
-      tender_number: {max: 255}
-      frequency: {max: 255}
+      deadline_text: {max: 120}
+      notice_reference: {max: 160}
+      tender_number: {max: 160}
+      frequency: {max: 80}
       latest_milestone: {}
       local_presence_requirement: {}
       registration_requirement: {}
       submission_method: {}
+      awarded_to: {max: 200}
+      award_date: {type: date}
+      award_value_text: {max: 120}
     loader:
       tender_id: subject.tender_id               # replaces the stub row
+      status: subject.stub_status                # set by code from the notice type and the deadline (harvest_tenders.notice_state)
       category_text: name_of_category_id
       issuer_display: copy_of_buyer_name
       country_code: country_reference_table
@@ -133,15 +189,16 @@ output:
       created_at: keep_stub_value
       updated_at: run_time
       # days_remaining is NOT stored (it goes stale; the page computes it from closing_date).
-      # kssl_fit, kssl_model, lean_code, lean_text, rank_position, expected_revenue_text: set by derive.tender_fit (prompt tender_assessment).
+      # kssl_fit, lean_code, lean_text, rank_position are set by the assessment (derive.tender_fit, derive.pursue_label).
     children:
       market_tender_requirement:
         columns: [requirement_type, description, quantity, quantity_unit, equipment_scope, use_case, source_text]
         required: [requirement_type]
-        max: {source_text: 300}
+        max: {source_text: 300, requirement_type: 80}
+        plain: {description: warn}
         loader: {requirement_id: new_id, tender_id: parent_id, display_order: index}
       market_tender_source:
-        columns: [publisher, portal_name, source_type, access_note, status_check_url]
+        columns: [publisher, portal_name, source_type, access_note]
         enum: {source_type: [notice, award, annex]}
         loader:
           source_id: subject.source_id           # updates the existing row
@@ -150,7 +207,7 @@ output:
           is_primary: true
           retrieved_at: run_time
       market_tender_closing_window:
-        columns: [milestone_text, is_extension_confirmed]
+        columns: [milestone_text, clarification_deadline, opening_date, is_extension_confirmed]
         loader:
           closing_window_id: new_id
           tender_id: parent_id
@@ -160,3 +217,5 @@ output:
           published_date: copy_of_tender_published_date
           extension_checked_at: run_time
           # days_remaining is NOT stored
+
+derive: [tender_source_facts, award_to_signal]

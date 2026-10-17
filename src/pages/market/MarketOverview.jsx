@@ -1,45 +1,54 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { bucketTenders } from "../../lib/tenderCalc";
+import { bucketTenders } from "../../lib/overview";
+import { MARKET_SECTIONS as SECTIONS } from "../../lib/chrome";
 import { formatDate } from "../../utils/formatDate";
-import { Review } from "../../components/review/Review";
+import MarketOutlook from "../../components/marketOutlook/MarketOutlook";
+import { outlook } from "../../lib/marketOutlook";
+import { formatTotals } from "../../lib/tenderValue";
 import {
   CATEGORY_COLOR,
   catOf,
   closingWindows,
   demandSplit,
+  hostOf,
   initCategoryPalette,
+  portalRows,
   reportFacets,
   reportRows,
   sliceLabel,
   windowOf,
 } from "../../lib/marketOverview";
+import { Review } from "../../components/review/Review";
 
-/* ===== Market Intelligence =====
-   Four tabs (active, by category, awarded, closed), a country / category filter, two charts
-   in the active section, and the evidence table. Every number is counted from the tenders
-   `useData()` serves; open / awarded / closed is the stored `status`. A tender with no
-   stored category is left out of the category views. */
+/* ===== Market Overview =====
+   Ported from the sibling JSW EV deployment (its own source, not its bundle) so the two
+   read as one product. Same five-section tab strip, same country filter beneath it, same
+   two charts in the active-tenders section only, same evidence table underneath.
+
+   What is NOT the same is the demand split. JSW cuts its corpus into Product /
+   Product + MRO / MRO-only, which is a statement about what a bus tender contracts for
+   and has no defence equivalent — nothing in these 89 rows says whether a shell contract
+   includes servicing. The honest cut on this corpus is the one the rows carry: `cat`.
+   So sections 03-05 are the LIFECYCLE cuts this corpus does have (awarded, closed) and
+   the pie navigates by category instead.
+
+   Every number is counted from the tenders `useData()` serves. Where the corpus holds
+   nothing — no tender on record publishes a value, none carries a bid verdict — the
+   measure is absent or reads "—", never 0 and never a column of dashes. */
 
 const fmt = (n) => new Intl.NumberFormat("en-IN").format(n);
 const TABLE_PAGE = 25;
 const NO_DATE = "No date published";
 
-const SECTIONS = [
-  { id: "active", label: "Number of active tenders" },
-  { id: "category", label: "By category" },
-  { id: "awarded", label: "Awarded" },
-  { id: "closed", label: "Closed" },
-];
-
 const SECTION_KEY = "kssl_market_section";
 const savedSection = () => {
   try {
     const s = localStorage.getItem(SECTION_KEY);
-    return SECTIONS.some((x) => x.id === s) ? s : "active";
+    return SECTIONS.some((x) => x.id === s) ? s : "outlook";
   } catch (e) {
-    return "active";
+    return "outlook";
   }
 };
 
@@ -137,7 +146,7 @@ function PieChart({ rows, total, colorOf, onPick, examples }) {
    chroma floor, normal-vision separation, contrast). The grey is excluded from that
    check on purpose: it is deliberately off-scale, as the note above says. */
 const WINDOW_COLORS = {
-  "Up to 7 days": "#c03a3a",
+  "1–7 days": "#c03a3a",
   "8–14 days": "#a87d16",
   "15–30 days": "#13906a",
   "30+ days": "#3670bd",
@@ -157,7 +166,7 @@ function ColumnChart({ rows, total, examples }) {
           <span className="ovb-n">{fmt(r.n)}</span>
           <span className="ovb-track">
             {/* min 2px so a bucket of 1 is a mark, not an invisible zero */}
-            <i style={{ height: `max(2px, ${(r.n / max) * 100}%)`, background: WINDOW_COLORS[r.key] || "var(--fav-badge)" }} />
+            <i style={{ height: `max(2px, ${(r.n / max) * 100}%)`, background: WINDOW_COLORS[r.key] || "var(--ok-badge)" }} />
           </span>
           <span className="ovb-lab">{r.key}</span>
           <span className="ovb-pct">{total ? `${Math.round((r.n / total) * 100)}%` : ""}</span>
@@ -169,6 +178,7 @@ function ColumnChart({ rows, total, examples }) {
 
 /* A chart card: heading, note, and whatever chart the question deserves. */
 function Chart({ title, note, empty, show, children }) {
+
   return (
     <section aria-label={title} className="ovc">
       <div className="ovc-h">
@@ -182,7 +192,7 @@ function Chart({ title, note, empty, show, children }) {
 
 export default function MarketOverview() {
   const { data } = useData();
-  const { setScope, takePending } = useAppState();
+  const { setScope, takePending, jumpTo } = useAppState();
   const [section, setSectionRaw] = useState(savedSection);
   const [rows, setRows] = useState(TABLE_PAGE);
   const [country, setCountry] = useState("all");
@@ -215,6 +225,7 @@ export default function MarketOverview() {
      builds, so it must run before the facets, demandSplit and the filter's dots. */
   useMemo(() => initCategoryPalette(tenders), [tenders]);
   const { open, awarded, closed } = useMemo(() => bucketTenders(tenders), [tenders]);
+  const ol = useMemo(() => outlook(data, open, new Date(), closed), [data, open, closed]);
 
   /* The report is about live demand — awarded and closed rows have their own sections,
      and counting them into the charts would inflate every number on the page. */
@@ -230,12 +241,35 @@ export default function MarketOverview() {
      select was already built this way; the category select was ranked over all 136
      tenders whatever the tab and read "Ammunition (48)" over an awarded list of 11. */
   const facets = useMemo(() => reportFacets(scope, { country, cat }), [scope, country, cat]);
-  const countries = facets.countries;
+  /* PAST AWARDS (data.awards): contracts already awarded with a named winner. The Awarded tab lists them under the
+     awarded tenders, and its country list and count include them. A category pick narrows tenders only: an award's
+     segment is not the tender category, so the awards are held back while one is picked. */
+  const awardsAll = useMemo(() => (data.awards || []).filter((a) => a.winner), [data.awards]);
+  const awardsList = useMemo(() => {
+    const key = (a) => (a.date ? Date.parse(a.date) : Date.UTC(a.year || 0, 5, 30));
+    return awardsAll.filter((a) => country === "all" || a.country === country).sort((a, b) => key(b) - key(a));
+  }, [awardsAll, country]);
+  const countries = useMemo(() => {
+    if (section !== "awarded") return facets.countries;
+    const m = new Map(facets.countries.map((c) => [c.v, c.n]));
+    awardsAll.forEach((a) => a.country && m.set(a.country, (m.get(a.country) || 0) + 1));
+    return [...m.entries()].map(([v, n]) => ({ v, n })).sort((a, b) => b.n - a.n || a.v.localeCompare(b.v));
+  }, [facets, section, awardsAll]);
   const cats = useMemo(() => facets.cats.map((c) => ({ label: c.v, count: c.n })), [facets]);
   /* What the header's Copy / Export / Print act on: the pipeline split and the rows
      the report is currently listing, under the section and filters in force. */
   const report = useMemo(() => {
     const bucket = section === "awarded" ? "Awarded" : section === "closed" ? "Closed" : "Open";
+    if (section === "outlook")
+      return {
+        title: "Market Intelligence: market outlook",
+        subtitle: `${ol.segments.length} segments · ${ol.winners.named} named award winners`,
+        sections: [
+          { h: "Where demand is heading", rows: ol.segments.map((r) => [r.segment, `${r.recent} in the last 6 months, ${r.before} before · ${r.open} open tenders fit · ${r.act}`]) },
+          { h: "Who wins", rows: ol.winners.rows.slice(0, 10).map((r) => [r.winner, `${r.wins} wins · ${formatTotals(r.totals)}`]) },
+        ],
+        payload: { section, outlook: ol },
+      };
     return {
       title: "Market Intelligence",
       subtitle: `${bucket.toLowerCase()} tenders${country === "all" ? "" : ` · ${country}`}${cat ? ` · ${cat}` : ""}`,
@@ -250,7 +284,7 @@ export default function MarketOverview() {
         },
         {
           h: `${bucket} tenders listed (${n})`,
-          rows: list.map((x) => [x.title, [x.country, x.cat, x.value, x.closingDate && formatDate(x.closingDate)].filter(Boolean).join(" · ")]),
+          rows: list.map((x) => [x.title, [x.country, x.cat, x.value, x.deadline].filter(Boolean).join(" · ")]),
         },
       ],
       payload: {
@@ -261,9 +295,10 @@ export default function MarketOverview() {
         tenders: list,
       },
     };
-  }, [section, country, cat, open, awarded, closed, list, n]);
+  }, [section, country, cat, open, awarded, closed, list, n, ol]);
   useHeaderReport(report);
 
+  const portals = useMemo(() => portalRows(tenders), [tenders]);
   /* The charts describe the OPEN set narrowed by country — never by the category the pie
      itself sets, or picking a slice would redraw the pie as a single full circle. */
   const chartBase = useMemo(
@@ -274,7 +309,6 @@ export default function MarketOverview() {
     () => demandSplit(chartBase).map((s) => ({ key: s.label, n: s.count })),
     [chartBase],
   );
-  const demandTotal = demandRows.reduce((n, r) => n + r.n, 0);
   const closingRows = useMemo(
     () => closingWindows(chartBase).map((w) => ({ key: w.label, n: w.count })),
     [chartBase],
@@ -326,7 +360,7 @@ export default function MarketOverview() {
     t.url ? (
       <td>
         <a href={t.url} rel="noopener noreferrer" target="_blank" title={t.url}>
-          {(t.srcs && t.srcs[0] && t.srcs[0].label) || "open"} ↗
+          {hostOf(t.url)} ↗
         </a>
       </td>
     ) : (
@@ -374,13 +408,17 @@ export default function MarketOverview() {
     );
 
   const countOf = (s) =>
-    s.id === "awarded"
-      ? awarded.length
-      : s.id === "closed"
-        ? closed.length
-        : s.id === "category"
-          ? demandSplit(open).length
-          : open.length;
+    s.id === "outlook"
+      ? ol.segments.length
+      : s.id === "sites"
+      ? portals.length
+      : s.id === "awarded"
+        ? awarded.length + awardsAll.length
+        : s.id === "closed"
+          ? closed.length
+          : s.id === "category"
+            ? demandSplit(open).length
+            : open.length;
 
   return (
     <div className="ov-report">
@@ -420,6 +458,8 @@ export default function MarketOverview() {
           selects, a separate green "clear" chip -- so the two tabs of one pillar
           filtered in two designs. The <select> is kept because it is the correct
           control for keyboard and screen readers; only its chrome is shared. */}
+      {section === "outlook" ? <MarketOutlook data={data} o={ol} /> : null}
+      {section === "outlook" ? null : (<>
       <div className="tp-fbar">
         <span className="eyebrow">Filter</span>
         <label className="ovf-sel">
@@ -486,7 +526,7 @@ export default function MarketOverview() {
           ) : null}
         </label>
         <span className="sortnote">
-          {fmt(n)} row{n === 1 ? "" : "s"}
+          {fmt(section === "awarded" && !cat ? n + awardsList.length : n)} row{(section === "awarded" && !cat ? n + awardsList.length : n) === 1 ? "" : "s"}
           {country === "all" ? "" : ` in ${country}`}
           {cat ? ` · ${cat}` : ""}
         </span>
@@ -508,7 +548,7 @@ export default function MarketOverview() {
               examples={examplesFor((t) => sliceLabel(catOf(t)))}
               onPick={(k) => setCat((c) => (c === k ? null : k))}
               rows={demandRows}
-              total={demandTotal}
+              total={chartBase.length}
             />
           </Chart>
           <Chart
@@ -531,7 +571,7 @@ export default function MarketOverview() {
             <div className="ovc-h">
               <span className="eyebrow">By category</span>
               <span className="ovc-note">
-                open tenders that state a category · click a row to read them in the table
+                every open tender counted exactly once · click a row to open its tenders in the Tender Pipeline
               </span>
             </div>
             <div className="ovt-scroll">
@@ -553,10 +593,11 @@ export default function MarketOverview() {
                       <td className="ovt-t">
                         <button
                           onClick={() => {
-                            /* section first: setSection clears the category, so the
-                               pick has to land after it */
-                            setSection("active");
-                            setCat(s.label);
+                            /* Opens the Tender Pipeline on this category (and the country picked above). A slice
+                               that groups several small categories ("Other (6 categories)") is not one category
+                               the pipeline can filter on, so it opens unfiltered by category. */
+                            const raw = tenders.some((t) => t.cat === s.label) ? s.label : null;
+                            jumpTo("market", "tender", { cat: raw, country: country === "all" ? null : country });
                           }}
                           type="button"
                         >
@@ -590,13 +631,74 @@ export default function MarketOverview() {
             <div className="ovc-h">
               <span className="eyebrow">{SECTIONS.find((s) => s.id === section).label}</span>
             </div>
-            {tenderTable(
-              list,
-              `no ${section === "active" ? "open" : section} tender on record for this filter`,
-            )}
+            {section === "awarded" && !list.length && awardsList.length
+              ? null
+              : tenderTable(
+                  list,
+                  `no ${section === "active" ? "open" : section} tender on record for this filter`,
+                )}
+            {section === "awarded" && !cat ? (
+              <>
+                <div className="ovc-h" style={{ marginTop: list.length ? 22 : 0 }}>
+                  <span className="eyebrow">Past awards</span>
+                  <span className="ovc-note">
+                    contracts already awarded, newest first · {fmt(awardsList.length)} with a named winner{country === "all" ? "" : ` in ${country}`}
+                  </span>
+                </div>
+                {awardsList.length ? (
+                  <>
+                    <div className="ovt-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th className="num">Awarded</th>
+                            <th>Contract</th>
+                            <th>Winner</th>
+                            <th className="num">Value</th>
+                            <th className="num">Bids</th>
+                            <th>Source</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {page(awardsList).map((a, i) => (
+                            <tr key={`${a.tender_no || a.title}${i}`}>
+                              <td className="num">{a.date ? formatDate(a.date) : a.year || "—"}</td>
+                              <td className="ovt-t">
+                                <span className="ti-title" title={a.title_ar || a.title || a.programme}>{a.programme || a.title}</span>
+                                <span className="ovt-buyer">{[a.buyer, a.site, a.country].filter(Boolean).join(" · ")}</span>
+                                <Review src={a._src} />
+                              </td>
+                              <td>
+                                {a.winner}
+                                {a.brand ? <span className="ovt-buyer">{a.brand}</span> : null}
+                              </td>
+                              <td className="num">{a.value_text || (a.value && a.currency ? `${a.currency} ${a.value.toLocaleString("en-US")}` : "—")}</td>
+                              <td className="num">{a.bids || "—"}</td>
+                              <td>
+                                {a.url ? (
+                                  <a href={a.url} rel="noopener noreferrer" target="_blank">
+                                    {a.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]} ↗
+                                  </a>
+                                ) : (
+                                  none(a.source ? String(a.source).split("(")[0].trim() : "no URL on record")
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {more(awardsList)}
+                  </>
+                ) : (
+                  <div className="ovc-empty">no past award on record{country === "all" ? "" : ` in ${country}`}</div>
+                )}
+              </>
+            ) : null}
           </>
         )}
       </section>
+      </>)}
     </div>
   );
 }

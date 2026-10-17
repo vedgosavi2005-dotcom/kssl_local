@@ -63,3 +63,13 @@ context_blocks:
   competitor_products: "competitive_product per competitor: product_name (category)"
   categories:      "technology_category: category_name - one per line"
   moment_levels:   "ui.competitive_competitor_moment_level: level_code = level_label - one per line"
+  # --- the KSSL lens (Phase 1 of the prompt rebuild; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.0.1). Built by prompts/render.py;
+  # caps are constants there. A block with no data is the single line "none on record": the prompt must then answer "unknown".
+  client_portfolio:    "client_product (+ product_class, client_product_specification): `category > sub_type: product (calibre; weight class; up to 3 key specs)` - one per product / variant, ~10 KB cap"
+  client_capabilities: "what the client makes or does at line level: LINE <category> (sub-types x count), VENTURE / CAPABILITY rows of client_product, PARTNER <name> (client_partner_product)"
+  client_markets:      "competitive_geo_company_presence (company_role client) + client_partner.country: `country: manufactures / sells (export) / offered / partner based here - products - since year - source tier`; max 40 countries"
+  client_partners:     "client_partner + client_partner_relationship + client_partner_product: `partner (country) - type - relationship: what it supplies or does with the client - since - status`; max 40"
+  competitors_extended: "competitive_competitor + product_class + geo presence: `display_name (short; country) - sub-types: category: sub x n - sells in: countries`; extends `competitors`, which stays as it is"
+  # --- blocks that depend on the subject (rendered per run by render.build_prompt, not in render.context_blocks)
+  stories:             "story.stories_block: the subject competitor's open stories of the last 365 days, at most 15: `T<8 hex>: pillar:party:subject:country:family - last step (date)`; the prompt answers with story_ref = a handle or new"
+  competitor_catalogue: "competitive_product (+ product_class) of the subject competitor: `category > sub_type: product name`, names exactly as stored so ref_product resolves; 8 KB cap"

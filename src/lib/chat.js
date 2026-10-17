@@ -3,20 +3,15 @@
    scopedAnswer  — the per-panel bar. Answers ONLY about the item selected in that
                    panel, so it cannot drift into a different pillar's data.
    groundedAnswer— the floating cross-pillar assistant. Resolves a company, country
-                   or kVA band out of the question and answers from the whole corpus.
+                   or product category out of the question and answers from the whole corpus.
 
    Neither calls out to a model. Every sentence they return is assembled from fields
    that are on screen somewhere else, which is what makes them auditable. */
-import { decisionVerdict } from "./edge.js";
+import { clientShort } from "./client.js";
+import { edgeVerdict } from "./edge.js";
 import { stripTags } from "./html.js";
 import { formatLabel } from "./profile.js";
-
-const MAT_LAB = {
-  lab: "Lab / research",
-  dev: "In development",
-  prod: "In production",
-  fielded: "Fielded",
-};
+import { reqLabel } from "./tenderRow.js";
 
 const fmtList = (arr) => arr.filter(Boolean).map((x) => `• ${x}`).join("<br>");
 const clean = stripTags;
@@ -24,7 +19,7 @@ const clean = stripTags;
 /* ---- answer engine: answers ONLY from the given scoped context object ---- */
 export function scopedAnswer(d, ctx, question) {
   if (!ctx) return "Select an item in this panel first, then ask me about it.";
-  const clientName = (d && d.client && (d.client.short || d.client.name)) || "KSSL";
+  const clientName = clientShort();
   const q = question.toLowerCase().trim();
   const has = (...ks) => ks.some((k) => q.includes(k));
   const T = ctx.type;
@@ -38,18 +33,25 @@ export function scopedAnswer(d, ctx, question) {
         m.specs
           .map((s) => {
             if (s.cn == null || s.kn == null) return `• ${s.l}: ${s.cv} vs ${clientName} ${s.kv}`;
-            /* the stored better_side of the spec row, never recomputed */
-            const side = String(s.win || "").toLowerCase();
-            const lead = side === "client" ? `${clientName} leads` : side === "competitor" ? "competitor leads" : side === "equal" ? "parity" : "";
-            return `• ${s.l} - ${s.cv} vs ${clientName} ${s.kv}${lead ? ` (${lead})` : ""}`;
+            const lead =
+              s.cn === s.kn
+                ? "parity"
+                : s.hi
+                  ? s.kn > s.cn
+                    ? `${clientName} leads`
+                    : "competitor leads"
+                  : s.kn < s.cn
+                    ? `${clientName} leads`
+                    : "competitor leads";
+            return `• ${s.l} - ${s.cv} vs ${clientName} ${s.kv}${s.u ? ` ${s.u}` : ""} (${lead})`;
           })
           .join("<br>")
       );
     if (has("edge", "who is winning", "who wins", "ahead", "behind", "stand"))
       return (
         (m.edge == null
-          ? "No edge index is stored for this pairing.<br>"
-          : `Competitive edge index: <b>${m.edge}/100</b>${decisionVerdict(m.decision, clientName) ? ` - ${decisionVerdict(m.decision, clientName).phrase}` : ""}.<br>`) +
+          ? `${clientName} spec undisclosed for this pairing - competitor data is real and sourced; no edge index computed.<br>`
+          : `Competitive edge index: <b>${m.edge}/100</b> - ${edgeVerdict(m.edge, clientName).phrase}.<br>`) +
         clean(m.verdict)
       );
     if (has("advantage", "strength", "kssl", "kssl"))
@@ -68,14 +70,14 @@ export function scopedAnswer(d, ctx, question) {
   if (T === "tender") {
     const t = ctx.data;
     if (has("require", "spec", "need", "criteria", "ask"))
-      return `<b>${t.title}</b> requires:<br>${(t.requirements || []).flatMap((r) => r.rows || []).map((r) => `• ${r[0]}: ${r[1]}`).join("<br>")}`;
+      return `<b>${t.title}</b> requires:<br>${t.req.map((r) => `• ${reqLabel(r[0])}: ${r[1]}`).join("<br>")}`;
     if (has("fit", "match", "kssl", "kssl", "product", "bid", "win", "chance"))
       return (
-        `${clientName} match for this tender:<br>${(t.matches || []).map((mt) => `• ${mt.n}${mt.fit ? ` - ${mt.fit} fit` : ""}`).join("<br>")}` +
+        `${clientName} match for this tender:<br>${t.matches.map((mt) => `• ${mt.n} - ${mt.pct} fit`).join("<br>")}` +
         `<br><br>Bid lean: <b>${t.lean}</b>. ${clean(t.leanTxt)}`
       );
     if (has("value", "worth", "size", "money", "cost"))
-      return `${t.title} - value ${t.value}, issued by ${t.issuer} (${t.country}). ${t.deadline}.`;
+      return `${t.title} - value ${t.value}, issued by ${t.issuer} (${t.country}). ${t.timing || t.deadline}.`;
     if (has("country", "where", "who", "issuer"))
       return `${t.title} is issued by ${t.issuer} in ${t.country}.`;
     if (has("should", "recommend", "assessment", "lean", "go", "pass"))
@@ -88,13 +90,13 @@ export function scopedAnswer(d, ctx, question) {
     const iv = ctx.data;
     if (has("matter", "why", "impact", "important", "so what")) return clean(iv.impact);
     if (has("position", "ahead", "behind", "parity", "stand", "where"))
-      return `${clientName} position: <b>${iv.gap}</b>. ${clean(iv.compNote)}`;
+      return `${clientName} is <b>${{ behind: "BEHIND", parity: "AT PARITY", ahead: "AHEAD" }[iv.gap]}</b> here. ${clean(iv.compNote)}`;
     if (has("new", "latest", "recent", "update", "happening")) return clean(iv.whatsNew);
     if (has("action", "should", "recommend", "do"))
       return `${clean(iv.whatsNew)} ${clean(iv.body)}`;
     if (has("what is", "what it", "describe", "explain", "background")) return clean(iv.body);
     if (has("mature", "stage", "status", "fielded", "ready"))
-      return `${iv.t} - maturity: ${(MAT_LAB[iv.mat] || iv.mat).toLowerCase()}, horizon ${iv.horizon}.`;
+      return `${iv.t} - maturity: ${String(iv.matLabel || iv.mat || "—").toLowerCase()}, horizon ${iv.horizon}.`;
     if (has("source", "sourced")) return `Sources: ${clean(iv.sources)}`;
     return `<b>${iv.t}</b>. Ask why it matters, ${clientName}'s position, or what's new. ${clean(iv.impact).slice(0, 180)}…`;
   }
@@ -104,20 +106,27 @@ export function scopedAnswer(d, ctx, question) {
     const c = ctx.comp;
     const p = ctx.partner;
     if (p) {
-      if (has("what", "deal", "scope", "programme", "detail", "country", "when", "date"))
-        return `<b>${p.label}</b> (${p.country || "—"}) - ${p.ptype || ""}. ${p.note}<br>Scope: ${p.scope}<br>As of: ${p.date}`;
-      return `<b>${c.name} ↔ ${p.label}</b> (${p.country || "—"}). ${p.note}`;
+      if (has("what", "deal", "scope", "value", "programme", "detail", "country", "when", "date"))
+        return (
+          `<b>${p.label}</b> (${p.country || "—"}) - ${p.ptype || ""}. ${p.note}` +
+          `${p.deal && p.deal !== "n/d" ? `<br>Deal/scale: ${p.deal}` : ""}<br>Timeline: ${p.date}`
+        );
+      if (has("mean", "matter", "impact", "kssl", "kssl", "so what", "why")) return clean(p.impact || p.mean);
+      if (has("happening", "insight", "now", "update")) return clean(p.insight || p.impact || p.mean);
+      return `<b>${c.name} ↔ ${p.label}</b> (${p.country || "—"}). ${p.note}. ${clean(p.impact || p.mean)}`;
     }
     if (has("partner", "alliance", "ally", "who", "relationship", "tie"))
       return (
         `${c.name} has ${c.partners.length} tracked relationships:<br>` +
         c.partners.map((pp) => `• ${pp.label} (${pp.country || "—"}) - ${pp.ptype || ""}`).join("<br>")
       );
+    if (has("update", "latest", "recent", "new")) return clean(c.updates);
+    if (has("threat", "mean", "matter", "assess", "kssl", "kssl", "should")) return clean(c.assess);
     if (has("country", "where", "based", "hq"))
       return `${c.name} is based in ${c.hq || "—"}. Partner nationalities: ${[
         ...new Set(c.partners.map((pp) => pp.country).filter(Boolean)),
       ].join(", ")}.`;
-    return `<b>${c.name}</b> - ${c.partners.length} tracked relationships. Ask about its partners or where they are based.`;
+    return `<b>${c.name}</b> - ${c.partners.length} alliances. Ask about its partners, latest updates, or the threat assessment. ${clean(c.assess).slice(0, 180)}…`;
   }
 
   // GEO product
@@ -125,11 +134,25 @@ export function scopedAnswer(d, ctx, question) {
     const p = ctx.data;
     const comp = ctx.comp;
     const country = ctx.country;
+    const kc = ctx.counter;
+    const actLabel = d.actLabel || {};
+    if (has("kssl", "kssl", "counter", "compete", "match", "our product"))
+      return kc
+        ? `${clientName} counters with <b>${kc.p}</b>. ${kc.note}`
+        : `${clientName} has no direct like-for-like product for this - a portfolio gap rather than a contested bid.`;
     if (has("value", "worth", "quantity", "how many", "deal"))
-      return `${p.name} - quantity: ${p.qty || "—"}, value: ${p.value || "—"}.`;
+      return `${p.name} - quantity: ${p.qty}, value: ${p.val}, stage: ${p.stage}.`;
     if (has("activity", "local", "export", "produce", "make"))
-      return `${p.name} in ${country}: ${p.c}. ${p.note}`;
-    return `<b>${p.name}</b> (${comp} → ${country}): ${p.note}`;
+      return `${p.name} in ${country}: ${actLabel[p.c] || p.c}. ${p.note}`;
+    if (has("what", "describe", "about", "detail"))
+      return `<b>${p.name}</b> (${comp} → ${country}): ${p.note}`;
+    if (has("mean", "matter", "impact", "so what", "threat"))
+      return p.c === "lp"
+        ? `Local production gives full local-content credit in ${country}, disadvantaging ${clientName}'s import-based bids.`
+        : p.c === "ex"
+          ? "Export/supply only - weaker local-content standing than a domestic producer."
+          : "Partnership/sustainment presence that can precede platform competition.";
+    return `<b>${p.name}</b> - ${comp} in ${country}. ${kc ? `${clientName} counters with ${kc.p}.` : `No direct ${clientName} counterpart.`} Ask about value, activity, or the ${clientName} counter.`;
   }
 
   // OVERVIEW signal
@@ -149,7 +172,7 @@ export function scopedAnswer(d, ctx, question) {
 /* ---- build a compact, grounded knowledge base from the platform's real datasets ---- */
 export function buildKnowledgeBase(d) {
   if (!d) return { competitors: {}, matchups: [], geo: [], tenders: [], technology: [] };
-  const clientName = (d && d.client && (d.client.short || d.client.name)) || "KSSL";
+  const clientName = clientShort();
   const matchupsList = Array.isArray(d.matchups) ? d.matchups : Object.values(d.matchups || {});
   const geoList = Array.isArray(d.geoRows) ? d.geoRows : Object.values(d.geoRows || {});
   const tendersList = Array.isArray(d.tenders) ? d.tenders : Object.values(d.tenders || {});
@@ -196,7 +219,7 @@ export function buildKnowledgeBase(d) {
 /* ---- cross-pillar answer engine: answers across all loaded pillars ---- */
 export function groundedAnswer(d, question, ctx) {
   if (!d) return "No data loaded yet.";
-  const clientName = (d && d.client && (d.client.short || d.client.name)) || "KSSL";
+  const clientName = clientShort();
   const q = question.toLowerCase().trim();
   const kb = buildKnowledgeBase(d);
   const sel = ctx && ctx.data ? ctx.data.title || ctx.data.comp || ctx.data.t || ctx.data.name || null : null;
@@ -304,6 +327,7 @@ export function groundedAnswer(d, question, ctx) {
     if (markets.length) ans += `<br><br>Markets: ${markets.join(", ")}`;
     if (mu.length)
       ans += `<br><br>Competes with ${clientName} in: ${[...new Set(mu.map((m) => m.category))].join(", ")}`;
+    if (c.threatNote) ans += `<br><br>${c.threatNote}`;
     return `${ans}<span class="src">Source · Competitive pillars</span>`;
   }
 
@@ -373,8 +397,8 @@ export function groundedAnswer(d, question, ctx) {
   // fallback: orient the user with what IS answerable
   return (
     "I can answer from the platform's intelligence across all three pillars. Try:<br><br>" +
-    '• "Who are the competitors in <i>India</i>?" (or any market)<br>' +
-    '• "Who competes in <i>Artillery</i>?" (or any category)<br>' +
+    '• "Who are the competitors in <i>a country</i>?"<br>' +
+    '• "Who competes in <i>a category</i>?"<br>' +
     `• "Which tenders fit ${clientName} best?"<br>`
   );
 }

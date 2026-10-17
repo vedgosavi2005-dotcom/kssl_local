@@ -1,24 +1,40 @@
-/* Market intelligence: the tender read for the Market pillar. Pure: it returns data, the
-   React component renders it. Every function takes the WIRED tenders `useData()` serves
-   (src/lib/tenderCalc.js adds `bucket`, `dl`, `isLive`): open / awarded / closed is the
-   stored `status`, `dl` is days left to the stored closing date (absent without one). */
-import { facetOptionsByName } from "./countryFacet.js";
-import { bucketTenders } from "./tenderCalc.js";
+/* Market overview: the tender-intelligence read that replaced the signal feed on the
+   Market pillar. Pure — it returns data, the React component renders it.
 
-const WINDOW_NONE = (d) => d == null;
+   EVERY function here takes WIRED tenders (the ones `useData()` serves), never the raw
+   API rows. `wireDataset` runs each tender through `computeTenderRealDays`, which
+   overwrites BOTH `dl` and `deadline`: the served rows carry `dl: null` and a date
+   string like "24 Aug 2026", the wired rows carry a day count and a phrase like
+   "17 days left". Parsing `t.deadline` for a date here would find one on zero rows.
+   And `bucketTenders`' `t.dl <= 0` is TRUE for the served `null`, so raw rows bucket
+   as 100% closed. Wired input is a correctness requirement, not a convention. */
+import { clientShort } from "./client.js";
+import { MARKET_TILE_LABEL } from "./chrome.js";
+import { hasAmount, valueTotals, formatTotals } from "./tenderValue.js";
+import { facetOptionsByName } from "./countryFacet.js";
+import { bucketTenders, marketAttention } from "./overview.js";
+
+/* dl semantics, set by computeTenderRealDays:
+     0      awarded, or a closing date that has passed
+     1..364 real days left
+     365    a published programme STAGE rather than a date
+     9999   open, but the record carries no deadline          */
+const NO_DATE = 9999;
+const STAGE = 365;
 
 export const WINDOWS = [
-  { key: "w7", label: "Up to 7 days", test: (d) => d != null && d <= 7 },
-  { key: "w14", label: "8–14 days", test: (d) => d != null && d >= 8 && d <= 14 },
-  { key: "w30", label: "15–30 days", test: (d) => d != null && d >= 15 && d <= 30 },
-  { key: "w30p", label: "30+ days", test: (d) => d != null && d > 30 },
-  { key: "none", label: "No date published", test: WINDOW_NONE },
+  { key: "w7", label: "1–7 days", test: (d) => d >= 1 && d <= 7 },
+  { key: "w14", label: "8–14 days", test: (d) => d >= 8 && d <= 14 },
+  { key: "w30", label: "15–30 days", test: (d) => d >= 15 && d <= 30 },
+  { key: "w30p", label: "30+ days", test: (d) => d > 30 && d !== NO_DATE },
+  { key: "none", label: "No date published", test: (d) => d === NO_DATE },
 ];
 
 /* Which closing bucket ONE tender falls in — the same predicate the chart uses, exposed
    so a tooltip can name a row's bucket without re-bucketing the whole corpus. */
 export function windowOf(t) {
-  const w = WINDOWS.find((x) => x.test(t ? t.dl : undefined));
+  const d = t && t.dl === STAGE ? 366 : (t || {}).dl;
+  const w = WINDOWS.find((x) => x.test(d));
   return w ? w.label : "";
 }
 
@@ -72,9 +88,7 @@ export function CATEGORY_COLOR(label) {
   return _catSlot.get(label) || OTHER_COLOR;
 }
 
-/* A tender that states no category belongs to none: it is left out of the category
-   views, not filed under an invented name. */
-export const catOf = (t) => (t && t.cat) || "";
+export const catOf = (t) => (t && t.cat) || "—";
 
 /* Every category the corpus carries, most-contracted first — the filter's option list
    and the colour order, from one count so the two can never disagree. */
@@ -82,7 +96,7 @@ export function categoryRank(tenders) {
   const n = {};
   (tenders || []).forEach((t) => {
     const k = catOf(t);
-    if (k) n[k] = (n[k] || 0) + 1;
+    n[k] = (n[k] || 0) + 1;
   });
   return Object.entries(n)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -116,46 +130,75 @@ export function sliceLabel(cat) {
   return _catSlot.has(cat) ? cat : _otherLabel || cat;
 }
 
-/* The metric strip: four tiles, each counted from the stored rows on screen. */
+export function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (e) {
+    return "";
+  }
+}
+
+/* The four tiles above the Market pages. Each one is counted from the rows on screen; a measure the corpus
+   does not carry prints "—" rather than 0. */
 export function marketMetrics(tenders) {
   const list = tenders || [];
-  const { open } = bucketTenders(list);
+  const { open, awarded, closed } = bucketTenders(list);
   const countries = new Set(list.map((t) => t.country).filter(Boolean));
-  const portals = new Set(
-    list.flatMap((t) => (t.srcs || []).map((s) => s.portal || s.publisher)).filter(Boolean),
-  );
-  const valued = list.filter((t) => t.value && String(t.value).trim() !== "");
-  /* A COUNT, never a total: tender values are stated in several currencies and there is
-     no stored rate to add them up. */
-  return [
-    { l: "Active tenders", act: "active", v: String(open.length) },
-    { l: "Markets", act: "markets", v: String(countries.size) },
-    { l: "Source portals", act: "portals", v: String(portals.size) },
-    { l: "Tenders with a stated value", act: "value", v: String(valued.length) },
+  const portals = new Set(list.map((t) => hostOf(t.url)).filter(Boolean));
+  const priced = list.filter(hasAmount);
+  const totals = valueTotals(list);
+  const tiles = [
+    {
+      id: "active-tenders",
+      act: "active",
+      v: String(open.length),
+      sub: `open of ${list.length} tracked · ${awarded.length} awarded, ${closed.length} closed`,
+    },
+    {
+      id: "markets",
+      act: "markets",
+      v: String(countries.size),
+      sub: topOf(list, "country"),
+    },
+    {
+      id: "source-portals",
+      act: "portals",
+      v: String(portals.size),
+      sub: `distinct portals feeding this slice`,
+    },
+    {
+      /* An unmeasured total is "—", never 0 — a zero here would read as "these
+         contracts are worth nothing". */
+      id: "value-disclosed",
+      act: "value",
+      v: formatTotals(totals),
+      unit: "",
+      sub: priced.length
+        ? `${priced.length} of ${list.length} publish an amount${totals.length > 1 ? ` · ${totals.length} currencies, not converted` : ""}`
+        : "no tender on record publishes an amount",
+    },
   ];
+  return tiles.map(({ id, ...t }) => ({ ...t, key: id, l: MARKET_TILE_LABEL[id] }));
 }
 
-/* The Top opportunity page's tiles are the stored market_top_opportunity_metric rows. */
-export function topOpportunityMetrics(data) {
-  const rows = (data && data.topOpportunities && data.topOpportunities.metrics) || [];
-  return rows.map((m) => ({
-    l: m.label,
-    act: m.key,
-    v: m.value || (m.amount != null ? String(m.amount) : "—"),
-    sub: m.note,
-  }));
+function topOf(list, field) {
+  const n = {};
+  list.forEach((t) => {
+    if (t[field]) n[t[field]] = (n[t[field]] || 0) + 1;
+  });
+  const best = Object.entries(n).sort((a, b) => b[1] - a[1])[0];
+  return best ? `${best[0]} leads with ${best[1]}` : "nothing on record";
 }
 
-/* Demand split by category: the stored `cat` of each tender that states one. */
+/* Demand split by category. JSW splits Product / Product+MRO / MRO-only; that
+   classification is EV-bus specific and has no defence equivalent in this corpus, so
+   the honest split here is the one the rows actually carry — `cat`. */
 export function demandSplit(tenders) {
   const list = tenders || [];
   const n = {};
-  let total = 0;
   list.forEach((t) => {
-    if (!catOf(t)) return;
     const k = sliceLabel(catOf(t));
     n[k] = (n[k] || 0) + 1;
-    total += 1;
   });
   /* Ordered by the FIXED palette order, not by count in this slice — so narrowing to
      one country reorders nothing and "Other" stays last where a reader expects it. */
@@ -164,7 +207,7 @@ export function demandSplit(tenders) {
     .map(([label, count]) => ({
       label,
       count,
-      pct: total ? Math.round((count / total) * 100) : 0,
+      pct: list.length ? Math.round((count / list.length) * 100) : 0,
     }))
     .sort((a, b) => {
       const ia = order.indexOf(a.label);
@@ -173,12 +216,13 @@ export function demandSplit(tenders) {
     });
 }
 
-/* How much runway is left, over the OPEN set only: concluded tenders counted into "no
-   date published" would present them as still-closing pipeline. */
+/* How much runway is left, over the OPEN set only. Awarded contracts carry dl 0 and no
+   deadline; counting them into "no date published" would present concluded programmes
+   as still-closing pipeline. */
 export function closingWindows(openTenders) {
   const list = openTenders || [];
   return WINDOWS.map((w) => {
-    const count = list.filter((t) => w.test(t.dl)).length;
+    const count = list.filter((t) => w.test(t.dl === STAGE ? 366 : t.dl)).length;
     return {
       key: w.key,
       label: w.label,
@@ -188,12 +232,87 @@ export function closingWindows(openTenders) {
   });
 }
 
+/* The portals feeding this slice, with what each one contributed. */
+export function portalRows(tenders) {
+  const n = {};
+  (tenders || []).forEach((t) => {
+    const h = hostOf(t.url);
+    if (!h) return;
+    if (!n[h]) n[h] = { host: h, total: 0, open: 0, label: (t.srcs && t.srcs[0] && t.srcs[0].label) || h };
+    n[h].total += 1;
+    if (t.isLive !== false && t.dl > 0) n[h].open += 1;
+  });
+  return Object.values(n).sort((a, b) => b.total - a.total);
+}
+
 /* The country options for a list of tenders, WITH the row count each one labels.
    Built from the rows the filter narrows -- the open section's rows for the open
    section -- never from every tender: the report offered 22 countries over an
    awarded list that carried 8, and 14 of them returned nothing. */
 export function countriesOf(tenders) {
   return facetOptionsByName(tenders, (t) => t.country);
+}
+
+/* ── self-check ───────────────────────────────────────────────────────────────
+   Runs from DataProvider against the real served set. Asserts the invariants that
+   the raw-vs-wired trap breaks, so a regression is loud rather than a wrong chart. */
+export function marketSelfCheck(tenders, marketCards) {
+  const list = tenders || [];
+  if (!list.length) return;
+
+  /* The overview lists a SHORTLIST, not every open tender, and the "Live bids" tile
+     counts exactly what is shown -- so the promoted cards must equal marketAttention()
+     over the open set. This replaces the older "promoted === all open" invariant: the
+     overview is curated now (strong fit or closing soon, falling back to the soonest
+     head), and the tile is counted from the same set, so the visible list, the header
+     count and the tile cannot drift. Skipped when no cards are passed, so the older
+     one-argument call is still valid. */
+  if (Array.isArray(marketCards) && marketCards.length) {
+    const { open } = bucketTenders(list);
+    const promoted = marketCards.filter((c) => c.kind === "tender");
+    const attention = marketAttention(open).length;
+    if (promoted.length !== attention)
+      throw new Error(
+        `market: ${promoted.length} promoted tender card(s) but marketAttention() picks ` +
+          `${attention} of ${open.length} open -- the shortlist and the "Live bids" tile no longer agree`,
+      );
+  }
+  const { open, awarded, closed } = bucketTenders(list);
+  const sum = open.length + awarded.length + closed.length;
+  if (sum !== list.length)
+    throw new Error(`market: buckets sum to ${sum}, not ${list.length}`);
+  if (!open.length && list.length)
+    throw new Error(
+      "market: zero open tenders - tenders were read RAW (dl null <= 0 is true); " +
+        "marketOverview must be given the wired rows from useData()",
+    );
+  const w = closingWindows(open).reduce((n, b) => n + b.count, 0);
+  if (w !== open.length)
+    throw new Error(`market: closing windows cover ${w} of ${open.length} open tenders`);
+  const s = demandSplit(open).reduce((n, b) => n + b.count, 0);
+  if (s !== open.length)
+    throw new Error(`market: demand split covers ${s} of ${open.length} open tenders`);
+
+  /* No KSSL category may be folded into the grey "Other" slice. This is the bug the
+     nine-slot palette fixes: Artillery and Missiles & Air Defence ranked 7th and 8th
+     by contract count and vanished into "Other (2 categories)" -- the client's own
+     flagship line, unnamed on the client's own chart. Asserted against the SERVED set
+     rather than a fixed list, so it fires the moment the taxonomy outgrows the palette
+     again instead of silently folding whichever two rank lowest.
+
+     Counted from the ranking directly, NOT from _catSlot: this runs in DataProvider
+     and initCategoryPalette only runs when the Market page renders, so reading the
+     slot map here would assert against an empty map on every load. */
+  const folded = categoryRank(list)
+    .map((r) => r.label)
+    .slice(SERIES.length);
+  if (folded.length)
+    throw new Error(
+      `market: ${folded.length} categor${folded.length === 1 ? "y is" : "ies are"} ` +
+        `folded into "Other" (${folded.join(", ")}) -- SERIES has ${SERIES.length} ` +
+        "hues for them. Add a validated hue (dataviz palette checker, both surfaces) " +
+        `rather than letting a ${clientShort()} line go unnamed.`,
+    );
 }
 
 /* The report's two filters, each counted over the section's rows with the OTHER
@@ -208,7 +327,7 @@ export function reportRows(scope, { country, cat } = {}) {
   return (scope || [])
     .filter((t) => rowCountry(t, country) && rowCat(t, cat))
     .slice()
-    .sort((a, b) => (a.dl == null) - (b.dl == null) || (a.dl || 0) - (b.dl || 0));
+    .sort((a, b) => (a.dl || 0) - (b.dl || 0));
 }
 
 export function reportFacets(scope, { country, cat } = {}) {
@@ -217,4 +336,14 @@ export function reportFacets(scope, { country, cat } = {}) {
     countries: countriesOf(rows.filter((t) => rowCat(t, cat))),
     cats: categoryRank(rows.filter((t) => rowCountry(t, country))).map((c) => ({ v: c.label, n: c.count })),
   };
+}
+
+/* The note under the active table said "no tender on record publishes a value" as a
+   hard-coded string, on a corpus where 14 do. Measured from the rows instead. */
+export function valueNote(rows) {
+  const list = rows || [];
+  const priced = list.filter(hasAmount).length;
+  return priced
+    ? `${priced} of ${list.length} publish${priced === 1 ? "es" : ""} a value`
+    : "no tender listed here publishes a value";
 }

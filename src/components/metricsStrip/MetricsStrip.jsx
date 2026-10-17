@@ -76,10 +76,25 @@ function CountUp({ text }) {
 export default function MetricsStrip({ metrics, active, onPick, inert = false }) {
   return (
     <div className="metrics" id="metrics">
-      {metrics.map((m) => (
+      {metrics.map((m) =>
+        /* TWO TILES HELD OPEN, EMPTIED — and emptied HERE, at the point of display.
+           "Analytical lenses" and "All signals" are off the strip at the operator's
+           request. The slot stays: the strip is a CSS grid of equal columns, so dropping
+           two of five would stretch the remaining three and move every number the reader
+           had learned the position of. It renders as an empty cell with no button role,
+           no focus stop and no hover — there is nothing in it to open, and a control that
+           looks live and does nothing is worse than an empty space.
+
+           metricsFor still MEASURES both. That matters: "All signals" is the served card
+           count, which the report and the strip's own unbound-tile warning read, and
+           test_market_tiles.mjs holds metricsFor to producing it. Blanking it upstream
+           broke that test — correctly. Presentation belongs here. */
+        m.blank ? (
+          <div className="metric metric-blank" key={m.key || m.act} />
+        ) : (
         <div
           className={`metric${active === m.act ? " on" : ""}${inert ? " inert" : ""}`}
-          key={`${m.act}-${m.l}`}
+          key={m.key || m.act}
           onClick={inert ? undefined : () => onPick(m, m.act)}
           role={inert ? undefined : "button"}
           tabIndex={inert ? undefined : 0}
@@ -123,7 +138,8 @@ export default function MetricsStrip({ metrics, active, onPick, inert = false })
             />
           </span>
         </div>
-      ))}
+        ),
+      )}
     </div>
   );
 }
