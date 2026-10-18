@@ -20,3 +20,23 @@ media/
 
 # VPS credentials (private, never commit)
 db/env
+
+# client Excel load reports (client data - never commit)
+db/excel_reports/
+
+# git worktrees + subagent workspaces
+.worktrees/
+.superpowers/
+
+# staging -> VPS sync log (db/sync_staging_to_vps.sh, scheduled hourly)
+db/sync_staging.log
+
+# red-team 2026-10-18: never publish these by a blanket `git add -A` (logs hold DSNs; archives / aliases / Excel may hold client data)
+db/flood_logs/
+*.7z
+db/news_aliases*
+db/*.state.json
+db/test_seed_full/KSSL_all_pillars_test_data*.txt
+*.xlsx
+*.xls
+~$*

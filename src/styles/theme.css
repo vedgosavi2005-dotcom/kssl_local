@@ -25,9 +25,9 @@
     --l-txt-3:#6b6a63;
     --l-txt-4:#9a988e;
     --threat:#b5341f;
-  --threat-badge:#f0593c; --watch-badge:#e0a020; --fav-badge:#3fa86a;
+  --threat-badge:#f0593c; --watch-badge:#e0a020; --ok-badge:#3fa86a;
     --watch:#9a6a08;
-    --fav:#1f6e45;
+    --ok:#1f6e45;
     --synthetic:#c0610f;
     --synthetic-bg:#fbf0e2;
     --mono:'IBM Plex Mono', ui-monospace, monospace;

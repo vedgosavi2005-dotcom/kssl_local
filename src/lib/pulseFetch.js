@@ -1,15 +1,16 @@
-/* SERVER-SIDE company pulse: "trending" headlines (Google News RSS, keyless). Stock quotes
- * were removed by decision (stock is hidden). Runs on the server (vite dev/preview
- * middleware locally, the FastAPI backend in production) — never in the browser, because
- * the page's CSP forbids cross-origin fetches and these hosts would block them anyway.
- * It fetches, parses and normalises; it invents nothing — a source that returns nothing
- * yields null/[], and the card says so.
+/* SERVER-SIDE "trending" headlines (Google News RSS, keyless): the one agreed exception to the
+ * DB-only rule. Runs on the server (vite dev/preview middleware) -- never in the browser,
+ * because the page's CSP forbids cross-origin fetches and the host would block them anyway.
+ * It fetches, parses and normalises; it invents nothing. The search terms come ONLY from the
+ * request (the UI builds them from dataset names): no default company, no added keywords.
+ * A source that returns nothing yields [], and the card says so. There is no stock lane.
  *
- * ponytail: plain regex RSS parse and one chart call — no xml/finance dependency for two
- * well-known feeds. Upgrade to a parser if the shapes ever get hairy.
+ * ponytail: plain regex RSS parse -- no xml dependency for one well-known feed. Upgrade to a
+ * parser if the shape ever gets hairy.
  */
 const UA = "Mozilla/5.0 (compatible; ParallaxPulse/1.0)";
 
+/* Decode the handful of XML/HTML entities an RSS title carries. */
 function unent(s) {
   return String(s || "")
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -103,8 +104,8 @@ export async function fetchTrending(name, product = "") {
      feed. Each step runs only when the previous found nothing; a zero-result RSS fetch is
      cheap (no link-resolution happens until a step actually returns items). */
   const queries = p
-    ? [`"${p}" ${name} defence OR defense`, `${p} ${name}`, `"${name}" defence OR defense`]
-    : [`"${name}" defence OR defense`];
+    ? [`"${p}" ${name}`, `${p} ${name}`, `"${name}"`]
+    : [`"${name}"`];
   for (const query of queries) {
     const items = await _rssItems(query);
     if (items.length) return items;

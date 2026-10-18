@@ -1,0 +1,103 @@
+id: product_category
+title: Product catalogue category - check every competitor product and move the misplaced ones (10 shared categories + 4 catalogue-only)
+version: 1
+fills: [competitive_product]
+shows_on: Products page (the category groups of each company's catalogue and the category filter)
+cadence: quarterly
+recurring: false          # a batch is decided once; a changed product list changes the batch key (fingerprint), so new products are checked
+handler: product_category # prompts/product_category.py writes ONLY competitive_product.category / category_filter (+ category_count) and one
+                          # fact_source row per move (the reason, tier judgement); a category outside the allowed list is dropped
+# User 2026-10-18: a third of the catalogue (1,429 of 4,290) sat in "Other"; "check whether each product is placed in the proper category and
+# if there can be more categories". Decision: the 10 shared categories (staging.technology_category, used by every pillar) plus 4 that apply
+# to the product catalogue only (listed in the output enum below, NOT added to technology_category, so tenders, signals and technology keep
+# the 10). Only qualifying competitors (the ones the UI shows). The client's own catalogue keeps the categories of its workbook.
+#  - subject = one batch of up to 60 products of one competitor; the key carries a fingerprint of the batch's product ids.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: batch_key
+  query: |
+    WITH p AS (
+      SELECT p.competitor_id::text AS company_key, c.display_name AS company, p.product_id::text AS pid,
+             (row_number() OVER (PARTITION BY p.competitor_id ORDER BY p.product_id) - 1) / 60 AS chunk
+      FROM staging.competitive_product p JOIN staging.competitive_competitor c USING (competitor_id)
+      WHERE c.qualifies IS TRUE
+    )
+    SELECT company_key || ':' || chunk || ':' || left(md5(string_agg(pid, ',' ORDER BY pid)), 8) AS batch_key,
+           company_key, company, chunk, count(*) AS products
+    FROM p GROUP BY company_key, company, chunk
+    ORDER BY company, chunk
+  documents:
+    - from: sql                  # the products of this batch: id, name, current category, the start of the description, a few spec labels
+      cap: 60000
+      query: |
+        WITH p AS (
+          SELECT p.product_id, p.product_name, p.category, left(coalesce(p.description, ''), 280) AS description,
+                 (row_number() OVER (ORDER BY p.product_id) - 1) / 60 AS chunk
+          FROM staging.competitive_product p WHERE p.competitor_id::text = {{subject.company_key}}
+        )
+        SELECT 'PRODUCT' AS doc, p.product_id::text AS product_ref, p.product_name, p.category AS current_category, p.description,
+               (SELECT string_agg(s.spec_label, '; ') FROM (SELECT spec_label FROM staging.competitive_product_specification s
+                 WHERE s.product_id = p.product_id ORDER BY spec_label LIMIT 4) s) AS spec_labels
+        FROM p WHERE p.chunk = ({{subject.chunk}})::int
+        ORDER BY p.product_id
+
+context: [categories]
+
+task: |
+  TASK product_category — check the catalogue category of each of {{subject.company}}'s products below and list ONLY the products whose
+  category is wrong, with the right one. WEB SEARCH is off. Use the PRODUCT rows (name, current category, description, spec labels) and
+  plain knowledge of what kind of thing a named product is. Do not change a category you are unsure of.
+
+  ALLOWED CATEGORIES (exactly one per product; spelled exactly as written):
+  The shared categories (CATEGORIES below), and four for the catalogue only:
+   - Aircraft & Aerostructures, Sensors & Electro-optics, "C4ISR, Comms & EW", Training & Simulation.
+
+  WHAT GOES WHERE (decide by what the product itself IS, its primary role; a part or subsystem goes with its own kind):
+   - Artillery: guns, howitzers, mortars, multiple rocket launchers (the launcher), artillery fire-control and gun mounts.
+   - Ammunition: shells, cartridges, unguided rockets and bombs, fuzes, propellant charges, mines, grenades, demolition charges.
+   - Missiles & Air Defence: missiles, guided rockets and guided bomb / glide kits, air-defence systems, counter-UAS effectors (interceptors,
+     directed-energy and high-power microwave weapons), missile launchers.
+   - UAVs & Drones: unmanned aircraft and loitering munitions, their ground control stations and launchers.
+   - Protected & Armoured Vehicles: armoured and protected vehicles, tanks, IFVs, MRAPs, military trucks and trailers, unmanned ground
+     vehicles, turrets and remote weapon stations, vehicle protection systems.
+   - Armoured Vehicle MRO: maintenance, repair, overhaul, upgrade and spares of land vehicles.
+   - Small Arms: rifles, pistols, machine guns, shoulder-fired grenade launchers and their sights and accessories.
+   - Marine / Naval: ships, submarines, boats, torpedoes, unmanned surface / underwater vessels, naval weapon systems, ship MRO.
+   - Precision Components & Forgings: forgings, castings, machined parts and assemblies for weapons and vehicles.
+   - Aircraft & Aerostructures: manned aircraft and helicopters, aerostructures (fuselages, wings, doors), aircraft engines and aircraft MRO.
+   - Sensors & Electro-optics: radars, sonars sold as their own product, EO/IR and thermal cameras, sights other than small-arms sights,
+     detectors and sensor modules.
+   - C4ISR, Comms & EW: radios, data links, networks, command-and-control and battle-management software, electronic warfare, jammers and
+     countermeasure pods, cyber, ISR systems and mission systems.
+   - Training & Simulation: simulators, trainers, training devices and training services.
+   - Other: anything that fits none of these (space hardware, commercial explosives, civil products, power and engines for non-aircraft use,
+     corporate services).
+
+  RULES
+   1. List a product only when its current category is wrong. A product already in a fitting category is left out.
+   2. When two categories fit, take the one of the product's primary role; a weapon system beats its parts.
+   3. A product in "Other" that fits any listed category must be moved out of Other.
+   4. Unsure: leave it out. No change needed at all: "records": [] and "skip_reason".
+
+  One record per product to move, table product_category:
+   - product_ref: the PRODUCT row's product_ref, exactly
+   - category: the allowed category, exactly as written
+   - reason: one plain sentence, max 140 characters, naming what the product is ("Airborne fire-control radar, a sensor, not a missile")
+
+  CATEGORIES (shared):
+  {{context.categories}}
+
+  PRODUCTS:
+  {{documents}}
+
+output:
+  product_category:               # documentary only (handler)
+    card: false
+    key: [prompt_id, subject]
+    columns:
+      product_ref: {required: true}
+      category: {required: true, enum: [Artillery, Ammunition, Protected & Armoured Vehicles, Armoured Vehicle MRO, Small Arms, Marine / Naval,
+                 Missiles & Air Defence, UAVs & Drones, Precision Components & Forgings, Other, Aircraft & Aerostructures,
+                 Sensors & Electro-optics, "C4ISR, Comms & EW", Training & Simulation]}
+      reason: {required: true, max: 140}

@@ -83,6 +83,9 @@ GRAPH: dict[str, tuple[str, bool, list[tuple[str, str]]]] = {
     "competitive_geo_product_news": ("news_id", False, [("geo_product_id", "competitive_geo_product")]),
     "competitive_geo_source": ("source_id", False, [("geo_product_id", "competitive_geo_product")]),
     "competitive_patent_filing": ("publication_number", True, [("portfolio_id", "competitive_patent_portfolio")]),
+    # prompt rebuild (db/setup/11_foundations.sql): rolled-up patent trend per portfolio, geo layer-2 findings per country
+    "competitive_patent_trend": ("trend_id", False, [("portfolio_id", "competitive_patent_portfolio")]),
+    "competitive_geo_analysis": ("analysis_id", False, [("location_id", "competitive_geo_location")]),
     "competitive_signal": ("signal_id", True, [("company_id", C)]),
     "competitive_signal_detail": ("signal_id", False, [("signal_id", "competitive_signal")]),
     "competitive_signal_evidence": ("evidence_id", False, [("signal_id", "competitive_signal")]),
@@ -97,6 +100,7 @@ GRAPH: dict[str, tuple[str, bool, list[tuple[str, str]]]] = {
     "market_tender_source": ("source_id", False, [("tender_id", "market_tender")]),
     "market_tender_product_match": ("tender_match_id", False, [("tender_id", "market_tender")]),
     "market_tender_product_match_line": ("match_line_id", False, [("tender_match_id", "market_tender_product_match")]),
+    "market_tender_eligibility": ("eligibility_id", False, [("tender_id", "market_tender")]),
     "market_top_opportunity_tender": ("top_opportunity_tender_id", True, [("tender_id", "market_tender")]),
     "market_opportunity": ("opportunity_id", True, []),
     "market_opportunity_fit_assessment": ("assessment_id", False, [("opportunity_id", "market_opportunity")]),
@@ -107,16 +111,29 @@ GRAPH: dict[str, tuple[str, bool, list[tuple[str, str]]]] = {
     "market_global_requirement": ("requirement_id", True, []),
     "market_global_requirement_specification": ("requirement_spec_id", False, [("requirement_id", "market_global_requirement")]),
     "market_global_requirement_source": ("requirement_source_id", False, [("requirement_id", "market_global_requirement")]),
+    "market_global_requirement_rival": ("rival_id", False, [("requirement_id", "market_global_requirement")]),
     "technology_innovation": ("innovation_id", True, []),
     "technology_innovation_status": ("status_id", False, [("innovation_id", "technology_innovation")]),
     "technology_innovation_company": ("innovation_company_id", False, [("innovation_id", "technology_innovation")]),
     "technology_innovation_source": ("innovation_source_id", False, [("innovation_id", "technology_innovation")]),
     "technology_innovation_analysis": ("analysis_id", False, [("innovation_id", "technology_innovation")]),
+    "technology_innovation_milestone": ("milestone_id", False, [("innovation_id", "technology_innovation")]),
     "technology_overview_article": ("overview_article_id", True, []),
     "technology_overview_fact": ("overview_fact_id", False, [("overview_article_id", "technology_overview_article")]),
     "technology_overview_key_point": ("key_point_id", False, [("overview_article_id", "technology_overview_article")]),
     "technology_overview_company": ("overview_company_id", False, [("overview_article_id", "technology_overview_article")]),
     "technology_overview_source": ("overview_source_id", False, [("overview_article_id", "technology_overview_article")]),
+    # one thread of events (prompts/story.py): a story is a card of its own, its dated steps are its children
+    "story": ("story_id", True, []),
+    "story_step": ("step_id", False, [("story_id", "story")]),
+    # ui-port tables (db/setup/09_ui_port_tables.sql). The synthesis rows ride on the competitor card; the rest are their own cards.
+    "competitive_synthesis": ("competitor_id", False, [("competitor_id", C)]),
+    "competitive_synthesis_vulnerability": ("vulnerability_id", False, [("competitor_id", "competitive_synthesis")]),
+    "competitive_synthesis_vulnerability_trace": ("trace_id", False, [("vulnerability_id", "competitive_synthesis_vulnerability")]),
+    "competitive_field_synthesis": ("synthesis_id", True, []),
+    "market_award": ("award_id", True, []),
+    "market_segment_assessment": ("segment", True, []),
+    "patent_field_assessment": ("area_label", True, []),
 }
 # Not in GRAPH (no page reads them): competitive_product_evaluation, competitive_product_evaluation_spec.
 # A reviewed row whose key column is empty is keyed by its alternate column.
@@ -125,7 +142,7 @@ ALT_KEY = {"competitive_patent_filing": "filing_id"}
 SERVING_TABLES = (
     "technology_pillar", "technology_category", "technology_category_ui_label", "technology_company",
     "technology_source", "technology_metric", "market_tender_portal", "market_category_summary",
-    "market_filter_option", "market_top_opportunity_metric",
+    "market_filter_option", "market_top_opportunity_metric", "fx_rate",
 )
 # Bookkeeping columns: a change here alone does not make a card "changed".
 VOLATILE = {"created_at", "updated_at", "fetched_at", "retrieved_at"}
@@ -441,6 +458,11 @@ def _diff(row: dict, live: dict | None) -> dict[str, Any] | None:
     return {k: live.get(k) for k in row if k not in VOLATILE and str(live.get(k)) != str(row.get(k))}
 
 
+def _lit(v) -> str:
+    """A value quoted for the DISPLAYED sql (operators paste it into DBeaver); the queries themselves are parameterised."""
+    return str(v).replace("'", "''")
+
+
 def _ident(table: str, row: dict) -> str:
     return _kv(table, row) or json.dumps(_clean(row), sort_keys=True, default=str)
 
@@ -471,12 +493,12 @@ def trace(st, sv, table: str, key: str) -> dict[str, Any]:
                 cv = [r for pk in sorted(pks) for r in V.by(child, fk, pk)]
                 if cs or cv:
                     shown = sorted(pks)[:8]
-                    vals = ", ".join(f"'{p}'" for p in shown) + (f", ... ({len(pks)} keys)" if len(pks) > 8 else "")
+                    vals = ", ".join(f"'{_lit(p)}'" for p in shown) + (f", ... ({len(pks)} keys)" if len(pks) > 8 else "")
                     n["children"].append(node(child, cs, cv, f"{fk}::text IN ({vals})", depth + 1))
         return n
 
     srow, vrow = S.card(table, key), V.card(table, key)
-    root = node(table, [srow] if srow else [], [vrow] if vrow else [], f"{_kc(table, srow) if srow else GRAPH[table][0]}::text = '{key}'", 0)
+    root = node(table, [srow] if srow else [], [vrow] if vrow else [], f"{_kc(table, srow) if srow else GRAPH[table][0]}::text = '{_lit(key)}'", 0)
     root["key"] = key
     root["parents"] = [{"table": f"staging.{p}", "key_column": GRAPH[p][0], "key": str(srow[fk])}
                        for fk, p in parents if srow and srow.get(fk) is not None]

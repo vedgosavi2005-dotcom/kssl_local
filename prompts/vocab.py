@@ -28,6 +28,8 @@ REFS = {
     "ref_opportunity": ("market_opportunity", "opportunity_id", ["title"], None),
     "ref_location": ("competitive_geo_location", "location_id", ["country_name"], None),
     "ref_innovation": ("technology_innovation", "innovation_id", ["title"], None),
+    "ref_signal": ("competitive_signal", "signal_id", ["title"], "company_id"),            # a moment points at the signal it rolls up (scope: the subject competitor)
+    "ref_partnership": ("competitive_partnership", "relationship_id", ["partner_name"], "competitor_id"),   # a synthesis weakness traces to the ties of the subject competitor
     "ref_client_spec": ("client_product_specification", "specification_id", ["spec_name"], "client_product_id"),
     "ref_competitor_spec": ("competitive_product_specification", "spec_id", ["spec_label"], "product_id"),
 }
@@ -118,6 +120,16 @@ def h_new_id(m, row, L, col):
     return L.new_id(row, col)
 
 
+def h_new_id_stable(m, row, L, col):
+    """The same category + title is the same record whichever document or run found it (global requirements: a re-found requirement is
+    updated, not duplicated). Falls back to the run's own id when the row has no title."""
+    title = row.get("title")
+    if not title:
+        return L.new_id(row, col)
+    cat = row.get("category")
+    return L.stable_id(row.table, col, f"{' '.join(str(cat or '').casefold().split())}|{' '.join(str(title).casefold().split())}")
+
+
 def h_new_id_or_ref(m, row, L, col):
     ref = "ref_" + m.group(1)
     got = row.resolved.get(ref)
@@ -168,6 +180,18 @@ def h_transient(m, row, L, col):
 def h_host(m, row, L, col):
     url = row.get("source_url") if "source" in m.group(0) else (row.get("url") or row.get("source_url"))
     return host_of(url) if url else None
+
+
+def h_article_image(m, row, L, col):
+    """competitive_signal.thumbnail_url: the subject's image_url, else the image stored for the same article url, else the
+    article page's og:image (backend/news.py parse_page). Null when none is found; never an error."""
+    return L.article_image()
+
+
+def h_article_published(m, row, L, col):
+    """competitive_signal.published_date: the article's publication date (source_document.published_at for its url, else the
+    subject's published_date). Null when not known; never an error."""
+    return L.article_published()
 
 
 def h_from_ui(m, row, L, col):
@@ -360,8 +384,7 @@ def h_label_of(m, row, L, col):
 
 def h_developer(m, row, L, col):
     comps = [c for c in row.children if tail_match(c.table, "company")]
-    pick = next((c for c in comps if str(c.get("relationship") or "").lower() == "developer"), None)
-    pick = pick or (comps[0] if comps else None)
+    pick = next((c for c in comps if str(c.get("relationship") or "").lower() == "developer"), None)   # no developer named: none, not the first
     return pick.get("company_id") if pick else None
 
 
@@ -428,7 +451,8 @@ def h_bare(m, row, L, col):
 
 # order matters: the first match wins; the last entry is the bare-column fallback
 TOKENS = [
-    (r"new_id(?:_if_missing|_stable_by_category_and_title)?", h_new_id),
+    (r"new_id_stable_by_category_and_title", h_new_id_stable),
+    (r"new_id(?:_if_missing)?", h_new_id),
     (r"new_id_or_ref_(\w+)", h_new_id_or_ref),
     (r"parent_id", h_parent_id),
     (r"index|index_plus_1_of_output_order", h_index),
@@ -437,6 +461,8 @@ TOKENS = [
     (r"subject\.(\w+)", h_subject),
     (r"transient\.(\w+)", h_transient),
     (r"host_of_(?:source_)?url", h_host),
+    (r"article_image_url", h_article_image),
+    (r"article_published_date", h_article_published),
     (r"from_ui\.(\w+)\.(\w+)", h_from_ui),
     (r"from_ref_(\w+)", h_from_ref_name),
     (r"derive\.(\w+)", h_derive),

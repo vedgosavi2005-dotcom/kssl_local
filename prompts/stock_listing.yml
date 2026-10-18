@@ -1,0 +1,73 @@
+id: stock_listing
+title: Stock listing of one competitor (ticker and exchange, or a sourced statement that it is not listed)
+version: 2
+fills: [competitive_stock_quote]
+shows_on: "Competitor Profile: Stock card (hidden by decision, section 'stock'); the ticker is also read by the profile header"
+cadence: quarterly
+routine: false            # its UI section is hidden (ui.section_visibility); backend/routine.py skips it until it is shown
+web_search: true                 # the listing is on the company's investor page or the exchange's own page, not in the news rows
+# v1: only the LISTING FACT is written here (ticker, exchange, or "not listed" with its reason). Prices (latest_price, quote_timestamp,
+# competitive_stock_series) come from a price feed by code (prompts/stocks.py), never from this model: a price the model "remembers" is
+# not a sourced value. Until a feed is configured those columns stay null.
+
+subject:
+  key: competitor_id
+  query: |
+    SELECT c.competitor_id, c.display_name, c.short_name, c.legal_name, c.origin_country, c.headquarters, c.industry_sector
+    FROM staging.competitive_competitor c
+    ORDER BY (c.origin_country = 'India') DESC, c.display_name
+  documents:
+    - from: sql                  # what the company's own details say (client workbook), as leads for the search
+      query: |
+        SELECT 'COMPANY' AS doc, c.display_name, c.legal_name, c.origin_country, c.headquarters, c.industry_sector
+        FROM staging.competitive_competitor c WHERE c.competitor_id = '{{subject.competitor_id}}'
+    - from: sql                  # harvested documents that mention an exchange listing: leads only, the search must confirm
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.url,
+               substring(d.body_text from '(?i)(.{0,120}(?:NYSE|NASDAQ|Euronext|Xetra|Frankfurt Stock Exchange|London Stock Exchange|Nasdaq Stockholm|Oslo B.rs|Borsa Istanbul|NSE|BSE|KRX|Korea Exchange|Warsaw Stock Exchange|Tel Aviv Stock Exchange|ASX|ticker|stock symbol).{0,120})') AS listing_text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.source_kind, '') = 'newsroom'
+          AND d.body_text ~* '(NYSE|NASDAQ|Euronext|Xetra|stock exchange|ticker symbol|stock symbol)'
+        ORDER BY d.published_at DESC NULLS LAST LIMIT 3
+
+context: [client]
+
+task: |
+  TASK stock_listing — find out whether {{subject.display_name}} ({{subject.origin_country}}) has shares traded on a stock
+  exchange, and record the facts. Use web search: the company's investor-relations page, an annual report, or the exchange's own
+  page. No prices: do NOT write any share price, market value or percentage.
+
+  One record, table competitive_stock_quote:
+   - availability_state: listed (the company's own shares trade on a stock exchange) | not_listed (they do not) | unknown (no
+     source settles it)
+   - ticker: the symbol on its home exchange, exactly as the exchange or the company writes it (for example the letters before any
+     ".DE"); null unless listed
+   - exchange: the full name of the exchange where that ticker trades, as the source writes it; null unless listed. If the shares
+     trade on several exchanges, give the home exchange (the one in the company's own country) when a source names it
+   - currency: the ISO 4217 code of the currency the shares are quoted in, only if a source states it; otherwise null
+   - empty_message: when not_listed, one plain sentence saying why, from a source: for example that the company is owned by a
+     government or is a unit or joint venture of another group. Name that group or owner if the source does. For a unit of a listed
+     group say so, but give no ticker for the unit. null when listed or unknown.
+  Sources: give "_sources" for ticker + exchange (listed) or for empty_message (not_listed): the verbatim sentence and its URL.
+  Be quick: three searches at most (for example "<company> investor relations share information", "<company> stock exchange
+  listing", "<ticker> exchange"). A listed company needs both a ticker and the exchange; if you have the ticker from a news page,
+  search once more for the exchange before you leave it empty.
+  An unsure answer is "unknown" with empty_message null. Never guess a ticker from memory. A parent's ticker is not the company's.
+
+  PLAIN ENGLISH. Sentences of 20 words or fewer, active voice. Never use: leverage, synergy, ecosystem, robust.
+
+  COMPANY AND LEADS:
+  {{documents}}
+
+output:
+  competitive_stock_quote:
+    card: true
+    columns:
+      availability_state: {required: true, enum: [listed, not_listed, unknown]}
+      ticker: {max: 40}
+      exchange: {max: 80}
+      currency: {max: 3}
+      empty_message: {max: 300, plain: warn}
+    loader:
+      stock_id: new_id
+      competitor_id: subject.competitor_id

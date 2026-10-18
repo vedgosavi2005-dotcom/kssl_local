@@ -1,0 +1,75 @@
+id: segment_assessment
+title: Market segment recommendation (one sentence per category, from the counted tenders, awards and requirements)
+version: 2
+fills: [market_segment_assessment]
+shows_on: Market Intelligence / outlook ("what to do" sentence per segment)
+cadence: quarterly
+# One run per category. The model reads COUNTS and rows that code already computed from the stored tenders, awards, requirements and
+# opportunities (SQL below) and writes ONE plain sentence on what the numbers suggest for the client in that segment. No web search; no number
+# of its own. The sentence is a judgement: its _reason names the counts it rests on. Run after the tender, assessment and opportunity floods.
+
+# v2 (2026-10-18, market audit): the pursue / position counts were taken over every tender, awarded and closed ones included, while the
+#  sentence tells the reader which active tenders to look at. They now count open and closing tenders only (active_pursue, active_position).
+subject:
+  key: category_name
+  query: |
+    SELECT c.category_id, c.category_name FROM staging.technology_category c
+    WHERE c.is_active AND c.category_name <> 'Other' ORDER BY c.display_order
+  documents:
+    - from: sql
+      query: |
+        SELECT 'TENDERS' AS doc, count(*) FILTER (WHERE t.status IN ('open','closing')) AS active, count(*) FILTER (WHERE t.status = 'awarded') AS awarded,
+               count(*) FILTER (WHERE t.status = 'closed') AS closed,
+               count(*) FILTER (WHERE t.status IN ('open','closing') AND (t.value_amount IS NOT NULL OR t.value_text IS NOT NULL)) AS active_with_value,
+               count(*) FILTER (WHERE a.fit_grade = 'strong' AND t.status IN ('open','closing')) AS active_strong_fit,
+               count(*) FILTER (WHERE a.fit_grade = 'partial' AND t.status IN ('open','closing')) AS active_partial_fit,
+               count(*) FILTER (WHERE a.pursue_label = 'pursue' AND t.status IN ('open','closing')) AS active_pursue,
+               count(*) FILTER (WHERE a.pursue_label = 'position' AND t.status IN ('open','closing')) AS active_position,
+               count(DISTINCT t.country_name) AS countries
+        FROM staging.market_tender t
+        LEFT JOIN (SELECT DISTINCT ON (tender_id) tender_id, fit_grade, pursue_label FROM staging.market_tender_fit_assessment ORDER BY tender_id, assessed_at DESC) a
+          ON a.tender_id = t.tender_id
+        WHERE t.category_id = {{subject.category_id}}
+    - from: sql
+      query: |
+        SELECT 'TENDERS BY COUNTRY' AS doc, t.country_name, count(*) AS tenders, count(*) FILTER (WHERE t.status IN ('open','closing')) AS active
+        FROM staging.market_tender t WHERE t.category_id = {{subject.category_id}} GROUP BY 2 ORDER BY 3 DESC LIMIT 6
+    - from: sql
+      query: |
+        SELECT 'AWARDS' AS doc, w.winner, count(*) AS awards, string_agg(DISTINCT w.country_name, ', ') AS countries
+        FROM staging.market_award w WHERE lower(w.segment) = lower('{{subject.category_name}}') AND w.winner IS NOT NULL GROUP BY 2 ORDER BY 3 DESC LIMIT 8
+    - from: sql
+      query: |
+        SELECT 'REQUIREMENTS' AS doc, r.country_name, r.stage, r.kssl_fit, left(r.title, 80) AS title FROM staging.market_global_requirement r
+        WHERE lower(r.category) = lower('{{subject.category_name}}') ORDER BY r.last_confirmed DESC NULLS LAST LIMIT 8
+    - from: sql
+      query: |
+        SELECT 'OPPORTUNITIES' AS doc, o.stage, count(*) AS n FROM staging.market_opportunity o WHERE o.category_id = {{subject.category_id}} GROUP BY 2
+
+context: [client]
+
+task: |
+  TASK segment_assessment - write ONE recommendation sentence for {{client.name}} in the segment "{{subject.category_name}}", from the counted rows below.
+  Use ONLY the rows. If the rows hold fewer than 5 tenders, awards and requirements in all, write nothing: "records": [] and "skip_reason" = one sentence.
+  The sentence: max 220 characters, plain English, 25 words or fewer, names the segment's strongest signal in the counts (where the active tenders are, how many
+  fit strongly or partly, who wins awards) and says what to look at next. Use the figures as counted; never estimate a market size, a share or revenue.
+  No hype, never "{{client.name}} should" (write "Look at ..." or "Watch ...").
+
+  Example of the register only (fictional figures): "Most active tenders are in Veland and Marendo; 6 fit in part. Look at the 2 to pursue first."
+
+  One record, table market_segment_assessment: recommendation. _reason: one sentence naming the counts it rests on.
+
+  CLIENT: {{context.client}}
+
+  COUNTED ROWS:
+  {{documents}}
+
+output:
+  market_segment_assessment:
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      recommendation: {required: true, judgement: true, max: 220, plain: strict}
+    loader:
+      segment: subject.category_name
+      source_tier: constant_stored

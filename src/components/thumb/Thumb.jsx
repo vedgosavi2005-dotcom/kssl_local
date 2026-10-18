@@ -33,7 +33,9 @@ const FAILED = new Set();
    a `data:` or `javascript:` value is not something this app publishes, and an <img>
    is a place a stray value would otherwise be honoured silently. */
 export function thumbUsable(src, failed = FAILED) {
-  return typeof src === "string" && /^https?:\/\//i.test(src) && !failed.has(src);
+  // http(s), or the image folders shipped with the app: /product-images/ (served) and product-images/,
+  // news-images/ (beside the standalone HTML file)
+  return typeof src === "string" && /^(https?:\/\/|\/?product-images\/[\w.-]+$|news-images\/[\w.-]+$)/i.test(src) && !failed.has(src);
 }
 
 export function thumbMarkFailed(src, failed = FAILED) {
@@ -48,6 +50,8 @@ export function thumbMarkFailed(src, failed = FAILED) {
    FAILED set stays keyed on the ORIGINAL url, so a genuinely dead image still falls
    back once and is not retried. */
 export function proxied(src) {
+  // the standalone HTML has no /api/img: its images are local files or the original address
+  if (typeof window !== "undefined" && window.__EMBEDDED_DATASET__) return src;
   return typeof src === "string" && /^https?:\/\//i.test(src)
     ? `/api/img?u=${encodeURIComponent(src)}`
     : src;

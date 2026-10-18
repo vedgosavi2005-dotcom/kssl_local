@@ -5,10 +5,11 @@ set1:
   title: "Set 1 - News & weekly"
   when: "Daily (news, signal, tender) and weekly (tech_article, opportunity, moment, tender_assessment, top_opportunity)"
   needs: "The news job has fetched new articles (staging.news_candidate); tender notices are in staging.market_tender_source"
-  prompts: [news, signal, tech_article, opportunity, tender, moment, tender_assessment, top_opportunity]
+  prompts: [news, signal, tech_article, opportunity, tender, moment, tender_assessment, top_opportunity, segment_assessment]
 set2:
   folder: routines/set2_research
   title: "Set 2 - Research (web search)"
   when: "Quarterly, or on demand after the client's Excel (competitors, products, specs) changes"
   needs: "Competitors, products and specs loaded (Excel); patent filings for patent_classification"
-  prompts: [partnership, project, geo, matchup, global_requirement, innovation_discovery, innovation_detail, patent_classification]
+  prompts: [partnership, project, geo, matchup, global_requirement, innovation_discovery, innovation_detail, patent_classification,
+            synthesis, field_synthesis, product_program, client_product_program, swot, stock_listing]

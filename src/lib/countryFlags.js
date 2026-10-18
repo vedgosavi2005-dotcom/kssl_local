@@ -9,6 +9,29 @@
 const f1 = (x) => (Math.round(x * 10) / 10).toString();
 
 // Canonical country key mapping
+/* Country-name spellings -> ISO 3166 alpha-2, for the patent office column. A neutral lookup, no records. */
+export const COUNTRY_ISO2_ALIAS = {
+  INDIA: "IN",
+  USA: "US",
+  "UNITED STATES": "US",
+  "U.S.": "US",
+  "U.S.A.": "US",
+  UK: "GB",
+  "UNITED KINGDOM": "GB",
+  KOREA: "KR",
+  "SOUTH KOREA": "KR",
+  "REPUBLIC OF KOREA": "KR",
+  GERMANY: "DE",
+  FRANCE: "FR",
+  SPAIN: "ES",
+  ISRAEL: "IL",
+  AUSTRALIA: "AU",
+  CANADA: "CA",
+  JAPAN: "JP",
+  CHINA: "CN",
+};
+
+
 export const COUNTRY_KEY_MAP = {
   // USA
   usa: "usa",

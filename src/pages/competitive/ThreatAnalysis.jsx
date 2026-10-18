@@ -1,507 +1,305 @@
-import { useState, useMemo, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
-import { formatDate as fmtDate } from "../../utils/formatDate.js";
+import { clientShort } from "../../lib/client.js";
+import { stanceOf, STANCE_WORD, MOMENT_PRESETS as PRESETS, momentStance } from "../../lib/chrome";
+import { rosterOf } from "../../lib/profile";
+import { momentsOf } from "../../lib/moments";
+import { competitorFullName } from "../../lib/companyNames";
+import { formatDate } from "../../utils/formatDate";
+import { NO_DATE_LABEL } from "../../lib/overview";
 import Thumb from "../../components/thumb/Thumb.jsx";
+import { sourceHref } from "../../components/sourceLink/SourceLink.jsx";
+import { srcChips } from "../../lib/html";
 import { Review } from "../../components/review/Review.jsx";
 
-// the house date format; "Undated" (chrome) when the move carries no date
-const formatDate = (v) => (v ? fmtDate(String(v)) : "Undated");
+/* Competitor Movement (code name: moment): what each tracked competitor has just done, newest first, with what it
+   means for the client. Every row is one dated, sourced move from `competitorNews` (the same
+   list the Competitor Profile reads); nothing is computed beyond counting them. Moves are plain rows: the article's picture and date
+   on the left, what happened on the right; a click opens the analysis in the white panel beside the list. Today / Week / Month (or a From-To range) window them, counted
+   back from the newest move on record, so the window reads the same however late it is opened. */
 
-/* The dot beside a competitor: its stored threat_level (threat | watch | fav). Any other
-   stored value has no colour; the stored text is the tooltip. */
-const DOT = { threat: "threat", watch: "watch", fav: "fav" };
-/* Drawer header colour from the level's stored tag_class (ui.competitive_competitor_moment_level). */
-const HEAD_CLASS = { threat: "threat", opportunity: "fav", fav: "fav", kssl: "fav", watch: "watch" };
+/* A moment's stored level (serving.competitive_competitor_moment.grade) is a judgement of the data. It draws a pill
+   only when it reads as a threat or a watch (momentStance); any other stored level draws no pill. */
+const keyOf = (m) => `${m.cid}|${m.url}|${m.title}`;
+const DAY = 86400000;
+const ALL = "__all";
+const iso = (ms) => new Date(ms).toISOString().slice(0, 10);
+const dateOf = (s) => {
+  const t = Date.parse(s || "");
+  return Number.isFinite(t) ? t : 0;
+};
 
 export default function ThreatAnalysis() {
   const { setScope } = useAppState();
   const { data } = useData();
+  const [selectedCid, setSelectedCid] = useState(ALL);
+  const [search, setSearch] = useState("");
+  const [preset, setPreset] = useState("all");
+  const [custom, setCustom] = useState({ from: "", to: "" });
+  const [sel, setSel] = useState(null);
 
-  const competitorsData = data.competitorMoment?.competitors || [];
-  const momentData = data.competitorMoment || { items: [], timeWindows: [], levels: {} };
-  const allMoves = momentData.items || [];
+  const roster = useMemo(() => {
+    const news = (data && data.competitorNews) || {};
+    return (data && data.competitors ? rosterOf(data) : [])
+      .map((r) => {
+        const name = competitorFullName(r.cid, r.name, data.competitors) || r.name;
+        const moves = momentsOf(news[r.cid]).map((m) => ({ ...m, cid: r.cid, company: name }));
+        return { cid: r.cid, name, threat: r.threat, moves };
+      });
+  }, [data]);
 
-  const [selectedCid, setSelectedCid] = useState("__all");
-  const [searchQuery, setSearchQuery] = useState("");
-  // the window the ui table marks as default (is_default); none marked = no window
-  const [timeFilter, setTimeFilter] = useState(() => {
-    const def = (data.competitorMoment?.timeWindows || []).find((w) => w.isDefault);
-    return def ? def.id : "";
-  });
-  const [customRange, setCustomRange] = useState({ from: "", to: "" });
-  const [selectedMoveId, setSelectedMoveId] = useState(null);
+  // "today" is the newest dated move on record, so the window reads the same however late it is opened
+  const newest = useMemo(() => Math.max(0, ...roster.flatMap((r) => r.moves.map((m) => dateOf(m.date)))), [roster]);
 
-  // Determine newest date anchor
-  const newestTimestamp = useMemo(() => {
-    return Math.max(0, ...allMoves.map((m) => Date.parse(m.date) || 0));
-  }, [allMoves]);
-
-  // Compute active date boundaries
-  const activeDateRange = useMemo(() => {
-    if (timeFilter === "custom") return customRange;
-    const windowDef = (momentData.timeWindows || []).find((w) => w.id === timeFilter);
-    const days = windowDef ? windowDef.days : null;
-    if (days == null || !newestTimestamp) {
-      return { from: "", to: "" };
-    }
-    const fromTime = newestTimestamp - days * 86400000;
-    return {
-      from: new Date(fromTime).toISOString().slice(0, 10),
-      to: new Date(newestTimestamp).toISOString().slice(0, 10),
-    };
-  }, [timeFilter, customRange, newestTimestamp, momentData.timeWindows]);
-
-  // Date filter predicate
-  const matchesDate = (item) => {
-    const t = Date.parse(item.date) || 0;
-    const fromT = activeDateRange.from ? Date.parse(activeDateRange.from) : -Infinity;
-    const toT = activeDateRange.to ? Date.parse(activeDateRange.to) + 86399999 : Infinity;
-    return t >= fromT && t <= toT;
+  // the window as dates, so the From / To boxes always show what the preset means
+  const range = useMemo(() => {
+    if (preset === "custom") return custom;
+    const days = (PRESETS.find((p) => p[0] === preset) || [])[2];
+    return days == null || !newest ? { from: "", to: "" } : { from: iso(newest - days * DAY), to: iso(newest) };
+  }, [preset, custom, newest]);
+  const inRange = (m) => {
+    const t = dateOf(m.date);
+    const from = range.from ? Date.parse(range.from) : -Infinity;
+    const to = range.to ? Date.parse(range.to) + DAY - 1 : Infinity;
+    return t >= from && t <= to;
   };
+  const setDate = (k, v) => { setCustom({ ...range, [k]: v }); setPreset("custom"); };
 
-  // Competitor moves mapped & filtered
-  const competitorStats = useMemo(() => {
-    return competitorsData.map((comp) => {
-      const compMoves = allMoves.filter((m) => m.cid === comp.cid);
-      const filtered = compMoves.filter(matchesDate);
-      return {
-        ...comp,
-        allCount: compMoves.length,
-        filteredCount: filtered.length,
-      };
-    });
-  }, [competitorsData, allMoves, activeDateRange]);
-
-  // Filtered competitor list for sidebar search
-  const visibleCompetitors = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return competitorStats;
-    return competitorStats.filter(
-      (c) => c.name.toLowerCase().includes(q) || (c.short || "").toLowerCase().includes(q)
-    );
-  }, [competitorStats, searchQuery]);
-
-  // Active moves feed
-  const displayedMoves = useMemo(() => {
-    let list = allMoves.filter(matchesDate);
-    if (selectedCid !== "__all") {
-      list = list.filter((m) => m.cid === selectedCid);
-    }
-    // newest first; equal dates keep their stored display_order
-    return list.slice().sort(
-      (a, b) =>
-        (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0) ||
-        (a.order == null ? Infinity : a.order) - (b.order == null ? Infinity : b.order),
-    );
-  }, [allMoves, selectedCid, activeDateRange]);
-
-  // Selected competitor metadata
-  const selectedCompetitor = useMemo(() => {
-    if (selectedCid === "__all") return null;
-    return competitorsData.find((c) => c.cid === selectedCid) || null;
-  }, [selectedCid, competitorsData]);
-
-  const activeTitle = selectedCompetitor ? selectedCompetitor.name : "All competitors";
-  const levelOf = (m) => (momentData.levels || {})[String(m.level || "").toLowerCase()] || { label: m.level, tagClass: "neutral" };
-  // "graded a threat" = moves whose level's stored tag_class is "threat"
-  const threatCount = displayedMoves.filter((m) => levelOf(m).tagClass === "threat").length;
-  const windowedTotal = useMemo(() => allMoves.filter(matchesDate).length, [allMoves, activeDateRange]);
-
-  // Selected detail move
-  const selectedMove = useMemo(() => {
-    if (!selectedMoveId) return null;
-    return allMoves.find((m) => m.id === selectedMoveId) || null;
-  }, [selectedMoveId, allMoves]);
-
-  // Sync with the global header report (memoised: a new object every render re-publishes forever)
-  const report = useMemo(
-    () => ({
-      title: `${activeTitle}: competitor moment`,
-      subtitle: `${displayedMoves.length} move${displayedMoves.length === 1 ? "" : "s"} ${
-        activeDateRange.from ? `from ${activeDateRange.from} to ${activeDateRange.to}` : "on record"
-      }`,
-      sections: [
-        {
-          h: "Moves, newest first",
-          rows: displayedMoves.map((m) => [
-            `${formatDate(m.date)} · ${m.company} [${levelOf(m).label || ""}]`,
-            [m.title, m.summary].filter(Boolean).join(". "),
-          ]),
-        },
-      ],
-      payload: {
-        competitor: selectedCompetitor ? selectedCompetitor.cid : null,
-        moves: displayedMoves,
-      },
-    }),
+  const counted = useMemo(
+    () => roster.map((r) => ({ ...r, all: r.moves.length, moves: r.moves.filter(inRange).sort((a, b) => dateOf(b.date) - dateOf(a.date)) }))
+      .sort((a, b) => b.moves.length - a.moves.length),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeTitle, displayedMoves, activeDateRange, selectedCompetitor, momentData],
+    [roster, range],
   );
+  const shown = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    return q ? counted.filter((r) => r.name.toLowerCase().includes(q) || r.cid.toLowerCase().includes(q)) : counted;
+  }, [counted, search]);
+  const co = counted.find((r) => r.cid === selectedCid) || null;
+  const total = counted.reduce((n, r) => n + r.moves.length, 0);
+  const moves = useMemo(
+    () => (co ? co.moves : counted.flatMap((r) => r.moves).sort((a, b) => dateOf(b.date) - dateOf(a.date))),
+    [co, counted],
+  );
+  const open = sel ? moves.find((m) => keyOf(m) === sel) || null : null;
+  // only a threat or watch level is a stance; any other stored level draws no word and no stance colour
+  const levelTag = (l) => momentStance(l);
+  const levelWord = (l) => STANCE_WORD[levelTag(l)] || "";
+  const threats = moves.filter((m) => levelTag(m.level) === "threat").length;
+  const label = co ? co.name : "All competitors";
+  const clientName = clientShort();
+
+  useEffect(() => {
+    setScope("competitive", { moves: moves.length, competitor: co ? co.cid : null }, {
+      pillar: "Competitive",
+      view: "Competitor Movement",
+      selection: label,
+    });
+  }, [moves.length, co, label, setScope]);
+
+  // memoised: an inline object here made the header report re-fire on every render
+  const report = useMemo(() => ({
+    title: `${label}: competitor movement`,
+    subtitle: `${moves.length} move${moves.length === 1 ? "" : "s"} ${range.from ? `from ${range.from} to ${range.to}` : "on record"}`,
+    sections: [{
+      heading: "Moves, newest first",
+      facts: moves.map((m) => [[m.date, levelWord(m.level)].filter(Boolean).join(" · "), `${m.title}. ${m.analysis || ""}`]),
+    }],
+    payload: { competitor: co ? co.cid : null, moves },
+  }), [co, label, moves, range]);
   useHeaderReport(report);
 
-  // Sync shell scope
-  useEffect(() => {
-    setScope(
-      "competitive",
-      { moves: displayedMoves.length, competitor: selectedCompetitor ? selectedCompetitor.cid : null },
-      { pillar: "Competitive", view: "Competitor Moment", selection: activeTitle }
-    );
-  }, [displayedMoves.length, selectedCompetitor, activeTitle, setScope]);
+  if (!roster.length) {
+    return <div className="empty-note">No competitor movements on record.</div>;
+  }
+
+  const row = (cid, name, n, dot, all) => (
+    <div
+      key={cid}
+      className={`pat-li${cid === selectedCid ? " active" : ""}`}
+      onClick={() => setSelectedCid(cid)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedCid(cid); } }}
+      role="button"
+      tabIndex={0}
+    >
+      <span className="pli-n" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {stanceOf(dot) ? <span className={`wdot ${dot}`} /> : null}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+        </span>
+        <span className="pli-ct" title={`${n} in this window, ${all} on record`}>{preset === "all" ? n : `${n}/${all}`}</span>
+      </span>
+    </div>
+  );
 
   return (
-    <div
-      className="pos-view v-projects"
-      style={{
-        gridTemplateColumns: selectedMove ? "280px minmax(0, 1fr) 440px" : "280px 1fr",
-      }}
-    >
-      {/* 1. LEFT SIDEBAR: COMPETITORS LIST */}
+    <div className="pos-view v-projects" style={{ gridTemplateColumns: open ? "300px minmax(0, 1fr) 440px" : "300px 1fr" }}>
       <div className="mu-list">
         <div className="mu-list-h">
           <div className="proj-sidebar-h">
-            <span className="eyebrow">Competitors ({competitorsData.length})</span>
+            <span className="eyebrow">Competitors ({shown.length})</span>
           </div>
           <div className="mu-search" style={{ marginTop: "10px" }}>
             <span className="si">⌕</span>
-            <input
-              type="text"
-              placeholder="Search competitor…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
+            <input type="text" placeholder="Search competitor…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
         </div>
-
         <div id="patc-list">
-          {/* All competitors entry */}
-          <div
-            className={`pat-li${selectedCid === "__all" ? " active" : ""}`}
-            onClick={() => {
-              setSelectedCid("__all");
-              setSelectedMoveId(null);
-            }}
-            role="button"
-            tabIndex={0}
-          >
-            <span
-              className="pli-n"
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span>All competitors</span>
-              </span>
-              <span className="pli-ct">{windowedTotal}</span>
-            </span>
-          </div>
-
-          {/* Individual competitor items */}
-          {visibleCompetitors.map((c) => (
-            <div
-              key={c.cid}
-              className={`pat-li${selectedCid === c.cid ? " active" : ""}`}
-              onClick={() => {
-                setSelectedCid(c.cid);
-                setSelectedMoveId(null);
-              }}
-              role="button"
-              tabIndex={0}
-            >
-              <span
-                className="pli-n"
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}
-              >
-                <span
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <span
-                    className={`wdot ${DOT[String(c.threat).toLowerCase()] || ""}`}
-                    title={c.threat || undefined}
-                  />
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {c.name}
-                  </span>
-                </span>
-                <span className="pli-ct">{c.filteredCount}</span>
-              </span>
-            </div>
-          ))}
+          {row(ALL, "All competitors", total, null, roster.reduce((n, r) => n + r.moves.length, 0))}
+          {shown.map((r) => row(r.cid, r.name, r.moves.length, r.threat, r.all))}
         </div>
       </div>
 
-      {/* 2. MAIN FEED: COMPETITOR MOMENT FEED */}
       <div className="proj-main" style={{ overflowY: "auto", padding: "22px 28px 40px" }}>
-        {/* Header */}
         <div className="proj-co-header">
           <div className="proj-co-title-group">
-            <span className="proj-co-eyebrow">Competitor Moment</span>
-            <h1 className="proj-co-name">{activeTitle}</h1>
+            <span className="proj-co-eyebrow">Competitor Movement</span>
+            <h1 className="proj-co-name">{label}</h1>
             <div className="proj-co-sub">
-              <span>
-                {displayedMoves.length} {displayedMoves.length === 1 ? "move" : "moves"} in this window ·{" "}
-                {threatCount} graded a threat
-              </span>
+              <span>{moves.length} {moves.length === 1 ? "move" : "moves"} in this window · {threats} graded a threat</span>
             </div>
           </div>
         </div>
 
-        {/* Time Window & Date Range Bar */}
         <div className="cm-bar">
           <div className="cm-chips" role="group" aria-label="Time window">
-            {(momentData.timeWindows || []).map((w) => (
-              <button
-                key={w.id}
-                type="button"
-                className={`cm-chip${timeFilter === w.id ? " on" : ""}`}
-                onClick={() => setTimeFilter(w.id)}
-              >
-                {w.label}
-              </button>
+            {PRESETS.map(([id, text]) => (
+              <button key={id} type="button" className={`cm-chip${preset === id ? " on" : ""}`} aria-pressed={preset === id} onClick={() => setPreset(id)}>{text}</button>
             ))}
           </div>
-
-          <label className="cm-date">
-            From{" "}
-            <input
-              type="date"
-              value={activeDateRange.from}
-              max={activeDateRange.to || undefined}
-              onChange={(e) => {
-                setCustomRange((prev) => ({ ...prev, from: e.target.value }));
-                setTimeFilter("custom");
-              }}
-            />
-          </label>
-
-          <label className="cm-date">
-            To{" "}
-            <input
-              type="date"
-              value={activeDateRange.to}
-              min={activeDateRange.from || undefined}
-              onChange={(e) => {
-                setCustomRange((prev) => ({ ...prev, to: e.target.value }));
-                setTimeFilter("custom");
-              }}
-            />
-          </label>
-
-          {newestTimestamp ? (
-            <span className="cm-anchor">
-              Today = newest move, {formatDate(new Date(newestTimestamp).toISOString().slice(0, 10))}
-            </span>
-          ) : null}
+          <label className="cm-date">From <input type="date" value={range.from} max={range.to || undefined} onChange={(e) => setDate("from", e.target.value)} /></label>
+          <label className="cm-date">To <input type="date" value={range.to} min={range.from || undefined} onChange={(e) => setDate("to", e.target.value)} /></label>
+          {newest ? <span className="cm-anchor">Today = newest move, {formatDate(iso(newest))}</span> : null}
         </div>
 
-        {/* Moves List Stream */}
-        {displayedMoves.length > 0 ? (
+        {moves.length ? (
           <div className="cm-list">
-            {displayedMoves.map((m) => {
-              const levelCfg = levelOf(m);
-              const isSelected = selectedMoveId === m.id;
-
-              return (
-                <div
-                  key={m.id}
-                  className={`cm-row${isSelected ? " sel" : ""}`}
-                  onClick={() => setSelectedMoveId(m.id)}
-                  role="button"
-                  tabIndex={0}
-                  title="Open the strategic analysis"
-                >
-                  <div className="cm-left">
-                    {m.image ? (
-                      <div className="cm-img">
-                        <Thumb src={m.image} alt="" caption="no image" />
-                      </div>
-                    ) : null}
-                    <div className="cm-when">
-                      <b>{formatDate(m.date)}</b>
-                      <span>{[m.category, m.country].filter(Boolean).join(" · ")}</span>
-                    </div>
-                  </div>
-
-                  <div className="cm-main">
-                    <div className="cm-top">
-                      <span className="cm-co">{m.company}</span>
-                      <span className={`proj-tag-pill ${levelCfg.tagClass}`}>
-                        {levelCfg.label}
-                      </span>
-                      {m.source ? <span className="cm-src">{m.source}</span> : null}
-                    </div>
-
-                    <div className="cm-title">{m.title}</div>
-                    {m.summary ? <div className="cm-desc">{m.summary}</div> : null}
-                    <Review src={m._src} />
+            {moves.map((m, i) => (
+              <div
+                key={`${m.url}${i}`}
+                className={`cm-row${open && keyOf(m) === sel ? " sel" : ""}`}
+                onClick={() => setSel(keyOf(m))}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSel(keyOf(m)); } }}
+                role="button"
+                tabIndex={0}
+                title="Open the analysis"
+              >
+                <div className="cm-left">
+                  <Thumb src={m.image} alt="" className="cm-img" caption={m.source || "No image published"} />
+                  <div className="cm-when">
+                    <b>{formatDate(m.date) || NO_DATE_LABEL}</b>
+                    {[m.category, m.country].filter(Boolean).join(" · ")}
                   </div>
                 </div>
-              );
-            })}
+                <div className="cm-main">
+                  <div className="cm-top">
+                    <span className="cm-co">{m.company}</span>
+                    {levelWord(m.level) ? <span className={`proj-tag-pill ${levelTag(m.level) || "neutral"}`}>{levelWord(m.level)}</span> : null}
+                    <span className="cm-src">{m.source || "Source"}</span>
+                  </div>
+                  <div className="cm-title">{m.title}</div>
+                  {m.description ? <div className="cm-desc">{m.description}</div> : null}
+                  {m.changeNote ? <div className="cm-desc"><b>What changed: </b>{m.changeNote}</div> : null}
+                  <Review src={m._src} />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
-          <div className="proj-section-block" style={{ marginTop: "20px" }}>
+          <div className="proj-section-block">
             <table className="proj-data-table">
               <tbody>
-                <tr>
-                  <td className="proj-table-val">
-                    No move by {activeTitle} in this window.{" "}
-                    <button
-                      type="button"
-                      className="cm-chip on"
-                      style={{ display: "inline-block", marginLeft: "8px", verticalAlign: "middle" }}
-                      onClick={() => {
-                        // every date: an open custom range
-                        setCustomRange({ from: "", to: "" });
-                        setTimeFilter("custom");
-                      }}
-                    >
-                      Show all dates
-                    </button>
-                  </td>
-                </tr>
+                <tr><td className="proj-table-val">
+                  No move by {co ? co.name : "any competitor"} in this window{co && co.all ? `, but ${co.all} earlier ${co.all === 1 ? "move is" : "moves are"} on record` : ""}.{" "}
+                  <button type="button" className="cm-chip on" onClick={() => setPreset("all")}>Show all dates</button>
+                </td></tr>
               </tbody>
             </table>
           </div>
         )}
       </div>
-
-      {/* 3. RIGHT DETAIL DRAWER: STRATEGIC ANALYSIS */}
-      {selectedMove && (
-        <div className="ctx v-overview revealed">
-          <div className="ctx-scroll">
-            {/* Header: colour from the level's stored tag_class */}
-            <div className={`ctx-h dir-${HEAD_CLASS[levelOf(selectedMove).tagClass] || "none"}`}>
-              <div className="ctx-h-actions">
-                <button
-                  type="button"
-                  className="col-close"
-                  onClick={() => setSelectedMoveId(null)}
-                  title="Close"
-                  aria-label="Close"
-                >
-                  ✕
-                </button>
+      {open ? (() => {
+        const [meaning] = String(open.analysis || "").split(/\s*Action:\s*/);
+        const lenses = Array.isArray(open.lenses) && open.lenses.length ? open.lenses : null;
+        const dir = levelTag(open.level) || undefined;   // no stored level, no stance class
+        const chips = srcChips(sourceHref(open.url) ? [{ label: open.source || "Source", url: open.url }] : null);
+        return (
+          <div className="ctx v-overview revealed">
+            <div className="ctx-scroll">
+              <div className={dir ? `ctx-h dir-${dir}` : "ctx-h"}>
+                <div className="ctx-h-actions">
+                  <button aria-label="Close" className="col-close" onClick={() => setSel(null)} title="Close" type="button">✕</button>
+                </div>
+                <div className="ct" style={{ paddingRight: "40px" }}>{open.title}</div>
+                <div className="sub" style={{ marginTop: "8px" }}>{[open.company, formatDate(open.date)].filter(Boolean).join(" · ")}</div>
+                <Review src={open._src} />
               </div>
-              <div className="ct" style={{ paddingRight: "40px" }}>
-                {selectedMove.title}
+              {sourceHref(open.image) || /^(product|news)-images\//.test(open.image || "") ? (
+                <div className="ctx-sec">
+                  <Thumb src={open.image} alt="" caption={open.source || ""} style={{ width: "100%", aspectRatio: "16 / 9", borderRadius: "6px", display: "block" }} />
+                </div>
+              ) : null}
+              <div className="ctx-sec">
+                <span className="eyebrow">At a glance</span>
+                <div className="cd-facts">
+                  {[["Company", open.company], ["Date", formatDate(open.date)], ["Category", open.category], ["Country", open.country], ["Source", open.source]]
+                    .filter((f) => f && f[1])
+                    .map(([k, v]) => (
+                      <div className="cd-frow" key={k}>
+                        <span className="cd-fline"><span className="cd-fk">{k}</span><span className="cd-fv">{v}</span></span>
+                      </div>
+                    ))}
+                </div>
               </div>
-              <div className="sub" style={{ marginTop: "8px" }}>
-                {[selectedMove.company, selectedMove.date ? formatDate(selectedMove.date) : ""].filter(Boolean).join(" · ")}
-              </div>
-              <Review src={selectedMove._src} />
-            </div>
-
-            {/* At a glance: only the columns the move carries */}
-            <div className="ctx-sec">
-              <span className="eyebrow">At a glance</span>
-              <div className="cd-facts">
-                {[
-                  ["Company", selectedMove.company],
-                  ["Date", selectedMove.date ? formatDate(selectedMove.date) : ""],
-                  ["Category", selectedMove.category],
-                  ["Country", selectedMove.country],
-                  ["Region", selectedMove.region],
-                  ["Strategic Program", selectedMove.program],
-                  ["Source", selectedMove.source],
-                ]
-                  .filter(([, val]) => val)
-                  .map(([label, val]) => (
-                    <div key={label} className="cd-frow">
-                      <span className="cd-fline">
-                        <span className="cd-fk">{label}</span>
-                        <span className="cd-fv">{val}</span>
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-
-            {selectedMove.whatHappened ? (
               <div className="ctx-sec">
                 <span className="eyebrow">What happened</span>
-                <div className="cd-prose">{selectedMove.whatHappened}</div>
+                <div className="cd-prose">{open.description || "Not on record"}</div>
               </div>
-            ) : null}
-
-            {selectedMove.analysis ? (
+              {open.changeNote ? (
+                <div className="ctx-sec">
+                  <span className="eyebrow">What changed since the previous move</span>
+                  <div className="cd-prose">{open.changeNote}</div>
+                </div>
+              ) : null}
+              {Array.isArray(open.steps) && open.steps.length > 1 ? (
+                <div className="ctx-sec">
+                  <span className="eyebrow">Story so far</span>
+                  <ol className="pj-time">
+                    {open.steps.filter((t) => t.type !== "label_change").map((t, i) => (
+                      <li key={i}>
+                        <span className="pj-d">{formatDate(t.date) || NO_DATE_LABEL}</span>
+                        <span className="pj-e">{t.line}{t.changed ? ` (${t.changed})` : ""}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
               <div className="ctx-sec">
-                <span className="eyebrow">Analysis · what it means for KSSL</span>
-                <div className="cd-prose">{selectedMove.analysis}</div>
+                <span className="eyebrow">Analysis{clientName ? ` · what it means for ${clientName}` : ""}</span>
+                <div className="cd-prose">{meaning || "Not assessed."}</div>
               </div>
-            ) : null}
-
-            {/* Deeper analysis · by view (competitive_competitor_moment_analysis) */}
-            {(selectedMove.deeper || []).filter((l) => l.text).length > 0 && (
-              <div className="ctx-sec">
-                <span className="eyebrow">Deeper analysis · by view</span>
-                {selectedMove.deeper.filter((l) => l.text).map((lens, i) => (
-                  <div key={`${lens.view}-${i}`} style={{ marginTop: "14px" }}>
-                    {lens.view ? (
-                      <div
-                        style={{
-                          fontFamily: "var(--mono)",
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          letterSpacing: ".08em",
-                          textTransform: "uppercase",
-                          color: "var(--l-txt-2)",
-                          marginBottom: "4px",
-                        }}
-                      >
-                        {lens.view}
-                      </div>
-                    ) : null}
-                    <div className="cd-prose">{lens.text}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Sources: the move's own source link, then competitive_competitor_moment_source rows */}
-            {(() => {
-              const links = [];
-              if (selectedMove.url) links.push({ label: selectedMove.source || selectedMove.url, url: selectedMove.url });
-              (selectedMove.sources || []).forEach((x) => {
-                if (x.url && !links.some((l) => l.url === x.url)) links.push({ label: x.publisher || x.url, url: x.url });
-              });
-              if (!links.length && !selectedMove.source) return null;
-              return (
+              {lenses ? (
+                <div className="ctx-sec">
+                  <span className="eyebrow">Deeper analysis · by view</span>
+                  {lenses.map((l) => (
+                    <div key={l.view} style={{ marginTop: "16px" }}>
+                      <div style={{ display: "block", width: "100%", fontFamily: "var(--mono)", fontSize: "11px", fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--l-txt-2)", margin: "0 0 5px" }}>{l.view}</div>
+                      <div className="cd-prose">{l.text}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {chips ? (
                 <div className="ctx-sec">
                   <span className="eyebrow">Source</span>
-                  <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {links.length ? links.map((l) => (
-                      <a
-                        key={l.url}
-                        href={l.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{
-                          color: "var(--brand)",
-                          fontFamily: "var(--mono)",
-                          fontSize: "12px",
-                          textDecoration: "underline",
-                          wordBreak: "break-all",
-                        }}
-                      >
-                        {l.label} ↗
-                      </a>
-                    )) : (
-                      <span style={{ color: "var(--l-txt-2)", fontSize: "12px" }}>{selectedMove.source}</span>
-                    )}
-                  </div>
+                  <div dangerouslySetInnerHTML={{ __html: chips }} style={{ marginTop: "5px" }} />
                 </div>
-              );
-            })()}
+              ) : null}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })() : null}
     </div>
   );
 }

@@ -14,7 +14,7 @@ case "$DB" in kssl_v2_test*) ;; *) echo "refusing: test databases must be named 
 SEEDS=("$@"); [ ${#SEEDS[@]} -eq 0 ] && SEEDS=(db/test_seed_v2/*.sql)
 
 "${PSQL[@]}" -d postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
-"${PSQL[@]}" -d "$DB" < kssl_schema_from_docx.sql
+"${PSQL[@]}" -d "$DB" < db/schema/kssl_schema_from_docx.sql
 for m in db/migrations/*.sql; do "${PSQL[@]}" -d "$DB" < "$m"; done
 for f in "${SEEDS[@]}"; do [ -e "$f" ] && { echo "seed $f"; "${PSQL[@]}" -d "$DB" < "$f"; }; done
 "${PSQL[@]}" -d "$DB" <<'SQL'

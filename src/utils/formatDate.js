@@ -18,7 +18,10 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
    Only the day needs it here: the month is always a name, never a number. */
 const pad2 = (n) => String(n).padStart(2, "0");
 
-export function formatDate(value = new Date()) {
+/* No value -> "" (never today, never 1970): a record with no stored date shows no date. Callers that mean
+   "now" (a report's print date) pass new Date() themselves. */
+export function formatDate(value) {
+  if (value == null || value === "") return "";
   if (value instanceof Date) return fromDate(value);
   if (typeof value === "string") {
     const s = value.trim();
@@ -34,6 +37,8 @@ export function formatDate(value = new Date()) {
        "Sep 2026"/"September 2026" carry no day, but `new Date("Sep 2026")` silently
        resolves them to the 1st -- which is how a 9 Sep article read as "01 Sep 2026".
        They carry a real month, so they return as month + year rather than a dash. */
+    // YEAR-ONLY IN, YEAR-ONLY OUT ("2019": a source that states only the year), never "01 Jan 2019"
+    if (/^(19|20)\d{2}$/.test(s)) return s;
     m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(s);
     if (m) return `${MONTHS[Number(m[2]) - 1]} ${m[1]}`;
     m = /^([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{4})$/.exec(s);

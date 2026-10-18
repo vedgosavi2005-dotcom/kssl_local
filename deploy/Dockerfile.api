@@ -2,4 +2,6 @@ FROM python:3.12-slim
 WORKDIR /app
 RUN pip install --no-cache-dir fastapi==0.111.0 uvicorn==0.30.0 psycopg2-binary==2.9.10 pyyaml==6.0.2
 COPY backend backend
+# backend/areas import prompts.spec_values (units) and prompts.derive_comp (org names)
+COPY prompts prompts
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8600"]

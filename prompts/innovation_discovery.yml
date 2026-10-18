@@ -1,23 +1,28 @@
 id: innovation_discovery
 title: Innovation discovery (candidate innovations per technology category)
-version: 1
+version: 2
 fills: [technology_innovation, technology_innovation_source, technology_source]
 shows_on: Innovation Pipeline (the list row; the detail panel is filled by innovation_detail)
 cadence: quarterly
-web_search: true
-# STAGE 1 of 2. This prompt only names candidates. Each candidate is stored as a technology_innovation row with
-# status 'candidate' (a thin row: title, category, one-line description, sources). innovation_detail then picks up
-# every 'candidate' row, fills the rest and sets status 'active'. The backend must list only status 'active'.
-# A candidate that is already on record is given as ref_innovation (its exact title) and is then left as it is.
+keep_previous:            # a scheduled or forced re-run replaces only what is still a candidate; an innovation innovation_detail has finished
+  technology_innovation: "status <> 'candidate'"     # (and its child rows) stays (2026-10-18: a --rerun on 17 Oct deleted 38 finished ones)
+# STAGE 1 of 2 (v2, step 7; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.3.2). This prompt only names candidates. Each is stored as a
+# technology_innovation row with status 'candidate' (hidden by the backend until innovation_detail passes it). v2 changes:
+#  - the leads are the technology cards the tech_article job already built (sourced, dated, scored), not a headline list;
+#  - a candidate is a TECHNOLOGY, not a product: derive.innovation_gate deletes any candidate whose title carries a KSSL product name or a
+#    competitor catalogue product designation (ATAGS, MArG, XM1776 ... are products);
+#  - technology_kind from the code list; at least one source with a url (the gate also drops a candidate left with none).
+# A candidate already on record is given as ref_innovation (its exact title) and is then left as it is.
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
 subject:
   key: category_id
   query: |
-    SELECT c.category_id, c.category_name, c.category_description
+    SELECT c.category_id, c.category_name, COALESCE(c.category_description, c.category_name) AS category_description,
+           (SELECT count(*) FROM staging.technology_overview_article a WHERE a.category_id = c.category_id AND a.status = 'active') AS cards
     FROM staging.technology_category c
     WHERE c.is_active
-    ORDER BY c.display_order
+    ORDER BY (SELECT count(*) FROM staging.technology_overview_article a WHERE a.category_id = c.category_id AND a.status = 'active') DESC, c.display_order
   documents:
     - from: sql                  # innovations already on record in this category
       query: |
@@ -25,48 +30,67 @@ subject:
         FROM staging.technology_innovation i
         WHERE i.category_id = {{subject.category_id}}
         ORDER BY i.title
-    - from: sql                  # recent defence news; the model judges which stories relate to this category (news.category is a news type, not a technology category)
+    - from: sql                  # the technology cards of this category: the leads (each has a source url and verbatim evidence sentences)
       query: |
-        SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
-        FROM staging.competitive_news_article n
-        WHERE n.published_date >= current_date - 365
-          AND COALESCE(n.category, '') NOT IN ('Stock & market', 'Non-defence business')
-        ORDER BY n.published_date DESC LIMIT 40
+        SELECT 'TECHNOLOGY CARD' AS doc, a.article_date, a.title, a.card_summary, a.classification, a.maturity, a.relevance,
+               (SELECT string_agg(o.display_label, ', ' ORDER BY o.display_order) FROM staging.technology_overview_company o
+                 WHERE o.overview_article_id = a.overview_article_id AND o.relationship = 'developer') AS developer,
+               (SELECT ts.url FROM staging.technology_overview_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
+                 WHERE s.overview_article_id = a.overview_article_id ORDER BY s.is_primary DESC, s.overview_source_id LIMIT 1) AS source_url,
+               (SELECT string_agg(k.evidence_text, ' || ' ORDER BY k.display_order) FROM staging.technology_overview_key_point k
+                 WHERE k.overview_article_id = a.overview_article_id AND k.display_order <= 2) AS evidence
+        FROM staging.technology_overview_article a
+        WHERE a.category_id = {{subject.category_id}} AND a.status = 'active' AND a.article_date >= current_date - 730
+          -- 2026-10-18 credible sources only (no version bump: input filter, task unchanged; a new version would make the next run
+          -- replace every earlier card of the category, detailed innovations included): skip cards resting on a blog / copy aggregator
+          AND NOT EXISTS (SELECT 1 FROM staging.technology_overview_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
+                          WHERE s.overview_article_id = a.overview_article_id
+                            AND ts.url ~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)')
+        ORDER BY a.relevance DESC NULLS LAST, a.maturity DESC NULLS LAST, a.article_date DESC LIMIT 45
 
-context: [client, competitors]
+context: [client, competitors, client_portfolio]
 
 task: |
-  TASK innovation_discovery — list up to 15 recent defence innovations in the category
-  "{{subject.category_name}}" ({{subject.category_description}}). Use the DOCUMENTS first, then web
-  search.
+  TASK innovation_discovery - from the TECHNOLOGY CARDS below, list up to 8 distinct innovations in the category
+  "{{subject.category_name}}". Use only the cards; nothing outside them.
 
-  An INNOVATION is a new technology, system or capability that a company, research body or
-  government has reported as developed, tested, demonstrated, ordered or fielded in the 24 months
-  before today. NOT a routine repeat order of an existing product, a market forecast, or a concept
-  with no named developer. Each candidate is a distinct innovation (not one system under two
-  headlines) supported by at least one allowed source; prefer two, at least one independent or
-  official. None found: "records": [] and "skip_reason".
+  An INNOVATION is a TECHNOLOGY, process, material, component or capability that a company, research body or government has reported
+  as developed, tested, demonstrated, ordered or fielded in the last 24 months. It is NOT:
+   - a product or a vehicle or gun system by its own name (a howitzer, a tank, a drone, a rifle: ATAGS, MArG 155, K9, XM1776 and every
+     product in CLIENT PORTFOLIO are products). Name the TECHNOLOGY inside it instead: "turret on a wheeled truck chassis with automatic loading"
+     is a technology; "XM1776 howitzer" is a product. A product is a candidate only if the card reports a new technology in it, and the title
+     then names the technology, not the product;
+   - a routine repeat order, a budget line, a market forecast, an opinion, or a concept with no named developer.
+  Each candidate is distinct (not one technology under two headlines) and rests on at least one card; prefer two cards, at least one
+  independent or official. None qualifies: "records": [] and "skip_reason".
 
   Per candidate, one record, table technology_innovation:
-   - title: a plain name that names the system and its developer, max 100 characters, no adjectives
+   - title: the technology and its developer in plain words, max 100 characters, no adjectives, no product name. e.g.
+     "Ramjet-assisted 155 mm artillery shell (Nammo)"
    - ref_category: {{subject.category_name}}
-   - list_description: one or two sentences, max 220 characters: what was reported, by whom, when
+   - technology_kind: one of material | energetics | propulsion | guidance_fuze | autonomy_ai | sensor | protection | manufacturing_process |
+     platform_architecture | c2_software
+   - list_description: one or two plain sentences, max 220 characters. First say what is new in the technology, then who reported it and when.
    - ref_innovation: the title exactly as in KNOWN INNOVATION if this is that innovation; else null
    children:
-   technology_innovation_source (1-3 rows, one per source; the loader finds or creates the source
-   by url):
-   - source_url, publisher (as shown on the page), source_kind (company = the site of a company in
-     this record; official = government, ministry, armed forces, procurement portal, patent
-     office; news = news outlet or trade press)
-   - is_primary: true for exactly one row (the developer's or government's own statement if there
-     is one, else the most detailed independent report)
-  Every title and list_description needs _sources (url + the sentence that reports the development).
+   technology_innovation_source (1-3 rows, one per card used; the loader finds or creates the source by url):
+   - source_url (the card's source_url, exactly), publisher (as in the card's url host or the publisher you know from the card), source_kind (company = the
+     site of a company in this record; official = government, ministry, armed forces, procurement portal, patent office; news = news outlet or
+     trade press)
+   - is_primary: true for exactly one row (the developer's or government's own statement if there is one, else the most detailed report)
+  Every title and list_description needs _sources: the card's url and one verbatim evidence sentence of that card (the text between
+  the "||" marks is verbatim; use one sentence of it).
+
+  PLAIN ENGLISH. Sentences of 20 words or fewer, one idea each. Explain a technical term in a few words the first time. Never use:
+  leverage, synergy, ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, unprecedented.
 
   CLIENT: {{context.client}}
+  CLIENT PORTFOLIO (products, which are NOT innovations):
+  {{context.client_portfolio}}
   COMPETITORS:
   {{context.competitors}}
 
-  DOCUMENTS (innovations on record, then news leads):
+  DOCUMENTS (innovations on record, then the technology cards):
   {{documents}}
 
 output:
@@ -75,9 +99,10 @@ output:
     key: [prompt_id, subject, title]
     refs: {ref_innovation: technology_innovation.title}
     columns:
-      title: {required: true, max: 100}
+      title: {required: true, max: 100, plain: warn}
       category_id: {required: true, from_ref: ref_category}
-      list_description: {max: 220}
+      technology_kind: {required: true, enum_from: code_label.technology_innovation.technology_kind}
+      list_description: {required: true, max: 220, plain: warn}
     loader:
       innovation_id: new_id_or_ref_innovation
       pillar_id: technology_pillar_id
@@ -89,6 +114,7 @@ output:
       technology_innovation_source:
         columns: [is_primary]
         required: [is_primary]
+        count: {min: 1, max: 3}
         transient: {source_url: {required: true}, publisher: {}, source_kind: {enum: [company, official, news]}}
         loader: {innovation_source_id: new_id, innovation_id: parent_id, source_id: id_of_technology_source_found_or_created_by_url}
         creates:                 # the loader finds-or-creates this row by url; the model never invents an id
@@ -101,3 +127,5 @@ output:
               source_kind: transient.source_kind
               label: host_of_url
               retrieved_at: run_time
+
+derive: [innovation_gate]

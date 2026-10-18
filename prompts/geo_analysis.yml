@@ -1,0 +1,120 @@
+id: geo_analysis
+title: Geo footprint, layer 2 - why a rival wins where KSSL's product is better (anomaly candidates)
+version: 1
+fills: [competitive_geo_analysis]
+shows_on: 'Geo Footprint page (country drawer, "Analysis" block: overlaps, anomalies, white space)'
+cadence: quarterly
+web_search: true
+# Layer 2 of the geo page (user brief section 6; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.1.7, D, F.5).
+#  - CODE finds the candidates: a rival product sold in a country (layer 1 rows), a KSSL product of the same class that passes the
+#    like-for-like gate (competitive_geo_product_match), a stored matchup that puts KSSL ahead on the compared specs (decision_level 3),
+#    and KSSL present or offered in that country. That is the anomaly: "KSSL's product is better and the rival still has the business".
+#  - OVERLAP and WHITE-SPACE rows are built by code alone: python -m prompts.geo_analysis --code (no model, templated sentences).
+#  - THE MODEL only looks for a source that STATES why the buyer chose the rival: incumbency, offsets / local content, financing /
+#    government-to-government, delivery time, local partner, after-sales, politics, price, performance. A reason counts only with a
+#    verbatim quote and URL. No such source -> reason_state not_stated, the question to ask (to_find_out), and one clearly labelled
+#    analyst hypothesis that names the stored facts it rests on (the page shows it greyed, "analyst hypothesis, no source").
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: candidate_id
+  query: |
+    SELECT g.geo_product_id::text || '|' || m.kssl_product_id::text AS candidate_id,
+           l.location_id, l.country_name, c.competitor_id, c.display_name AS competitor, g.geo_product_id, g.product_name AS rival_product,
+           g.activity_type AS rival_activity, g.since_date AS rival_since, g.quantity AS rival_quantity, g.customer_name, g.local_partner,
+           m.kssl_product_id, m.kssl_counter_label AS kssl_product, mu.matchup_id, mu.verdict_headline AS matchup_headline,
+           mu.edge_score,
+           (SELECT string_agg(s.spec_label || ': KSSL ' || coalesce(s.client_value_text, s.client_value_numeric::text, '?') || ' vs rival '
+                              || coalesce(s.competitor_value_text, s.competitor_value_numeric::text, '?') || coalesce(' ' || s.unit, ''), '; ' ORDER BY s.display_order)
+              FROM staging.competitive_matchup_specification s
+             WHERE s.matchup_id = mu.matchup_id AND s.comparability_state = 'comparable' AND s.better_side = 'client') AS kssl_leads_on,
+           (SELECT string_agg(cp.activity_type || ' (' || coalesce(cp.presence_status, '?') || ')', ', ')
+              FROM staging.competitive_geo_company_presence cp WHERE cp.company_role = 'client' AND cp.location_id = l.location_id) AS kssl_presence
+    FROM staging.competitive_geo_product_match m
+    JOIN staging.competitive_geo_product g ON g.geo_product_id = m.geo_product_id
+    JOIN staging.competitive_geo_company_presence p ON p.presence_id = g.presence_id AND p.company_role = 'competitor'
+    JOIN staging.competitive_geo_location l ON l.location_id = p.location_id
+    JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+    JOIN staging.competitive_product cp2 ON cp2.competitor_id = c.competitor_id
+         AND lower(trim(regexp_replace(cp2.product_name, '\s*\([^)]*\)', '', 'g'))) = lower(trim(regexp_replace(g.product_name, '\s*\([^)]*\)', '', 'g')))
+    JOIN staging.competitive_matchup mu ON mu.client_product_id = m.kssl_product_id AND mu.competitor_product_id = cp2.product_id
+    WHERE m.match_status = 'matched' AND mu.decision_level IN (2, 3)     -- KSSL ahead overall, or level on balance and ahead on at least one compared spec (kssl_leads_on)
+      AND g.activity_type IN ('Export', 'Sales and service', 'Local production', 'Licensed production')
+      AND EXISTS (SELECT 1 FROM staging.competitive_matchup_specification sx WHERE sx.matchup_id = mu.matchup_id AND sx.comparability_state = 'comparable' AND sx.better_side = 'client')
+      AND EXISTS (SELECT 1 FROM staging.competitive_geo_company_presence k JOIN staging.competitive_geo_product kg ON kg.presence_id = k.presence_id
+                   WHERE k.company_role = 'client' AND k.location_id = l.location_id AND kg.product_range IS NOT DISTINCT FROM g.product_range)
+    ORDER BY c.display_name, l.country_name, g.product_name
+  documents:
+    - from: sql                  # the stored matchup rows of this pair (what "KSSL is better" rests on)
+      query: |
+        SELECT 'MATCHUP' AS doc, s.spec_label, s.client_value_text, s.client_value_numeric, s.competitor_value_text, s.competitor_value_numeric,
+               s.unit, s.better_side, s.gap_value
+        FROM staging.competitive_matchup_specification s
+        WHERE s.matchup_id = {{subject.matchup_id}} AND s.comparability_state = 'comparable'
+        ORDER BY s.display_order
+    - from: sql                  # harvested documents about this rival in this country
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url, left(d.body_text, 2000) AS text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}' = ANY(d.competitor_ids::text[]) AND coalesce(d.body_text, '') <> ''
+          AND d.body_text ILIKE '%' || {{subject.country_name}} || '%'
+        ORDER BY coalesce((d.triage->'info'->>'sales_geo')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 6
+
+context: [client]
+
+task: |
+  TASK geo_analysis — {{subject.competitor}} supplies {{subject.rival_product}} in {{subject.country_name}}. {{client.name}}'s
+  {{subject.kssl_product}} is in the same class (like-for-like) and the stored comparison puts {{client.name}} ahead on:
+  {{subject.kssl_leads_on}}. {{client.name}} presence on record in {{subject.country_name}}: {{subject.kssl_presence}}.
+  Rival activity there: {{subject.rival_activity}}, since {{subject.rival_since}}, quantity {{subject.rival_quantity}},
+  customer {{subject.customer_name}}, local partner {{subject.local_partner}}.
+
+  Find out WHY the buyer chose the rival, using the DOCUMENTS first and then web search (allowed sources only: official sources,
+  company sites, established editorial outlets and defence trade press; no Wikipedia, forums or blogs). Only a source that states the
+  reason counts. Do not infer a reason from the buyer's country, the rival's size or general knowledge.
+
+  One record, table competitive_geo_analysis:
+   - finding: max 300 characters, 1-2 plain sentences, facts only: what the rival supplies, where, and where {{client.name}}'s product
+     is ahead (copy the figures from the rows above)
+   - stated_reasons: the reasons a source STATES, as a comma-separated list of codes, from: incumbency | offsets_local_content |
+     financing_g2g | delivery_time | local_partner | after_sales | politics | price | performance | other. Empty if none is stated.
+   - reason_state: JUDGEMENT. stated if at least one reason is stated by a source; not_stated otherwise
+   - hypothesis: JUDGEMENT. Only when reason_state is not_stated: max 200 characters, ONE plain sentence, starting "Analyst hypothesis:",
+     naming the stored facts it rests on (for example "the rival has supplied the country since 2019; {{client.name}} has no
+     presence row there"). Empty when a reason is stated.
+   - to_find_out: max 160 characters: the question a {{client.name}} salesperson should ask the buyer to learn the real reason
+   - source_url: the page that states the reason (empty if none)
+  Give "_sources" for reason_state: the verbatim sentence from the source that states the reason, and its URL. Give "_reason" for
+  reason_state and hypothesis. Never write that a reason is "likely" in finding.
+
+  PLAIN ENGLISH. Sentences of 20 words or fewer, active voice. No hype. Never write "{{client.name}} should".
+
+  CLIENT: {{context.client}}
+
+  DOCUMENTS (the stored comparison, then harvested documents that mention the country):
+  {{documents}}
+
+output:
+  competitive_geo_analysis:
+    card: true
+    key: [prompt_id, subject]
+    transient:
+      stated_reasons: {max: 200}           # read by derive.geo_analysis_finish, stored as the text[] column
+    columns:
+      finding: {required: true, max: 300, plain: warn}
+      reason_state: {required: true, judgement: true, enum: [stated, not_stated]}
+      hypothesis: {judgement: true, max: 200, plain: warn}
+      to_find_out: {max: 160}
+      source_url: {}
+    loader:
+      analysis_id: new_id
+      kind: constant_anomaly
+      location_id: subject.location_id
+      competitor_id: subject.competitor_id
+      geo_product_id: subject.geo_product_id
+      kssl_product_id: subject.kssl_product_id
+      matchup_id: subject.matchup_id
+      display_order: rank_by_country
+
+derive:
+  - geo_analysis_finish        # stated_reasons -> text[]; a stated reason needs a quote, else it becomes not_stated

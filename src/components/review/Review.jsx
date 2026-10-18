@@ -15,7 +15,7 @@ const Ctx = createContext(null);
 const LABEL = { new: "new", changed: "changed", live: "live", rejected: "rejected" };
 
 async function post(path, params) {
-  const res = await fetch(`${path}?${new URLSearchParams(params)}`, { method: "POST" });
+  const res = await fetch(`${path}?${new URLSearchParams(params)}`, { method: "POST", headers: { "X-KSSL-Write": "1" } });   // backend CSRF guard
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.detail || `${res.status}`);
   return body;

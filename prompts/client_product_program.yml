@@ -1,0 +1,100 @@
+id: client_product_program
+title: Programmes and customers of the client's own products (one run per product category)
+version: 1
+fills: [client_product_program]
+shows_on: Products page, KSSL product drawer, "Programs" list (programme name, owner, status, dates, description)
+cadence: quarterly
+web_search: true                 # KSSL's programmes are mostly in government, DRDO and company pages, not in the harvested news rows
+# v1: one run per category of the client's portfolio (10 runs, not 82). The model gets the exact product names of the category and may write a
+# row only for one of them (`ref_client_product`). A PROGRAMME is a named effort by a customer authority (the Indian Army, Navy, a ministry, DRDO, a
+# foreign buyer) in which the product is selected, bid, trialled, ordered, built, delivered or in service; a development programme counts when a
+# named authority sponsors it. Evidence: the client's own source pages listed for each product, the harvested documents that name the client,
+# then web search for gaps (primary and independent sources only; sources.is_blocked drops wiki and blog urls).
+# The client is the subject of every statement: facts only, nothing is inferred from a product's name.
+
+subject:
+  key: category
+  query: |
+    SELECT p.category, count(*) AS products
+    FROM staging.client_product p WHERE coalesce(p.category, '') <> ''
+    GROUP BY p.category ORDER BY (p.category IN ('Artillery', 'Ammunition')) DESC, p.category
+  documents:
+    - from: sql                  # 1. the products of the category, exact names, with their key specs and the pages the client's workbook cites
+      query: |
+        SELECT 'PRODUCT' AS doc, p.product_name, coalesce(p.product_family, '') AS family,
+               (SELECT string_agg(sp.spec_name || ': ' || coalesce(sp.value_text, sp.value_numeric::text, '') || coalesce(' ' || sp.unit, ''), ' ; ' ORDER BY sp.display_order)
+                  FROM (SELECT * FROM staging.client_product_specification x WHERE x.client_product_id = p.client_product_id
+                        ORDER BY x.display_order LIMIT 4) sp) AS key_specs,
+               (SELECT string_agg(s.source_url, ' ; ') FROM (SELECT source_url FROM staging.client_product_source x
+                  WHERE x.client_product_id = p.client_product_id ORDER BY x.source_id LIMIT 3) s) AS client_source_urls
+        FROM staging.client_product p WHERE p.category = '{{subject.category}}' ORDER BY p.product_name
+    - from: sql                  # 2. harvested documents that name the client (the passage around the mention)
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
+               substring(d.body_text from '(?is)(.{0,250}(?:KSSL|Kalyani Strategic).{0,255})') AS passage
+        FROM staging.source_document d
+        WHERE d.mentions_client AND d.body_text ~* '(KSSL|Kalyani Strategic)'
+          AND d.url !~* '(/tag/|/tags/|/category/|/archive|/page/[0-9]|[?&]pageno=|[?&]page=)'
+        ORDER BY d.published_at DESC NULLS LAST LIMIT 14
+
+context: [client, client_capabilities, client_markets, client_partners]
+
+task: |
+  TASK client_product_program — find the programmes that {{client.name}}'s products in the category "{{subject.category}}" are part of,
+  and who the customer or owner is. {{client.name}}'s Products page shows each programme with its owner, status, dates and a short
+  description. Start from the PRODUCT and DOCUMENT rows below, then use web search for the gaps: a government, ministry,
+  armed-forces, DRDO or company page, or an independent defence news outlet.
+
+  A PROGRAMME is a named effort by a customer authority (an army, navy, air force, ministry, DRDO, a foreign buyer) in which a
+  product is selected, bid, trialled, ordered, built, delivered or in service. A development programme counts when a named
+  authority sponsors it. Not a programme: a trade fair, a brochure, a marketing launch, a sale with no named buyer, a plan with no
+  authority. Write a row only when a source names the product (or its family name) AND the programme or the authority. At most 15
+  rows, strongest evidence first. None found: "records": [] and a "skip_reason".
+
+  Per row, table client_product_program:
+   - ref_client_product: the product's name copied exactly from a PRODUCT row. A programme that involves several products of the
+     category is one row per product.
+   - program_name: the programme as the source names it, max 250 characters
+   - program_type: Procurement | Development | Trials | Export order | Licence production | Joint development | Other. The kind of
+     effort, as the source describes it.
+   - owner: the customer or the body that runs the programme, as the source names it, max 250 characters
+   - start_date: the date the source gives for the start (contract, selection, launch of the trials); YYYY-MM-DD; month only -> first
+     day and say so in _precision; null if no source gives one
+   - end_date: the end or delivery completion date if a source gives one; else null
+   - status: JUDGEMENT, one of: Concept | Development | Trials | Selected | Contract signed | In production | Delivering | In service |
+     Cancelled | Other. The stage the source shows today.
+   - description: 1-2 plain sentences saying what the programme buys or builds, with quantity and value if the source gives them
+  Sources. Give "_sources" for program_name, owner and start_date: the verbatim sentence (max 300 characters) and its url. "_reason"
+  for status: one sentence naming the fact it rests on. Never state a quantity, value or date that no source gives.
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented.
+
+  CLIENT: {{context.client}}
+  CLIENT CAPABILITIES (lines, ventures and what partners supply):
+  {{context.client_capabilities}}
+  CLIENT MARKETS:
+  {{context.client_markets}}
+  CLIENT PARTNERS:
+  {{context.client_partners}}
+
+  ROWS AND DOCUMENTS:
+  {{documents}}
+
+output:
+  client_product_program:
+    card: true
+    key: [prompt_id, subject, program_name, client_product_id]
+    columns:
+      client_product_id: {required: true, from_ref: ref_client_product}
+      program_name: {required: true, max: 250}
+      program_type: {enum: [Procurement, Development, Trials, Export order, Licence production, Joint development, Other]}
+      owner: {max: 250}
+      start_date: {type: date}
+      end_date: {type: date}
+      status: {judgement: true, enum: [Concept, Development, Trials, Selected, Contract signed, In production, Delivering, In service, Cancelled, Other]}
+      description: {plain: warn}
+    loader:
+      program_id: new_id

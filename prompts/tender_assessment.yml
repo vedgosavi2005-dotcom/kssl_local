@@ -1,101 +1,187 @@
 id: tender_assessment
-title: Tender assessment (client fit, matched products, competitor fit)
-version: 1
-fills: [market_tender_fit_assessment, market_tender_product_match, market_tender_product_match_line, market_tender_competitor_fit]
-shows_on: Tenders page (fit bar, "Bid assessment", "Matched products", "Competitor fit"), Top opportunity
-cadence: weekly                  # every open tender in a client category; a changed tender (corrigendum) or catalogue is picked up on the next run
-# No web search: the tender rows, the client catalogue and the competitor catalogue are the only facts.
-# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+title: Tender assessment (client fit, eligibility checklist, anchored scores, likely rivals)
+version: 2
+fills: [market_tender_fit_assessment, market_tender_product_match, market_tender_product_match_line, market_tender_eligibility, market_tender_competitor_fit]
+shows_on: Tenders page (fit bar, "Bid assessment", checklist, "Matched products", "Competitor fit"), Top opportunity (ranking by code)
+cadence: weekly                  # every open tender in a client category; a changed tender or catalogue is picked up on the next run
+# v2 (prompt rebuild, step 5; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.2.1, A.2.2, F.2):
+#  - the model gives FACTS-based checks (per requirement line: met / not_met / unknown), an ELIGIBILITY checklist (met / not_met / unknown,
+#    fixable yes / no / unknown), two anchored scores (value_score, strategic_score 1-5) and the time to award; it writes NO label.
+#  - code computes everything else: fit_percent and fit_score (derive.tender_fit), attractiveness, ability, pursue / position /
+#    monitor / pass and lean_code (derive.pursue_label, rule p1). The model never outputs pursue_label, a percentage or a rank.
+#  - rivals come from CODE candidates (competitors with a product in the category, flagged when they sell in the buyer's country
+#    and when their sub-type is one KSSL makes); the model keeps the plausible ones and explains.
+#  - a tender record that states few requirement lines can not be graded strong: say so, do not guess.
+# No web search: the tender rows, the client catalogue and the rival candidates are the only facts.
 
 subject:
   key: tender_id
   query: |
-    SELECT t.tender_id, t.title, t.notice_reference, t.buyer_name, t.country_name, t.category_text,
-           t.closing_date, t.value_text, t.local_presence_requirement, t.registration_requirement
+    SELECT t.tender_id, t.title, t.notice_reference, t.buyer_name, t.country_name, t.category_text, t.closing_date, t.value_text,
+           t.value_amount, t.value_currency, t.quantity, t.quantity_unit, t.description, t.kssl_model AS first_match,
+           t.local_presence_requirement, t.registration_requirement, t.status, t.awarded_to, t.award_value_text
     FROM staging.market_tender t
-    WHERE t.status = 'open' AND t.category_id IS NOT NULL
-      AND (t.closing_date IS NULL OR t.closing_date >= current_date)
-    ORDER BY t.closing_date NULLS LAST, t.tender_id
+    WHERE t.status IN ('open', 'closing', 'awarded', 'closed') AND t.category_id IS NOT NULL AND t.category_text <> 'Other'
+      AND NOT (t.status IN ('awarded', 'closed') AND coalesce(t.closing_date, t.award_date, t.published_date, current_date) < current_date - 365)
+    ORDER BY
+      CASE WHEN t.status IN ('open', 'closing') THEN 0 WHEN t.status = 'awarded' THEN 1 ELSE 2 END,
+      CASE WHEN t.category_text IN ('Artillery','Ammunition','Precision Components & Forgings','Small Arms','Protected & Armoured Vehicles',
+                                    'Armoured Vehicle MRO') THEN 0 ELSE 1 END,
+      CASE WHEN t.country_name = (SELECT country FROM staging.client_account ORDER BY client_id LIMIT 1) THEN 0
+           WHEN t.country_name IN (SELECT l.country_name FROM staging.competitive_geo_company_presence p
+                                   JOIN staging.competitive_geo_location l ON l.location_id = p.location_id
+                                   WHERE p.company_role = 'client') THEN 1 ELSE 2 END,
+      t.closing_date NULLS LAST, t.tender_id
   documents:
     - from: sql
       query: |
         SELECT 'TENDER REQUIREMENT' AS doc, r.display_order, r.requirement_type, r.description, r.quantity, r.quantity_unit,
-               r.equipment_scope, r.use_case, r.source_text
+               r.equipment_scope, r.use_case, left(r.source_text, 200) AS source_text
         FROM staging.market_tender_requirement r
         WHERE r.tender_id = {{subject.tender_id}}
         ORDER BY r.display_order
     - from: sql
       query: |
-        SELECT 'CLIENT PRODUCT SPEC' AS doc, p.product_name, p.category, s.spec_name, s.value_text, s.value_numeric, s.unit, src.source_url
-        FROM staging.client_product p
-        LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
-        LEFT JOIN staging.client_product_source src ON src.source_id = s.source_id AND src.client_product_id = s.client_product_id
-        WHERE lower(trim(p.category)) = lower(trim('{{subject.category_text}}'))
-        ORDER BY p.product_name, s.display_order
+        SELECT 'CLIENT PRODUCT SPEC' AS doc, x.product_name, x.sub_type, x.spec_name, x.value, x.unit FROM (
+          SELECT p.product_name, c.sub_type, s.spec_name, left(coalesce(s.value_text, s.value_numeric::text), 120) AS value, s.unit,
+                 s.display_order, row_number() OVER (PARTITION BY p.client_product_id ORDER BY s.display_order) AS rn
+          FROM staging.client_product p
+          LEFT JOIN staging.product_class c ON c.product_side = 'client' AND c.product_id = p.client_product_id::text
+          LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
+          WHERE lower(trim(p.category)) = lower(trim('{{subject.category_text}}'))) x
+        WHERE x.rn <= 10
+        ORDER BY x.product_name, x.display_order
     - from: sql
       query: |
-        SELECT 'COMPETITOR PRODUCT SPEC' AS doc, c.display_name AS competitor, p.product_name, s.spec_label, s.spec_value, s.unit, s.source_url
+        WITH cs AS (SELECT DISTINCT c.sub_type FROM staging.client_product p
+                    JOIN staging.product_class c ON c.product_side = 'client' AND c.product_id = p.client_product_id::text
+                    WHERE lower(trim(p.category)) = lower(trim('{{subject.category_text}}')) AND c.sub_type <> 'unknown'),
+             pres AS (SELECT DISTINCT p.competitor_id FROM staging.competitive_geo_company_presence p
+                      JOIN staging.competitive_geo_location l ON l.location_id = p.location_id
+                      WHERE p.company_role = 'competitor' AND lower(l.country_name) = lower('{{subject.country_name}}'))
+        SELECT 'RIVAL CANDIDATE' AS doc, c.display_name AS competitor, p.product_name, pc.sub_type,
+               CASE WHEN c.competitor_id IN (SELECT competitor_id FROM pres) THEN 'yes' ELSE 'not on record' END AS sells_in_buyer_country,
+               CASE WHEN pc.sub_type IN (SELECT sub_type FROM cs) THEN 'yes' ELSE 'no' END AS same_sub_type_as_client,
+               (SELECT string_agg(s.spec_label || ' ' || coalesce(s.spec_value, '') || ' ' || coalesce(s.unit, ''), '; ')
+                  FROM (SELECT * FROM staging.competitive_product_specification x WHERE x.product_id = p.product_id
+                          AND coalesce(x.spec_value, '') <> '' ORDER BY x.spec_label LIMIT 5) s) AS key_specs
         FROM staging.competitive_product p
         JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
-        LEFT JOIN staging.competitive_product_specification s ON s.product_id = p.product_id
+        LEFT JOIN staging.product_class pc ON pc.product_side = 'competitor' AND pc.product_id = p.product_id::text
         WHERE lower(trim(p.category)) = lower(trim('{{subject.category_text}}'))
-        ORDER BY c.display_name, p.product_name, s.spec_label
+        ORDER BY (c.competitor_id IN (SELECT competitor_id FROM pres)) DESC, (pc.sub_type IN (SELECT sub_type FROM cs)) DESC,
+                 c.display_name, p.product_name
+        LIMIT 10
 
-context: [client, client_products, competitors, competitor_products]
+context: [client, client_markets, client_partners]
 
 task: |
-  TASK tender_assessment — assess how well {{client.name}}'s products fit the tender
-  "{{subject.title}}" ({{subject.buyer_name}}, {{subject.country_name}}, category
-  {{subject.category_text}}; closing {{subject.closing_date}}), and which competitors could meet it.
-  Use ONLY the TENDER REQUIREMENT, CLIENT PRODUCT SPEC and COMPETITOR PRODUCT SPEC rows and the
-  tender facts above. WEB SEARCH is off. Never assume a spec from general knowledge.
-  For rule 4 a source is an input row: url = its source_url (null if none), quote = the field and
-  value exactly as given.
+  TASK tender_assessment - assess how well {{client.name}}'s products fit the tender "{{subject.title}}" and what stands between
+  {{client.name}} and a bid. Tender facts: buyer {{subject.buyer_name}}, {{subject.country_name}}; category {{subject.category_text}};
+  reference {{subject.notice_reference}}; closing {{subject.closing_date}}; value {{subject.value_text}}; quantity
+  {{subject.quantity}} {{subject.quantity_unit}}; first product hint {{subject.first_match}}.
+  Description: {{subject.description}}
+  Notice status: {{subject.status}}. Awarded to: {{subject.awarded_to}} ({{subject.award_value_text}}). When the status is awarded or closed the bid is over: assess
+  the notice as if it were open (the fit and the checklist still show what the buyer wanted and what KSSL would have needed), set time_to_award to unknown, and when
+  the winner is named and is one of the RIVAL CANDIDATE competitors, give that competitor a rival row with basis selected.
+  Registration rule: {{subject.registration_requirement}}. Local presence rule: {{subject.local_presence_requirement}}.
+  Use ONLY these facts, the TENDER REQUIREMENT rows, the CLIENT PRODUCT SPEC rows, the RIVAL CANDIDATE rows and the client blocks
+  below. WEB SEARCH is off. Never assume a spec, a price or a market from general knowledge. A value that is not in these rows is
+  "unknown". You score; the loader labels. Do NOT write pursue, position, monitor or pass anywhere, and no percentage.
+  A source is an input row: url = null, quote = the field and value as given.
 
-  STEP 1 — CHECKS. For each client product in CLIENT PRODUCT SPEC, and each TENDER REQUIREMENT row
-  that has a stated value and is a technical or product requirement, give one check:
-   met = a sourced client spec states a value that satisfies the requirement;
-   not_met = a sourced client spec states a value that does not;
+  STEP 1 - CHECKS. For each client product of CLIENT PRODUCT SPEC that is the same kind of item as the tender, and each TENDER REQUIREMENT
+  row that is a technical or product requirement with a stated value, give one check:
+   met = a client spec states a value that satisfies the requirement; not_met = a client spec states a value that does not;
    unknown = the client rows have no spec for it.
-  Checks are the "check" field of the product-match lines below. Do not output percentages or counts.
+  A tender that states fewer than 3 such requirement lines has too few checks for a percentage: give the lines that exist (or none).
 
-  STEP 2 — one record, table market_tender_fit_assessment:
-   - fit_grade: JUDGEMENT. strong = no not_met check on a requirement that defines the item
-     (calibre, type, platform) and at least half the checks of the best product are met;
-     partial = a product qualifies but with not_met or unknown checks, or a tender-level eligibility
-     rule (local content, domestic supplier, past performance, turnover, registration) is not met or
-     cannot be checked; weak = no client product qualifies. Allowed: strong | partial | weak
-   - ref_client_product: the best-fitting CLIENT PRODUCT SPEC product name; null when weak
-   - match_summary: JUDGEMENT. 1-2 sentences: which client products match on which requirements
-   - assessment_rationale: JUDGEMENT. 2-4 sentences, the bid assessment: what the buyer wants, what
-     fits, what is missing or unknown. Only input facts; no market-size claim, no revenue estimate
+  STEP 2 - one record, table market_tender_fit_assessment:
+   - fit_grade: JUDGEMENT. strong = at least 3 checked lines, no not_met on a line that defines the item (calibre, type, platform),
+     and at least half of the best product's checks met. partial = a client product is of the same kind as the item but checks are
+     not_met or unknown, or fewer than 3 lines can be checked, or a tender-level eligibility rule (local content, domestic
+     supplier, past performance, turnover, registration) is not met or cannot be checked. weak = no client product is of the same
+     kind. Allowed: strong | partial | weak
+   - ref_client_product: the best-fitting client product, exactly as in CLIENT PRODUCT SPEC; empty when weak
+   - match_summary: JUDGEMENT. 1-2 plain sentences: which client product matches on which lines, and what is unknown
+   - assessment_rationale: JUDGEMENT. 2-4 plain sentences: what the buyer wants, what fits, what is missing or unknown. Input facts
+     only; no market-size claim, no revenue estimate
+   - value_score: JUDGEMENT, 1-5 (order of magnitude of the stated value in US dollars, or the quantity, whichever the rows state;
+     never convert into a stored value):
+       5 stated value of USD 100 million or more, or 50 or more units of a system in a {{client.name}} category
+       4 USD 25-100 million     3 USD 5-25 million
+       2 under USD 5 million, or no value stated and a small quantity (under 20 units, or spares and components)
+       1 service, repair or spares only with no unit count
+     No value and no quantity stated: leave empty.
+   - strategic_score: JUDGEMENT, 1-5:
+       5 the buyer country is in the client markets block AND a follow-on is stated (framework, options, phases, repeat orders)
+       4 a new reference customer in a {{client.name}} category (the country is not in the client markets block)
+       3 a repeat market, one-off buy     2 outside the client markets, no follow-on     1 no strategic value
+     The client markets block says "none on record": leave empty.
+   - time_to_award: JUDGEMENT. le_6m (closing within 6 months and no later award date stated) | 6_18m | gt_18m | unknown
+   - _reason for fit_grade, match_summary, assessment_rationale, value_score, strategic_score, time_to_award: one sentence each, naming the
+     rows it rests on (value_score "4: the notice states EUR 60 million"; strategic_score "3: India is a client market; no follow-on is stated")
    children:
-   market_tender_product_match (0-5 rows: each client product with fit_grade strong or partial):
-   - ref_client_product: the product name exactly as in CLIENT PRODUCT SPEC
-   - fit_grade: JUDGEMENT. strong or partial, by the rule above applied to this product
-   children of each match: market_tender_product_match_line (2-12 rows: one per check, in
-   requirement order):
+   market_tender_product_match (0-3 rows: each client product with fit_grade strong or partial):
+   - ref_client_product: the product name exactly as in CLIENT PRODUCT SPEC; fit_grade: JUDGEMENT strong or partial (rule above for this product)
+   children of each match: market_tender_product_match_line (0-10 rows, one per check, in requirement order):
    - line_label: the requirement_type exactly as in TENDER REQUIREMENT
-   - line_value: one short text "<what the client spec states> | required: <what the tender
-     requires>"; for unknown: "no spec on file | required: ..."
-   - check: met | not_met | unknown (not stored; the loader uses it to compute fit_percent)
-   market_tender_competitor_fit (0-5 rows: tracked competitors having a product in this category,
-   best fit first):
-   - ref_competitor: exactly as in COMPETITORS; ref_product: the competitor's best-fitting product
-     in COMPETITOR PRODUCT SPEC
-   - fit_label: JUDGEMENT. strong, partial or weak, judged against the same requirements from that
-     competitor's COMPETITOR PRODUCT SPEC rows (unknown specs cap it at partial)
-   - fit_rationale: JUDGEMENT. 1-2 sentences citing the spec values
+   - line_value: "<what the client spec states> | required: <what the tender requires>"; for unknown: "no spec on file | required: ..."
+   - check: met | not_met | unknown (not stored; the loader computes fit_percent from it)
+   market_tender_eligibility (0-8 rows, the checklist of what a bidder must have or do, in the order the tender states it):
+   - item: the condition in a few words, max 120 characters, e.g. "Registered on the GeM portal", "Local content 30 percent", "Bid security"
+   - state: met = {{client.name}} has it (the client rows show it: a listed client market, partner or capability); not_met = the rows show
+     it does not; unknown = the rows do not say. When a rule is stated and the client rows say nothing: unknown, never met.
+   - fixable: yes = a bidder can fix it before the closing date (register, post a guarantee, name a local agent or assembly partner);
+     no = a hard bar ({{client.name}} cannot get it in time: domestic manufacturer only, nationality, security clearance, a licence it
+     lacks); unknown = the rows do not say
+   - note: one plain sentence, max 200 characters, the reason (what the rows show); quote: the tender row text that states the condition
+   Include a row only for a condition the TENDER REQUIREMENT rows or the registration / local presence rules above state. Do not invent
+   a standard condition. A tender that states none has no rows.
+   market_tender_competitor_fit (0-4 rows: the RIVAL CANDIDATE rows that could plausibly meet this tender, best fit first):
+   - ref_competitor and ref_product: exactly as in the candidate row (competitor, product_name)
+   - fit_label: JUDGEMENT strong | partial | weak, against the tender facts and the candidate's key_specs (unknown specs cap it at partial)
+   - basis: selected (the notice or record names it as the winner) | shortlisted | offered (named as bidding) | presence (it sells in the
+     buyer country: the candidate row says "yes"). Use presence only when sells_in_buyer_country is yes; otherwise leave basis empty.
+   - fit_rationale: JUDGEMENT. 1-2 plain sentences citing the candidate row values
+   Write no rival row when no candidate is plausible; do not name a competitor that is not a candidate row.
+
+  PLAIN ENGLISH. Read by managers who are not weapons specialists. Sentences of 20 words or fewer, one idea each, active voice. Name the
+  product and the number with its unit. No hype ("robust", "leverage", "state-of-the-art"). Say what is unknown plainly: "The notice gives
+  no calibre." Do not recommend actions and never write "{{client.name}} should".
+
+  EXAMPLE of the shape only. Every name and figure in it is fictional; do not reuse any of them.
+  {"prompt_id": "tender_assessment", "subject": "Veland MoD: 36 mounted 155 mm guns", "skip_reason": null, "records": [
+   {"table": "market_tender_fit_assessment", "values": {"fit_grade": "strong", "ref_client_product": "MArG 155 mm/52 cal Mounted Gun System",
+     "match_summary": "The MArG 155/52 meets calibre, barrel length and range. Its weight is not on file.",
+     "assessment_rationale": "Veland wants 36 mounted 155 mm guns with a 40 km range. The MArG 155/52 meets every line that has a figure. Local content is not met today. The tender allows a local partner.",
+     "value_score": 4, "strategic_score": 4, "time_to_award": "6_18m",
+     "_reason": {"fit_grade": "5 of 6 checks met and no not_met on calibre or barrel (the defining lines).",
+                 "value_score": "4: the tender states EUR 420 million for 36 guns and support.",
+                 "strategic_score": "4: Veland is not in the client markets block; no follow-on is stated.",
+                 "time_to_award": "6_18m: bids close in 5 months and award is stated for the third quarter of next year.",
+                 "match_summary": "Calibre, barrel and range are met.", "assessment_rationale": "Rests on the six requirement lines and the local content rule."}},
+    "children": {
+     "market_tender_product_match": [{"ref_client_product": "MArG 155 mm/52 cal Mounted Gun System", "fit_grade": "strong",
+       "_reason": {"fit_grade": "5 of 6 checks met."},
+       "children": {"market_tender_product_match_line": [
+        {"line_label": "Calibre", "line_value": "155 mm | required: 155 mm", "check": "met"},
+        {"line_label": "Maximum range", "line_value": "48 km | required: 40 km", "check": "met"},
+        {"line_label": "System weight", "line_value": "no spec on file | required: under 30 t", "check": "unknown"}]}}],
+     "market_tender_eligibility": [
+      {"item": "Local content 30 percent", "state": "not_met", "fixable": "yes", "note": "No client plant or partner in Veland is on record; the tender allows a local partner.", "quote": "minimum 30 percent local content, which may be met through a local partner"},
+      {"item": "Bid security 2 percent", "state": "unknown", "fixable": "yes", "note": "A bank guarantee is standard; the rows do not say if one is in place.", "quote": "Bid security of 2 percent of the bid value"}],
+     "market_tender_competitor_fit": [
+      {"ref_competitor": "Nordvik Defence", "ref_product": "NV-155", "fit_label": "strong", "basis": "presence", "fit_rationale": "NV-155 lists 155 mm and 40 km. The candidate row says Nordvik sells in Veland."}]}}],
+   "not_found": [], "conflicts": []}
 
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
-  COMPETITORS:
-  {{context.competitors}}
-  COMPETITOR PRODUCTS:
-  {{context.competitor_products}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
 
-  DOCUMENTS (tender requirement rows, then client and competitor product specs):
+  DOCUMENTS (tender requirement rows, client product specs, rival candidates):
   {{documents}}
 
 output:
@@ -105,8 +191,11 @@ output:
     columns:
       fit_grade: {required: true, judgement: true, enum: [strong, partial, weak]}
       client_product_id: {from_ref: ref_client_product, judgement: true}
-      match_summary: {judgement: true}
-      assessment_rationale: {judgement: true}
+      match_summary: {judgement: true, plain: warn}
+      assessment_rationale: {judgement: true, plain: warn}
+      value_score: {judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
+      strategic_score: {judgement: true, type: number, enum: [1, 2, 3, 4, 5], unknown_when_empty: {block: client_markets, action: coerce}}
+      time_to_award: {judgement: true, enum_from: code_label.market_tender_fit_assessment.time_to_award}
     loader:
       assessment_id: new_id
       tender_id: subject.tender_id
@@ -117,7 +206,11 @@ output:
       fit_score: derive.tender_fit
       fit_rank: derive.tender_fit
       kssl_fit_rank: derive.tender_fit
-      # revenue_* columns are NOT filled: no source states the client's revenue (see questions).
+      attractiveness: derive.pursue_label
+      ability: derive.pursue_label
+      pursue_label: derive.pursue_label
+      rule_version: derive.pursue_label
+      # revenue_* columns are NOT filled: no source states the client's revenue.
     children:
       market_tender_product_match:
         columns: [fit_grade]
@@ -137,12 +230,21 @@ output:
             transient: {check: {required: true, enum: [met, not_met, unknown]}}
             required: [line_label]
             loader: {match_line_id: new_id, tender_match_id: parent_id, display_order: index}
+      market_tender_eligibility:
+        columns: [item, state, fixable, note, quote]
+        required: [item, state]
+        enum_from: {state: code_label.market_tender_eligibility.state, fixable: code_label.market_tender_eligibility.fixable}
+        max: {item: 120, note: 200}
+        plain: {note: warn}
+        loader: {eligibility_id: new_id, tender_id: subject.tender_id, display_order: index}
       market_tender_competitor_fit:
-        columns: [fit_label, fit_rationale]
+        columns: [fit_label, basis, fit_rationale]
         refs: {ref_competitor: competitive_competitor, ref_product: competitive_product}
         required: [fit_label]
         judgement: [fit_label, fit_rationale]
         enum: {fit_label: [strong, partial, weak]}
+        enum_from: {basis: code_label.market_tender_competitor_fit.basis}
+        plain: {fit_rationale: warn}
         loader:
           competitor_fit_id: new_id
           tender_id: subject.tender_id
@@ -154,13 +256,6 @@ output:
 
 derive:
   - tender_fit
-# tender_fit (loader, after the card is stored; the prompt never outputs these):
-#   fit_percent (per product match) = round(100 * met lines / all lines); NULL when the product has fewer than 3 lines
-#     (1 of 2 would read as a meaningful 50%). Lines marked unknown count in the denominator, not_met too.
-#   fit_score (assessment) = the fit_percent of the best product (the one in ref_client_product); NULL if none.
-#   fit_rank = rank of this tender among all OPEN tenders, by fit_score descending (NULLs last), then closing_date
-#     ascending, then tender_id; kssl_fit_rank = the same rank, same value.
-#   copied onto the market_tender row: kssl_fit = fit_grade; kssl_model = name of the best product; rank_position = fit_rank;
-#     lean_text = assessment_rationale; lean_code = go (strong) | maybe (partial) | pass (weak).
-#   If fit_grade is strong but fit_percent < 50, or weak but a product has fit_percent >= 50, the loader logs the card as
-#     "grade and percent disagree" for the reviewer (no automatic change).
+  - pursue_label
+# tender_fit and pursue_label (prompts/derive.py): see FORMAT.md "Code-derived labels". The prompt never outputs fit_percent, fit_score,
+# fit_rank, attractiveness, ability, pursue_label or lean_code.

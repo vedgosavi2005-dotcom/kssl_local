@@ -1,96 +1,160 @@
 id: opportunity
-title: Market opportunity from a demand article
-version: 2
+title: Market opportunity from a stored demand document
+version: 4
 fills: [market_opportunity, market_opportunity_fit_assessment, market_opportunity_source, market_opportunity_update]
-shows_on: Top opportunity ("projects to win before they tender"), opportunity detail
-cadence: weekly                  # every news article of the last 45 days not yet run
-# HOW ARTICLES ARE FED. Articles come from staging.competitive_news_article (the news job). To feed one by hand,
-# insert a row there (headline, article_url, published_date, publisher; competitor_id may be NULL). Runs
-# are per article; the relevance gate in the task skips articles that are not demand.
-# No web search: the article is the only document.
+shows_on: Top opportunity ("projects to win before they tender"), opportunity detail, Market cards
+cadence: weekly
+rerun_on_version: false   # one run per document: a new version applies to new documents only (2026-10-18)
+# v3 (prompt rebuild, step 5; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.2.4, C):
+#  - the documents are the RAW LAYER'S stored text: staging.source_document rows whose triage `route` contains 'opportunity' (the routing
+#    pass over the harvested news, trade press, government pages and the DC corpus). No fetch unless the stored text is too short.
+#  - `stage` is a code from ui.code_label (need_stated | approved_funded | rfi | rfp_tender | downselect_prototype | production_award |
+#    delivered | cancelled); the update rows use the same vocabulary, so the timeline and the stage agree.
+#  - dedupe: KNOWN OPPORTUNITY rows (same buyer and system) are listed first; a re-found demand extends the known one (ref_opportunity).
+#  - fit scoring is the tender's: value_score / strategic_score (anchored 1-5) by the model; attractiveness, ability and the pursue label by
+#    code (derive.pursue_label). With no requirement lines the fit is a product-kind match only, so the code never labels it "pursue".
+#  - story_link joins the card to its story by code (buyer, category, country).
+# No web search: the document is the only source.
+# v4 (2026-10-18, market audit): 23 of 141 loaded v3 runs lost their fit row because a name did not resolve: CLIENT PORTFOLIO cuts
+#  long product names with "..." (render NAME_CAP 84) or the model dropped the bracketed part; and ref_product named a rival product
+#  that is not on record (IRIS-T SLM, Aster 30, Stryker). Now: CLIENT PRODUCT FULL NAME rows give the uncut names, TRACKED RIVAL
+#  PRODUCT rows list the tracked products the document names, and ref_product must be one of them (else null). Subjects are
+#  limited to credible sources (source_tier primary / listed / independent; unlisted dc_corpus hosts are not used).
 
 subject:
-  key: article_id
+  key: doc_id
   query: |
-    SELECT n.article_id, n.headline, n.article_url, n.publisher, n.published_date
-    FROM staging.competitive_news_article n
-    WHERE n.article_url IS NOT NULL AND n.published_date >= current_date - 45
-      AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business')
-    ORDER BY n.published_date DESC
+    SELECT d.doc_id, d.title AS headline, d.url AS article_url, d.source_name AS publisher, d.published_at AS published_date, d.source_kind
+    FROM staging.source_document d
+    WHERE (d.triage->'route') @> '"opportunity"'::jsonb AND d.published_at >= current_date - 270
+      AND length(coalesce(d.body_text, '')) >= 400 AND d.source_tier IN ('primary', 'listed', 'independent')
+    ORDER BY (d.source_kind IN ('gov', 'newsroom')) DESC, d.published_at DESC NULLS LAST, d.doc_id
   documents:
+    - from: source_document
+      field: article_url
+      min_chars: 400
+      cap: 10000
     - from: url
       field: article_url
-    - from: sql                  # opportunities already on record, so one demand is not stored twice
+    - from: sql                  # opportunities already on record (this document's own earlier result excluded), so one demand is not stored twice
       query: |
-        SELECT 'KNOWN OPPORTUNITY' AS doc, o.title, o.buyer_name, o.stage, o.as_of_date
+        SELECT 'KNOWN OPPORTUNITY' AS doc, o.title, o.buyer_name, o.country_code, o.stage, o.as_of_date
         FROM staging.market_opportunity o
-        WHERE o.as_of_date >= current_date - 180
-          AND o.opportunity_id::text NOT IN (   -- not this article's own earlier result (a re-run replaces it)
+        WHERE o.as_of_date >= current_date - 300
+          AND o.opportunity_id::text NOT IN (
             SELECT e->>'id' FROM staging.prompt_run r, jsonb_array_elements(r.loaded) e
-            WHERE r.prompt_id = 'opportunity' AND r.subject_key = {{subject.article_id}}::text AND r.status = 'loaded'
+            WHERE r.prompt_id = 'opportunity' AND r.subject_key = {{subject.doc_id}}::text AND r.status = 'loaded'
               AND e->>'table' = 'market_opportunity')
-        ORDER BY o.as_of_date DESC
+        ORDER BY o.as_of_date DESC NULLS LAST
+        LIMIT 40
+    - from: sql                  # client product names CLIENT PORTFOLIO cuts (over 84 characters), so ref_client_product can be copied in full
+      query: |
+        SELECT 'CLIENT PRODUCT FULL NAME' AS doc, p.product_name FROM staging.client_product p
+        WHERE length(p.product_name) > 84 ORDER BY p.product_name
+    - from: sql                  # tracked competitor products the document names (whole words, case as written, 4+ letters): the only allowed ref_product values
+      query: |
+        SELECT 'TRACKED RIVAL PRODUCT' AS doc, c.display_name AS competitor, p.product_name
+        FROM (SELECT ' ' || regexp_replace(x.body_text, '[^A-Za-z0-9]+', ' ', 'g') || ' ' AS words
+              FROM staging.source_document x WHERE x.doc_id = {{subject.doc_id}}::uuid) d
+        JOIN staging.competitive_product p
+          ON length(trim(regexp_replace(p.product_name, '[^A-Za-z0-9]+', ' ', 'g'))) >= 4
+         AND strpos(d.words, ' ' || trim(regexp_replace(p.product_name, '[^A-Za-z0-9]+', ' ', 'g')) || ' ') > 0
+        JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+        ORDER BY c.display_name, p.product_name
+        LIMIT 20
 
-context: [client, client_products, competitors, competitor_products, categories]
+context: [client, client_portfolio, client_markets, competitors_extended, categories]
 
 task: |
-  TASK opportunity — decide whether one article reports a demand {{client.name}} could sell into,
-  and if so fill one opportunity card.
+  TASK opportunity - decide whether one stored document reports a DEMAND {{client.name}} could sell into, and if so fill one opportunity
+  card. Judge from {{client.name}}'s point of view, using only the blocks at the end of this task for facts about {{client.name}}.
 
-  ARTICLE: "{{subject.headline}}" — {{subject.publisher}}, {{subject.published_date}}
+  DOCUMENT: "{{subject.headline}}" - {{subject.publisher}}, {{subject.published_date}}
   URL: {{subject.article_url}}
 
-  STEP 1 — RELEVANCE. It is an opportunity only if all three hold:
-   a) it reports DEMAND: a buyer (armed force, defence ministry, government agency, or a prime
-      contractor seeking suppliers) plans, budgets, approves, requests or tenders for defence
-      equipment, or an induction creates a stated follow-on need (ammunition, spares, upgrades);
-   b) the demand falls in one of the CATEGORIES;
-   c) it is not only a report that a company won or delivered a contract (a competitive signal) and
-      not only a technology development (a technology article).
+  STEP 1 - RELEVANCE. It is an opportunity only if all three hold:
+   a) it reports DEMAND: a buyer (armed force, defence ministry, government agency, or a prime contractor seeking suppliers) plans, budgets,
+      approves, requests or tenders for defence equipment, or an induction creates a stated follow-on need (ammunition, spares, upgrades);
+   b) the demand falls in one of the CATEGORIES (judge the item, not the buyer);
+   c) it is not only a report that a company won or delivered a contract (a competitive signal), and not only a technology development.
   If any test fails: "records": [] and "skip_reason" = one sentence naming the failed test.
-  If the same demand (same buyer and system) is already in KNOWN OPPORTUNITY: set ref_opportunity to
-  that title; then give only the new market_opportunity_update and market_opportunity_source rows,
-  and leave the other market_opportunity fields null.
+  If the same demand (same buyer and system) is already in KNOWN OPPORTUNITY: set ref_opportunity to that title; then give only the new
+  market_opportunity_update and market_opportunity_source rows, and leave the other market_opportunity fields empty.
 
-  STEP 2 — one record, table market_opportunity:
-   - title: the demand as a headline, max 120 characters, in the article's words
-   - opportunity_kind: planned_purchase (buyer plans or approves a purchase), solicitation (RFI, RFP,
-     pre-tender notice), follow_on_need (need created by an induction), capability_gap (a stated
-     gap with no purchase yet). Allowed: planned_purchase | solicitation | follow_on_need | capability_gap
+  STEP 2 - one record, table market_opportunity:
+   - title: the demand as a headline, max 120 characters, in the document's words
+   - opportunity_kind: planned_purchase (buyer plans or approves a purchase) | solicitation (RFI, RFP, pre-tender notice) | follow_on_need (need
+     created by an induction) | capability_gap (a stated gap, no purchase yet)
    - ref_category: the single best CATEGORIES name, exactly as written
-   - buyer_name: the buyer as written; contractor_name: a prime or contractor the article names, else null
-   - description: 2-4 sentences, only what the article states
+   - buyer_name: the buyer as written; contractor_name: a prime or contractor the document names, else null
+   - description: 2-4 plain sentences, only what the document states
    - scope_text: the system, quantity and conditions demanded (local content, timeline), as stated
-   - location_text: where, as stated; stage: the stage as the article describes it, max 32
-     characters (e.g. approved, RFP expected); current_status: max 40 characters, as stated;
-     latest_milestone: the latest dated step the article states; as_of_date: the date of the
-     demand event as stated (else the article date, say so in _precision)
+   - location_text: where, as stated
+   - stage: JUDGEMENT. The furthest procurement step the document states, one of: need_stated (a need or plan, no approval) | approved_funded
+     (approved, funded or budgeted) | rfi (request for information issued) | rfp_tender (RFP or tender issued) | downselect_prototype
+     (shortlist, trials or a prototype award) | production_award (a production contract awarded) | delivered | cancelled. "Plans to" and
+     "is considering" are need_stated; "approved" without a contract is approved_funded.
+   - current_status: max 40 characters, in the document's words (e.g. "AoN approved", "RFI closes 20 Nov")
+   - latest_milestone: the latest dated step the document states; as_of_date: the date of the demand event as stated (else the document date;
+     say so in _precision)
    - country: the buyer's country, English short name (the loader stores its code)
+   - story_product: the system demanded, in a few words, as the document names it
    children:
-   market_opportunity_fit_assessment (exactly one row when a CLIENT PRODUCTS product fits, else none):
-   - ref_client_product: the best-fitting client product, exactly as written
-   - fit_grade: JUDGEMENT. strong, partial or weak, against the demand as stated
-   - rationale: JUDGEMENT. 2-3 sentences: which product, which stated conditions it meets or not
-   - ref_competitor and ref_product: JUDGEMENT. The tracked competitor and its COMPETITOR PRODUCTS
-     product most likely to compete in this category; null if none is in the category
-   market_opportunity_update (1-3 rows, one per dated development the article states):
-   - update_type: announced | approved | funded | solicitation | delayed | cancelled
-   - update_date, headline (max 120 characters), narrative (1-2 sentences, as stated)
-   market_opportunity_source (exactly one row, the article):
-   - source_title, publisher, source_type (news | official | company), source_date
-     (no url field: the loader stores the article url itself)
+   market_opportunity_fit_assessment (exactly one row when a CLIENT PORTFOLIO product line is the same kind as the demand, else none):
+   - ref_client_product: the best-fitting client product, exactly as the part after ":" in CLIENT PORTFOLIO, the whole name with any bracketed
+     part (stop before the " (calibre; ...)" list). A name cut with "…" is given in full in a CLIENT PRODUCT FULL NAME row: copy that full name
+   - fit_grade: JUDGEMENT. strong | partial | weak. Documents state few specs, so strong needs a stated calibre, type or range that a client spec meets; a
+     product of the same kind with nothing to check is partial; no product of that kind is weak
+   - rationale: JUDGEMENT. 2-3 plain sentences: which product, which stated conditions it meets, which are unknown
+   - value_score: JUDGEMENT 1-5 from the stated value or quantity (5 = USD 100 million or more or 50+ units of a system; 4 = USD 25-100 million; 3 = USD 5-25
+     million; 2 = under USD 5 million, or a small quantity; 1 = spares or services only). Empty when the document states neither
+   - strategic_score: JUDGEMENT 1-5 (5 = a CLIENT MARKETS country with a follow-on stated; 4 = a new reference customer in a client category; 3 = repeat market,
+     one-off; 2 = outside the client markets, no follow-on; 1 = none). Empty when CLIENT MARKETS says "none on record"
+   - time_to_award: le_6m | 6_18m | gt_18m | unknown, from stated dates only
+   - ref_competitor: JUDGEMENT. A tracked competitor from COMPETITORS that sells in this category (the buyer's country if the block shows it), written
+     exactly as the competitor block names it; null if none
+   - ref_product: one of that competitor's products from a TRACKED RIVAL PRODUCT row, exactly as written there; null when no row names one
+     (a product name that is not in those rows drops the whole fit row)
+   - _reason for every JUDGEMENT field, one sentence naming the document fact or block line it rests on
+   market_opportunity_update (1-3 rows, one per dated development the document states):
+   - update_type: the stage reached by that development (same words as stage); update_date, headline (max 120 characters), narrative (1-2 plain sentences)
+   market_opportunity_source (exactly one row, the document):
+   - source_title, publisher, source_type (news | official | company), source_date (no url field: the loader stores the document url)
+
+  PLAIN ENGLISH. Read by managers who are not weapons specialists. Sentences of 20 words or fewer, one idea each, active voice. Name the thing and the
+  number with its unit. Explain a technical term in a few words the first time. No hype ("robust", "leverage", "state-of-the-art"). Say what is
+  unknown plainly ("The document gives no quantity."). Do not recommend actions and never write "{{client.name}} should".
+
+  EXAMPLE of the shape only. Every name and figure in it is fictional; do not reuse any of them.
+  {"prompt_id": "opportunity", "subject": "Veland plans 36 mounted guns", "skip_reason": null, "records": [
+   {"table": "market_opportunity", "values": {"title": "Veland army plans 36 mounted 155 mm guns", "opportunity_kind": "planned_purchase",
+     "ref_category": "Artillery", "buyer_name": "Veland Army", "description": "The Veland army plans to buy 36 mounted 155 mm guns. Funding was approved in September. A tender is expected next year.",
+     "scope_text": "36 guns, 155 mm, wheeled, 30 percent local content", "location_text": "Veland", "stage": "approved_funded", "current_status": "Budget approved",
+     "latest_milestone": "Budget approved on 2026-09-12", "as_of_date": "2026-09-12", "country": "Veland", "story_product": "mounted 155 mm gun",
+     "_reason": {"stage": "approved_funded: the document says the budget was approved; no tender is issued yet."},
+     "_sources": {"as_of_date": [{"url": "https://example-defence-news.test/veland", "quote": "The budget was approved on 12 September."}]}},
+    "children": {
+     "market_opportunity_fit_assessment": [{"ref_client_product": "MArG 155 mm/52 cal Mounted Gun System", "fit_grade": "partial",
+       "rationale": "The MArG is a mounted 155 mm gun. The document gives no barrel length or range. Local content of 30 percent is unknown for KSSL.",
+       "value_score": 3, "strategic_score": 4, "time_to_award": "6_18m", "ref_competitor": "Nordvik Defence", "ref_product": "NV-155",
+       "_reason": {"fit_grade": "Same kind of gun; no spec stated.", "rationale": "Rests on the stated calibre and the missing range.",
+                   "value_score": "3: 36 guns, no value stated.", "strategic_score": "4: Veland is not in CLIENT MARKETS.", "time_to_award": "6_18m: tender expected next year.",
+                   "ref_competitor": "Nordvik sells wheeled 155 mm guns."}}],
+     "market_opportunity_update": [{"update_type": "approved_funded", "update_date": "2026-09-12", "headline": "Veland approves budget for 36 guns", "narrative": "The budget was approved on 12 September. A tender is expected next year."}],
+     "market_opportunity_source": [{"source_title": "Veland approves gun budget", "publisher": "Example Defence News", "source_type": "news", "source_date": "2026-09-13"}]}}],
+   "not_found": [], "conflicts": []}
 
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
-  COMPETITORS:
-  {{context.competitors}}
-  COMPETITOR PRODUCTS:
-  {{context.competitor_products}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  COMPETITORS (name, sub-types they make, countries they sell in):
+  {{context.competitors_extended}}
   CATEGORIES:
   {{context.categories}}
 
-  DOCUMENTS (article text, then opportunities on record):
+  DOCUMENTS (the document text, then opportunities on record, client product full names, tracked rival products the document names):
   {{documents}}
 
 output:
@@ -98,17 +162,19 @@ output:
     card: true
     key: [prompt_id, subject]    # a ref_opportunity, when given, replaces the key: that opportunity is extended
     refs: {ref_opportunity: market_opportunity.title}
-    transient: {country: {max: 100}}      # English short name; the loader turns it into country_code
+    transient:
+      country: {max: 100}                    # English short name; the loader turns it into country_code
+      story_product: {max: 200}
     columns:
-      title: {max: 120}
+      title: {max: 120, plain: warn}
       opportunity_kind: {enum: [planned_purchase, solicitation, follow_on_need, capability_gap]}
       category_id: {from_ref: ref_category, judgement: true}
       buyer_name: {}
       contractor_name: {}
-      description: {}
+      description: {plain: warn}
       scope_text: {}
       location_text: {}
-      stage: {max: 32}
+      stage: {judgement: true, enum_from: code_label.market_opportunity.stage}
       current_status: {max: 40}
       latest_milestone: {}
       as_of_date: {type: date}
@@ -119,11 +185,12 @@ output:
       updated_at: run_time
     children:
       market_opportunity_fit_assessment:
-        columns: [fit_grade, rationale]
+        columns: [fit_grade, rationale, value_score, strategic_score, time_to_award]
         refs: {ref_client_product: client_product, ref_competitor: competitive_competitor, ref_product: competitive_product}
         required: [fit_grade]
-        judgement: [fit_grade, rationale]
-        enum: {fit_grade: [strong, partial, weak]}
+        judgement: [fit_grade, rationale, value_score, strategic_score, time_to_award]
+        enum: {fit_grade: [strong, partial, weak], value_score: [1, 2, 3, 4, 5], strategic_score: [1, 2, 3, 4, 5], time_to_award: [le_6m, 6_18m, gt_18m, unknown]}
+        plain: {rationale: warn}
         loader:
           assessment_id: new_id
           opportunity_id: parent_id
@@ -132,12 +199,17 @@ output:
           client_model_display: resolved_ref_client_product_name
           rival_name: resolved_ref_competitor_display_name
           rival_product_display: resolved_ref_product_name
+          attractiveness: derive.pursue_label
+          ability: derive.pursue_label
+          pursue_label: derive.pursue_label
+          rule_version: derive.pursue_label
           # revenue_*, fit_score are NOT filled: no source states the client's revenue
       market_opportunity_update:
         columns: [update_type, update_date, headline, narrative]
         required: [update_type]
-        enum: {update_type: [announced, approved, funded, solicitation, delayed, cancelled]}
+        enum_from: {update_type: code_label.market_opportunity.stage}
         max: {headline: 120}
+        plain: {narrative: warn}
         loader: {update_id: new_id, opportunity_id: parent_id, source_id: sibling_source_id, confidence: copy_of_source_confidence}
       market_opportunity_source:
         columns: [source_title, publisher, source_type, source_date]
@@ -147,3 +219,5 @@ output:
           opportunity_id: parent_id
           source_url: subject.article_url
           confidence: single_source_unless_publisher_is_official
+
+derive: [pursue_label, doc_source_facts, story_link]

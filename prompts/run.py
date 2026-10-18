@@ -26,8 +26,10 @@ CADENCE = {"daily": timedelta(days=1), "weekly": timedelta(days=7), "quarterly":
 LABELS = ("headline", "title", "name", "display_name")
 # a routine runs prompts in dependency order (what a later prompt reads must exist; signal reads the stories news writes); others follow alphabetically
 ORDER = ["news", "signal", "moment", "partnership", "project", "geo", "matchup", "tender", "tender_assessment", "opportunity",
-         "top_opportunity", "global_requirement", "innovation_discovery", "innovation_detail", "tech_article", "patent_classification"]
-EVENT_KEYS = ("article_id", "source_id")           # one run per news article / notice: never re-run by cadence
+         "top_opportunity", "global_requirement", "innovation_discovery", "innovation_detail", "tech_article", "patent_classification",
+         "synthesis", "field_synthesis", "product_program", "client_product_program", "swot", "stock_listing"]
+EVENT_KEYS = ("article_id", "source_id", "doc_id")   # one run per news article / notice / raw document: never re-run by cadence
+                                                     # (doc_id added 2026-10-18: weekly prompts re-read every old document each week)
 
 
 @dataclass
@@ -58,16 +60,42 @@ def connect():
 
 # ---- run log ------------------------------------------------------------------------------------------------
 
+def call_log(attempt: int, res: ModelResult) -> dict:
+    """One model call as kept in prompt_run.details.calls (token split, web searches, turns, timings)."""
+    u = res.meta.get("usage") or {}
+    return {"attempt": attempt, "seconds": res.seconds, "api_ms": res.api_ms, "cost_usd": res.cost_usd,
+            "input": u.get("input_tokens"), "cache_read": u.get("cache_read_input_tokens"),
+            "cache_write": u.get("cache_creation_input_tokens"), "output": u.get("output_tokens"),
+            "web_searches": (u.get("server_tool_use") or {}).get("web_search_requests"),
+            **{k: res.meta.get(k) for k in ("num_turns", "stop_reason", "session_id", "model_usage")}}
+
+
+def run_totals(o: Outcome) -> dict:
+    """The per-run log columns (db/setup/13_prompt_run_log.sql), summed over details.calls."""
+    calls = o.details.get("calls") or []
+    tot = (lambda k: sum(int(c.get(k) or 0) for c in calls)) if calls else (lambda k: None)
+    by_table: dict = {}
+    for t, _i, _c in o.loaded:
+        by_table[t] = by_table.get(t, 0) + 1
+    return {"tokens_fresh_in": tot("input"), "tokens_cache_read": tot("cache_read"), "tokens_cache_write": tot("cache_write"),
+            "web_searches": tot("web_searches"), "num_turns": tot("num_turns"), "attempts": len(calls) or None,
+            "api_seconds": round(tot("api_ms") / 1000, 1) if calls else None,
+            "render_seconds": o.details.get("render_seconds"), "model_seconds": o.details.get("model_seconds"),
+            "load_seconds": o.details.get("load_seconds"), "rows_by_table": psycopg2.extras.Json(by_table)}
+
+
 def log_run(conn, spec: dict, subject_key: str | None, o: Outcome) -> None:
     j = psycopg2.extras.Json
+    x = run_totals(o)
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO staging.prompt_run
             (prompt_id, prompt_version, subject_key, model, web_search, seconds, tokens_in, tokens_out, cost_usd, status,
-             skip_reason, error, unresolved, rows_loaded, loaded, details, prompt_text, raw_output)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+             skip_reason, error, unresolved, rows_loaded, loaded, details, prompt_text, raw_output, finished_at, """
+                    + ", ".join(x) + ") VALUES (" + ",".join(["%s"] * 18) + ", now(), " + ",".join(["%s"] * len(x)) + ")",
                     (spec["id"], spec["version"], subject_key, o.model, spec["web_search"], o.seconds, o.tokens_in, o.tokens_out,
                      o.cost, o.status, o.skip_reason, o.error, j(o.unresolved), o.rows, j([{"table": t, "id": i, "card": c} for t, i, c in o.loaded]),
-                     j(o.details), f"SYSTEM:\n{o.system}\n\nPROMPT:\n{o.task}" if o.task else None, o.raw or None))
+                     j(o.details), f"SYSTEM:\n{o.system}\n\nPROMPT:\n{o.task}" if o.task else None, o.raw or None)
+                    + tuple(x.values()))
     conn.commit()
 
 
@@ -105,9 +133,11 @@ def recurring(spec: dict) -> bool:
 
 
 def pending(cur, spec: dict, subs: list[dict]) -> list[dict]:
+    any_version = spec.get("rerun_on_version") is False         # an event prompt (one article = one run): a new version applies to new
+                                                                 # articles only, old ones are not re-read
     cur.execute("""SELECT subject_key, status, started_at FROM staging.prompt_run
-                   WHERE prompt_id = %s AND prompt_version = %s AND status IN ('loaded','skipped','rejected','failed')""",
-                (spec["id"], spec["version"]))
+                   WHERE prompt_id = %s AND (prompt_version = %s OR %s) AND status IN ('loaded','skipped','rejected','failed')""",
+                (spec["id"], spec["version"], any_version))
     now = datetime.now(timezone.utc)
     period = CADENCE.get(spec.get("cadence")) if recurring(spec) else None
     last_done, last_failed = {}, {}
@@ -177,6 +207,7 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
                 docs = render.documents(cur, spec, subject) if "documents" in spec["task"] else ("none on record", [])
                 o.system, o.task, urls = render.build_prompt(cur, spec, subject, client, blocks, docs)
             o.details["fetched_urls"] = urls
+            o.details["render_seconds"] = round(time.monotonic() - t0, 1)
             conn.rollback()
         except (render.PromptError, psycopg2.Error) as e:
             conn.rollback()
@@ -209,6 +240,7 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
         o.tokens_out = (o.tokens_out or 0) + res.tokens_out
         o.cost = (o.cost or 0) + (res.cost_usd or 0)
         o.details["model_seconds"] = round(o.details.get("model_seconds", 0) + res.seconds, 1)
+        o.details.setdefault("calls", []).append(call_log(attempt, res))
         try:
             env = loader.parse_envelope(res.text)
             valid = None if handler else loader.validate(env, spec["id"], output, enums)
@@ -223,13 +255,19 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
             o.status, o.error = "rejected", str(e)
             o.seconds = round(time.monotonic() - t0, 1)
             return o
+        except Exception as e:  # noqa: BLE001  an answer of an unexpected shape is logged as failed; it must not stop a bulk run
+            o.status, o.error = "failed", f"validate: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
+            o.seconds = round(time.monotonic() - t0, 1)
+            return o
     if handler:
-        return _handled(conn, subject, env, o, dry_run, t0)
+        return _handled(conn, subject, env, o, dry_run, t0, handler)
+    t_load = time.monotonic()
     valid.warnings += quote_check(valid, o.task)
     o.details.update(warnings=valid.warnings, rejected=valid.rejected, not_found=valid.not_found, conflicts=valid.conflicts)
     try:
         with conn.cursor() as cur:
             ld = loader.Loader(cur, spec["id"], key, output, subject, client)
+            ld.keep_previous = spec.get("keep_previous") or {}
             if replaces_history(cur, spec, key, rerun):
                 ld.force_replace = True
                 prev = previous_cards(cur, spec["id"], key, all_runs=True)
@@ -262,21 +300,43 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
                     o.status = "rejected"
                     o.error = "; ".join((valid.rejected + r.dropped)[:3]) or "no record could be loaded"
         if o.status in ("loaded", "skipped"):
+            if o.status == "loaded":
+                _requalify(conn, o)
             conn.commit()
         else:
             conn.rollback()                                    # dry_run, rejected
     except Exception as e:  # noqa: BLE001  (a failed load must roll back and still be logged)
         conn.rollback()
         o.status, o.error, o.rows, o.loaded = "failed", f"load: {type(e).__name__}: {str(e).splitlines()[0]}", 0, []
+    o.details["load_seconds"] = round(time.monotonic() - t_load, 1)
     o.seconds = round(time.monotonic() - t0, 1)
     return o
 
 
-def _handled(conn, subject: dict, env: dict, o: Outcome, dry_run: bool, t0: float) -> Outcome:
+def _requalify(conn, o: Outcome) -> None:
+    """After EVERY load (user decision 2026-10-18): re-test which competitors qualify (same product line AND same market), so a
+    hidden competitor appears on the next dataset as soon as a load makes it qualify. Part of the run's transaction."""
+    import psycopg2.extras
+    from prompts.derive_comp import qualify_competitors
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT count(*) FILTER (WHERE qualifies) AS n FROM staging.competitive_competitor")
+        before = cur.fetchone()["n"]
+        qualify_competitors(cur)
+        cur.execute("SELECT count(*) FILTER (WHERE qualifies) AS n FROM staging.competitive_competitor")
+        after = cur.fetchone()["n"]
+    if after != before:
+        o.details["qualified_competitors"] = f"{before} -> {after}"
+
+
+def _handled(conn, subject: dict, env: dict, o: Outcome, dry_run: bool, t0: float, handler: str = "news_merge") -> Outcome:
     """Handler prompts (news -> prompts/news_merge.py): same outcome mapping as the loader path."""
     try:
         with conn.cursor() as cur:
-            r = news_merge.apply(cur, subject, env, dry_run)
+            if handler == "news_merge":
+                r = news_merge.apply(cur, subject, env, dry_run)
+            else:                                           # any other handler is a module of prompts/ with apply(cur, subject, env, dry_run)
+                import importlib
+                r = importlib.import_module(f"prompts.{handler}").apply(cur, subject, env, dry_run)
         o.rows, o.loaded, o.note = r.rows, [(t, i, c) for t, i, c in r.loaded], r.note
         o.details.update(warnings=r.warnings, **r.details)
         if r.rows:
@@ -286,6 +346,8 @@ def _handled(conn, subject: dict, env: dict, o: Outcome, dry_run: bool, t0: floa
         else:
             o.status, o.error = "rejected", "; ".join(r.warnings[:3]) or "no story could be applied"
         if o.status in ("loaded", "skipped"):
+            if o.status == "loaded":
+                _requalify(conn, o)
             conn.commit()
         else:
             conn.rollback()
@@ -323,6 +385,9 @@ def select(conn, spec: dict, args) -> tuple[list[dict], str]:
         elif not args.rerun and not args.print_prompt:
             subs = pending(cur, spec, subs)
     conn.rollback()
+    if getattr(args, "shard", None):                        # --shard K/N: worker K of N takes every N-th pending subject (parallel bulk runs)
+        k, n = (int(x) for x in args.shard.split("/"))
+        subs = [x for i, x in enumerate(subs) if i % n == k]
     why = "nothing pending: every subject has run at this version" if not subs else ""
     n = args.limit or (1 if args.print_prompt else None)
     return (subs[:n] if n else subs), why
@@ -347,6 +412,9 @@ def run_prompt(conn, spec: dict, args) -> int:
             print("----- SYSTEM\n" + system + "\n----- PROMPT\n" + task + "\n=====")
             continue
         o = run_one(conn, spec, s, client, blocks, args.dry_run, args.rerun)
+        if o.status == "failed" and re.search(r"hit your .*limit|usage limit|rate limit|credit balance", o.error or "", re.I):
+            print(f"STOP: the model account is at its limit ({(o.error or '')[:160]}). Not logged; run again after it resets.", flush=True)
+            return 3                                        # a bulk run stops cleanly instead of logging hundreds of failures
         log_run(conn, spec, s["_key"], o)
         print(line(spec["id"], s, o), flush=True)
         bad += o.status == "failed"
@@ -395,6 +463,7 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, help="at most N subjects (newest first, as the prompt's query orders them)")
     ap.add_argument("--print-prompt", action="store_true", help="print the filled prompt, no model call")
     ap.add_argument("--dry-run", action="store_true", help="call the model and validate; roll back instead of loading")
+    ap.add_argument("--shard", help="K/N: take every N-th pending subject starting at K (run N workers in parallel)")
     ap.add_argument("--rerun", action="store_true", help="run subjects that already ran at this prompt version")
     ap.add_argument("--due", action="store_true", help="routine: every prompt whose cadence has elapsed")
     ap.add_argument("--list", action="store_true", help="prompts, cadence, last run, pending subjects")
@@ -418,7 +487,9 @@ def main(argv=None) -> int:
                 with conn.cursor() as cur:
                     last = last_runs(cur, pid)
                 conn.rollback()
-                if due(spec, last):
+                if spec.get("routine") is False:                   # a hidden section's prompt (backend/routine.py skips it too)
+                    print(f"{pid}: routine: false")
+                elif due(spec, last):
                     code |= run_prompt(conn, spec, args)
                 else:
                     print(f"{pid}: not due ({spec.get('cadence')}, last {last['started_at']:%Y-%m-%d %H:%M}" if last else f"{pid}: not due ({spec.get('cadence')})")

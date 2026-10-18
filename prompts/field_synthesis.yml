@@ -1,0 +1,111 @@
+id: field_synthesis
+title: Field-level read of the partnership web (patterns across all competitors, one bottom line)
+version: 1
+fills: [competitive_field_synthesis]
+shows_on: Partnership page, "Field-level read - patterns across all competitors" (numbered patterns with "n of total" and the read for KSSL, then the Bottom Line)
+cadence: quarterly
+recurring: true
+# v1: one run for the whole field. It reads the stored per-competitor syntheses (prompts/synthesis.yml), the stored ties and the ties that overlap
+# KSSL's own partners; nothing is fetched. The model names the competitors that show each pattern (`supporters`); code (derive.field_support)
+# resolves the names, sets support_count / support_total from them and DROPS a pattern that fewer than 2 competitors show, so "n of total" is
+# counted, never typed by the model. The table is replaced as a whole on each run (replace: all_rows).
+# Needs 3 competitors with a stored synthesis; run after the synthesis prompt has covered the field.
+
+subject:
+  key: scope
+  query: |
+    SELECT 'field' AS scope, count(*) AS competitors_with_synthesis
+    FROM staging.competitive_synthesis HAVING count(*) >= 3
+  documents:
+    - from: sql                  # 1. what each competitor's synthesis says
+      query: |
+        SELECT 'READ' AS doc, c.display_name AS competitor, c.origin_country, left(s.thesis, 450) AS thesis,
+               left(s.strategy_pattern, 350) AS pattern,
+               (SELECT string_agg(v.title, ' ; ' ORDER BY v.display_order) FROM staging.competitive_synthesis_vulnerability v
+                 WHERE v.competitor_id = s.competitor_id) AS weaknesses,
+               s.source_url
+        FROM staging.competitive_synthesis s JOIN staging.competitive_competitor c ON c.competitor_id = s.competitor_id
+        ORDER BY (c.origin_country = 'India') DESC, c.display_name
+    - from: sql                  # 2. the shape of each competitor's ties
+      query: |
+        SELECT 'TIES' AS doc, c.display_name AS competitor, count(*) AS ties,
+               string_agg(DISTINCT p.partner_type, ', ') AS types,
+               string_agg(DISTINCT p.region, ', ') FILTER (WHERE p.region IS NOT NULL) AS partner_countries,
+               count(*) FILTER (WHERE p.relationship_confidence = 'single_source') AS single_source_ties,
+               count(*) FILTER (WHERE p.status = 'ended') AS ended_ties
+        FROM staging.competitive_partnership p JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+        WHERE EXISTS (SELECT 1 FROM staging.competitive_synthesis s WHERE s.competitor_id = p.competitor_id)
+        GROUP BY c.display_name ORDER BY count(*) DESC
+    - from: sql                  # 3. partners that tie to more than one competitor
+      query: |
+        SELECT 'SHARED PARTNER' AS doc, p.partner_name, count(DISTINCT p.competitor_id) AS competitors,
+               string_agg(DISTINCT c.display_name, ' ; ') AS competitor_names, string_agg(DISTINCT p.partner_type, ', ') AS types
+        FROM staging.competitive_partnership p JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+        GROUP BY p.partner_name HAVING count(DISTINCT p.competitor_id) >= 2 ORDER BY count(DISTINCT p.competitor_id) DESC, p.partner_name LIMIT 20
+    - from: sql                  # 4. ties whose partner also works with KSSL
+      query: |
+        SELECT 'KSSL OVERLAP' AS doc, c.display_name AS competitor, p.partner_name, p.overlap_kind, p.overlap_effect, p.overlap_component
+        FROM staging.competitive_partnership p JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+        WHERE p.overlap_kind IN ('same_component', 'same_partner_other_scope') ORDER BY c.display_name, p.partner_name LIMIT 25
+
+context: [client, client_portfolio, client_markets, client_partners]
+
+task: |
+  TASK field_synthesis — read all the competitors' webs of ties together and say what shows only when you look across the field,
+  from the point of view of {{client.name}}. {{subject.competitors_with_synthesis}} competitors have a stored read. Use only the
+  READ, TIES, SHARED PARTNER and KSSL OVERLAP rows below.
+
+  Rows to write, table competitive_field_synthesis, 3-5 rows with row_kind pattern, then exactly one with row_kind bottom_line.
+  A PATTERN is something at least 2 competitors show in their ties: the same kind of partner, a common dependence, a shared
+  weakness, a partner that several rivals use, a country that rivals reach through partners. Not a pattern: a fact about one company.
+   - row_kind: pattern | bottom_line
+   - field_title (pattern rows): the pattern as a short plain phrase, max 110 characters
+   - pattern (pattern rows): JUDGEMENT. 1-2 plain sentences, max 400 characters: what the competitors show. Name them and give the
+     counts as the rows state them.
+   - implication (pattern rows): JUDGEMENT. 1-2 plain sentences, max 400 characters: what it means for {{client.name}}; name the
+     {{client.name}} product, market or partner it touches (CLIENT PORTFOLIO, CLIENT MARKETS, CLIENT PARTNERS), and whether it is a
+     risk or an opening. Never write "{{client.name}} should".
+   - supporters (pattern rows, not stored): the display names of the competitors that show this pattern, exactly as written in the
+     rows, separated by ";". At least 2. Only competitors that have a READ row.
+   - bottom_line (the bottom_line row): JUDGEMENT. 2-3 plain sentences, max 500 characters: the single most important thing for
+     {{client.name}} that the patterns together show.
+  For every JUDGEMENT field give "_reason": one sentence naming the rows it rests on. Give "_sources" for pattern: one or two
+  entries, each the verbatim sentence (max 300 characters) copied from a READ row's thesis or pattern text, with that row's
+  source_url. Too little to say: "records": [] and a "skip_reason".
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented. Say what IS there, not what is absent. Never write the names of the
+  blocks (CLIENT MARKETS...) in the text.
+
+  CLIENT: {{context.client}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS:
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
+
+  ROWS:
+  {{documents}}
+
+output:
+  competitive_field_synthesis:
+    card: true
+    replace: all_rows
+    key: [prompt_id, subject, row_kind, field_title]
+    transient:
+      supporters: {max: 1500}
+    columns:
+      row_kind: {required: true, enum: [pattern, bottom_line]}
+      field_title: {max: 110, plain: strict}
+      pattern: {judgement: true, max: 400, plain: strict}
+      implication: {judgement: true, max: 400, plain: strict}
+      bottom_line: {judgement: true, max: 500, plain: strict}
+    loader:
+      synthesis_id: new_id
+      display_order: index_plus_1_of_output_order
+
+derive:
+  - field_support                # support_count / support_total from the named competitors; drops a pattern fewer than 2 show

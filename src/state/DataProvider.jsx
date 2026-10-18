@@ -1,9 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { datasetService } from "../api/datasetService";
 import { wireDataset } from "../lib/dataset";
+import { setClient, clientName } from "../lib/client.js";
+import { setVisibility } from "../lib/visibility.js";
 import { createGeo } from "../lib/geo";
 import { createPartners } from "../lib/partners";
+import { buildGapModel } from "../lib/gapModel";
 import { navCounts, viewMetaFor } from "../lib/overview";
+import { marketSelfCheck } from "../lib/marketOverview";
 import { profileSelfCheck } from "../lib/profile";
 import { logger } from "../utils/logger";
 import { ReviewProvider } from "../components/review/Review";
@@ -42,26 +46,49 @@ export function DataProvider({ children }) {
 
   const value = useMemo(() => {
     if (!raw) return null;
+    /* the client first: wireDataset builds strings that name it */
+    setClient(raw.client);
+    /* which sections the database switched on; read before anything below counts or routes */
+    setVisibility(raw.sectionVisibility);
     const data = wireDataset(raw);
+    const gapModel = buildGapModel(data);
     const geo = createGeo(data);
     const partners = createPartners(data);
     return {
       data,
+      gapModel,
       geo,
       partners,
-      counts: navCounts(data),
+      counts: navCounts(data, gapModel),
       viewMeta: viewMetaFor(data),
     };
   }, [raw]);
 
-  /* Every roster row must build a named profile; logs only on failure. */
+  /* The three self-checks the standalone file ran on load. They assert the derived
+     logic against the corpus and log only on failure — a silent console is the pass. */
   useEffect(() => {
     if (!value) return;
     try {
-      if (Object.keys(value.data.competitors || {}).length > 0) profileSelfCheck(value.data);
+      value.partners.selfCheck();
+      value.partners.geomCheck();
+      value.geo.selfCheck();
+      /* Both run against value.data — the WIRED dataset. That matters for the market
+         one: computeTenderRealDays rewrites dl and deadline, and the served rows carry
+         dl: null, for which `dl <= 0` is true and every tender buckets as closed. */
+      marketSelfCheck(value.data.tenders, value.data.marketCards);
+      profileSelfCheck(value.data);
+      logger.info("self-checks complete", {
+        globals: Object.keys(value.data).length,
+        matchups: Object.keys(value.data.matchups).length,
+        gaps: value.gapModel.length,
+      });
     } catch (err) {
       logger.error("a self-check threw", err);
     }
+  }, [value]);
+
+  useEffect(() => {
+    document.title = clientName() ? `137Parallax — ${clientName()}` : "137Parallax";
   }, [value]);
 
   if (error) {
@@ -71,12 +98,11 @@ export function DataProvider({ children }) {
           137<span>Parallax</span>
         </div>
         <div className="boot-msg">
-          Could not load the KSSL dataset - {error}
+          Could not load the dataset - {error}
           <br />
           <br />
           The app reads everything from <code>GET /api/dataset</code>. Start the
-          backend: <code>cd KSSL_Deploy &amp;&amp; docker compose up -d</code> (or run
-          <code>uvicorn app:app --port 8600</code> in <code>backend/</code>), then retry.
+          backend (see the README), then retry.
         </div>
         <button
           className="boot-retry"

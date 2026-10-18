@@ -23,3 +23,10 @@ CREATE TABLE IF NOT EXISTS staging.news_candidate (
 CREATE UNIQUE INDEX IF NOT EXISTS news_candidate_owner_url
     ON staging.news_candidate (coalesce(product_id, competitor_id), article_url);
 CREATE INDEX IF NOT EXISTS news_candidate_competitor_status ON staging.news_candidate (competitor_id, status);
+
+-- added with the news pipeline fixes (2026-10): where the subject's name was found and why a page could not be read.
+-- match_via: headline | page | own site (a company-domain page is never "not about"); the news prompt shows it so the
+-- model can flag a story that is not about the company. page_note: "http 401" ..., empty = page read (a blocked page
+-- ranks last as the main article).
+ALTER TABLE staging.news_candidate ADD COLUMN IF NOT EXISTS match_via text;
+ALTER TABLE staging.news_candidate ADD COLUMN IF NOT EXISTS page_note text;

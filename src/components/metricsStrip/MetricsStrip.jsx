@@ -18,7 +18,8 @@ function CountUp({ text }) {
   const label = String(text);
   const target = parseFloat(label.replace(/,/g, ""));
   const hasComma = label.includes(",");
-  const isNum = !Number.isNaN(target);
+  // only a bare number animates; "12 Cr" or "3 of 5" is shown exactly as stored (parseFloat dropped the rest)
+  const isNum = /^\s*-?[\d,]+(\.\d+)?\s*$/.test(label) && !Number.isNaN(target);
   const final = isNum ? (hasComma ? target.toLocaleString("en-IN") : String(target)) : label;
   const [shown, setShown] = useState(final);
   const frame = useRef(0);
@@ -76,10 +77,25 @@ function CountUp({ text }) {
 export default function MetricsStrip({ metrics, active, onPick, inert = false }) {
   return (
     <div className="metrics" id="metrics">
-      {metrics.map((m) => (
+      {metrics.map((m) =>
+        /* TWO TILES HELD OPEN, EMPTIED — and emptied HERE, at the point of display.
+           "Analytical lenses" and "All signals" are off the strip at the operator's
+           request. The slot stays: the strip is a CSS grid of equal columns, so dropping
+           two of five would stretch the remaining three and move every number the reader
+           had learned the position of. It renders as an empty cell with no button role,
+           no focus stop and no hover — there is nothing in it to open, and a control that
+           looks live and does nothing is worse than an empty space.
+
+           metricsFor still MEASURES both. That matters: "All signals" is the served card
+           count, which the report and the strip's own unbound-tile warning read, and
+           test_market_tiles.mjs holds metricsFor to producing it. Blanking it upstream
+           broke that test — correctly. Presentation belongs here. */
+        m.blank ? (
+          <div className="metric metric-blank" key={m.key || m.act} />
+        ) : (
         <div
           className={`metric${active === m.act ? " on" : ""}${inert ? " inert" : ""}`}
-          key={`${m.act}-${m.l}`}
+          key={m.key || m.act}
           onClick={inert ? undefined : () => onPick(m, m.act)}
           role={inert ? undefined : "button"}
           tabIndex={inert ? undefined : 0}
@@ -101,7 +117,8 @@ export default function MetricsStrip({ metrics, active, onPick, inert = false })
               of it. `m.dot` is still served and still on the metric; nothing else reads
               it, so restoring the dot is restoring this one span. */}
           <span className="ml">{m.l}</span>
-          <span className="mv">
+          {/* a long value (several currencies) steps down a size and stops at two lines; the whole text is the tooltip */}
+          <span className={`mv${String(m.v || "").length > 14 ? " long" : ""}`} title={String(m.v || "").length > 14 ? String(m.v) : undefined}>
             <CountUp text={m.v} />
             {m.unit ? <span className="unit">{m.unit}</span> : null}
             {m.delta ? <span className="delta up">{m.delta}</span> : null}
@@ -123,7 +140,8 @@ export default function MetricsStrip({ metrics, active, onPick, inert = false })
             />
           </span>
         </div>
-      ))}
+        ),
+      )}
     </div>
   );
 }

@@ -1,0 +1,107 @@
+id: spec_enrich
+title: Competitor product specifications - add the ones that are missing, each from a source document
+version: 2
+fills: [competitive_product_specification]
+shows_on: Products (competitor product spec table) and Product Evaluation (more specs to compare)
+cadence: quarterly
+recurring: false          # a pair / product is written once per prompt version (re-run: bump the version or use --rerun)
+handler: spec_enrich             # the answer is applied by prompts/spec_enrich.py: it only ADDS spec rows that pass its checks; it never changes
+                                 # or deletes a stored spec (the Excel-verified ones included)
+# Step 3 of the competitive data flood (docs/audit_v2/DATA_FLOOD_PLAN.md section 2: "DC doc with high p_spec -> spec enrichment").
+#  - subject = a competitor product that harvested documents with a high spec score (or routed to spec) name; Indian makers first,
+#    then artillery and ammunition, then the rest
+#  - the model reads the documents and lists specs the product does not have yet. Every spec: the exact sentence and the document URL.
+#  - the handler re-reads the document, checks that the sentence is really in it and that the value is in the sentence, skips a spec the
+#    product already has (by label, and by the spec dictionary's canonical key), and skips blocked sources. Whatever fails is not written.
+# v2 (Product Evaluation flood, plan B, 2026-10-18): also reads the documents backend/harvest_specs.py stored FOR this product
+#  (triage.spec_products: the maker's pages, spec PDFs, official pages, listed trade press -- credibility checked there), from their
+#  spec-dense part (triage.spec_offset); lists the specs the paired KSSL products state (WANTED) so the same specs are looked for first;
+#  the handler drops a spec whose source is not credible (no wiki / forum / blog / unlisted site).
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: run_key            # routine (2026-10-18): product + a fingerprint of its documents -> re-runs exactly when new documents arrive
+  query: |
+    WITH base AS (
+      SELECT cp.product_id, cp.competitor_id, cp.product_name, cp.category, c.display_name AS competitor, c.origin_country,
+             trim(regexp_replace(cp.product_name, '\s*\([^)]*\)', '', 'g')) AS base_name
+      FROM staging.competitive_product cp JOIN staging.competitive_competitor c ON c.competitor_id = cp.competitor_id
+    ), hits AS (
+      SELECT b.*, d.doc_id, coalesce((d.triage->'info'->>'spec')::numeric, 0) AS spec_score
+      FROM base b
+      JOIN staging.source_document d ON b.competitor_id = ANY(d.competitor_ids)
+      WHERE coalesce(d.body_text, '') <> ''
+        AND (d.triage->'spec_products' ? b.product_id::text
+             OR (length(b.base_name) >= 4
+                 AND (coalesce((d.triage->'info'->>'spec')::numeric, 0) >= 0.5 OR d.triage->'route' ? 'spec')
+                 AND position(lower(b.base_name) in lower(d.body_text)) > 0))
+    )
+    SELECT h.product_id, h.competitor_id, h.product_name, h.base_name, h.category, h.competitor, h.origin_country, count(*) AS spec_documents,
+           h.product_id::text || ':' || left(md5(string_agg(DISTINCT h.doc_id::text, ',' ORDER BY h.doc_id::text)), 10) AS run_key,
+           (SELECT count(*) FROM staging.competitive_product_specification s WHERE s.product_id = h.product_id) AS stored_specs
+    FROM hits h
+    GROUP BY h.product_id, h.competitor_id, h.product_name, h.base_name, h.category, h.competitor, h.origin_country
+    ORDER BY (h.origin_country = 'India') DESC, (h.category IN ('Artillery', 'Ammunition')) DESC, count(*) DESC, h.product_name
+  documents:
+    - from: sql                  # the specs the product already has (do not repeat them)
+      query: |
+        SELECT 'STORED SPEC' AS doc, s.spec_label, s.spec_value, s.unit
+        FROM staging.competitive_product_specification s WHERE s.product_id = '{{subject.product_id}}'::uuid ORDER BY s.spec_label
+    - from: sql                  # the specs the paired KSSL products state: look for the same ones first (not a list to fill in)
+      query: |
+        SELECT DISTINCT 'WANTED' AS doc, s.spec_name AS spec_label
+        FROM staging.competitive_matchup m JOIN staging.client_product_specification s ON s.client_product_id = m.client_product_id
+        WHERE m.competitor_product_id = '{{subject.product_id}}'::uuid ORDER BY 2 LIMIT 40
+    - from: sql                  # the documents harvested for this product, then the documents that name it; best spec score first
+      cap: 50000
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
+               substr(d.body_text, coalesce((d.triage->'spec_offset'->>'{{subject.product_id}}')::int, 0) + 1, 12000) AS text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
+          AND (d.triage->'spec_products' ? '{{subject.product_id}}'
+               OR ((coalesce((d.triage->'info'->>'spec')::numeric, 0) >= 0.5 OR d.triage->'route' ? 'spec')
+                   AND d.body_text ILIKE '%' || {{subject.base_name}} || '%'))
+        ORDER BY (d.triage->'spec_products' ? '{{subject.product_id}}') DESC, (CASE WHEN d.triage->'route' ? 'spec' THEN 1 ELSE 0 END) DESC,
+                 coalesce((d.triage->'info'->>'spec')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 4
+
+context: [client]
+
+task: |
+  TASK spec_enrich — list the technical specifications of {{subject.competitor}}'s {{subject.product_name}} (category {{subject.category}})
+  that the DOCUMENTS state and that STORED SPEC does not have yet. WEB SEARCH is off. Use ONLY the DOCUMENT rows.
+
+  A spec is a measurable or named technical property of THIS product: range, calibre, weight, length, rate of fire, crew, speed, payload,
+  endurance, armour level, engine power, ammunition type, and so on. NOT specs: prices, order quantities, delivery dates, customers,
+  company facts, marketing adjectives, or a property of another product that the document mentions in passing.
+
+  RULES
+   1. Only this product. If a document gives specs for several variants, use only the variant whose name matches {{subject.product_name}}
+      or {{subject.base_name}} exactly. If the document does not say which variant a figure belongs to, leave it out.
+   2. Copy the value exactly as the document writes it ("30 km", "52 calibres", "Level 4"). Never convert, round, add or average.
+   3. Condition in the label. If the document ties the figure to a condition (round type, loaded or empty, road or off-road, day or
+      night, burst or sustained), put it in the label in brackets: "Maximum range (base-bleed round)". A figure with no stated condition has
+      a plain label.
+   4. Do not repeat a spec that STORED SPEC already has, under the same or a similar label, even if the document gives another figure.
+   5. Every spec needs the document's URL (one of the DOCUMENT urls) and the exact sentence that states it (verbatim, at most 300
+      characters). The value must be written in that sentence.
+   6. At most 12 specs. Look first for the specs in WANTED (what the competing KSSL products state), then the most useful others. None found: "records": [] and "skip_reason".
+
+  Per spec, one record, table competitive_product_specification:
+   - spec_label: max 150 characters, short English name, with the condition in brackets when rule 3 applies
+   - spec_value: as written in the document
+   - unit: the unit as written ("km", "kg", "mm", "rounds/min"); empty when the value carries none
+   - source_url: the DOCUMENT url
+   - quote: the verbatim sentence
+
+  DOCUMENTS (stored specs, the WANTED spec names, then the documents about the product; a document may start mid-page):
+  {{documents}}
+
+output:
+  competitive_product_specification:       # documentary only (handler)
+    card: true
+    key: [prompt_id, subject]
+    columns:
+      spec_label: {required: true, max: 150}
+      spec_value: {required: true}
+      unit: {max: 40}

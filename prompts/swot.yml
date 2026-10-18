@@ -1,0 +1,137 @@
+id: swot
+title: Strengths and weaknesses of one competitor, each statement with its source
+version: 2
+fills: [competitive_competitor_swot]
+shows_on: "Competitor Profile: Strengths and Weaknesses boxes (hidden by decision, section swot). Only strength and weakness rows are written; opportunity and threat are not shown"
+cadence: quarterly
+routine: false            # its UI section is hidden (ui.section_visibility); backend/routine.py skips it until it is shown
+# v1: every statement is ONE sourced fact plus what it means next to KSSL. Inputs, in this order: the company details from the client workbook
+# (year, size, revenue; with the urls the workbook cites), the size of its catalogue, the stored signals / ties / projects / presence, the stored
+# matchup scores against KSSL products (when they exist), then the best-scored harvested documents of the raw layer. No web search: a statement
+# the stored rows and documents do not support is not written. Code (derive.swot_counts) sets record_count and DELETES a statement that has no
+# source row. Re-run after the other prompts have grown: the more stored rows, the richer the read.
+
+subject:
+  key: competitor_id
+  query: |
+    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country
+    FROM staging.competitive_competitor c
+    ORDER BY (c.origin_country = 'India') DESC,
+             (SELECT count(*) FROM staging.source_document d WHERE c.competitor_id = ANY(d.competitor_ids)) DESC, c.display_name
+  documents:
+    - from: sql                  # 1. company details (client workbook) and the urls it cites
+      query: |
+        SELECT 'PROFILE' AS doc, c.display_name, c.legal_name, c.origin_country, c.headquarters, c.industry_sector,
+               c.starting_year_text AS founded, c.employee_count_text AS size, c.revenue_text AS revenue, c.financial_year,
+               (SELECT string_agg(DISTINCT f.source_url, ' ; ') FROM (SELECT source_url FROM staging.fact_source
+                  WHERE table_name = 'competitive_competitor' AND row_id = c.competitor_id::text ORDER BY source_url LIMIT 4) f) AS workbook_urls
+        FROM staging.competitive_competitor c WHERE c.competitor_id = '{{subject.competitor_id}}'
+    - from: sql                  # 2. size and shape of the catalogue
+      query: |
+        SELECT 'CATALOGUE' AS doc, p.category, count(*) AS products
+        FROM staging.competitive_product p WHERE p.competitor_id = '{{subject.competitor_id}}'
+        GROUP BY p.category ORDER BY count(*) DESC
+    - from: sql                  # 3. stored matchups against KSSL products (only those already scored)
+      query: |
+        SELECT 'MATCHUP' AS doc, m.client_product_name AS kssl_product, m.competitor_product_name AS rival_product,
+               CASE m.decision_level WHEN 1 THEN 'KSSL behind' WHEN 2 THEN 'near parity' WHEN 3 THEN 'KSSL ahead' END AS result,
+               m.edge_score, m.verdict_headline
+        FROM staging.competitive_matchup m
+        WHERE m.competitor_id = '{{subject.competitor_id}}' AND m.decision_level IS NOT NULL
+        ORDER BY abs(m.edge_score - 50) DESC LIMIT 10
+    - from: sql                  # 4. ties
+      query: |
+        SELECT 'TIE' AS doc, p.partner_name, p.partner_type, p.region AS partner_country, p.status, p.as_of_date, left(p.description, 220) AS what,
+               (SELECT e.source_url FROM staging.competitive_partnership_evidence e WHERE e.relationship_id = p.relationship_id
+                  AND coalesce(e.source_url, '') <> '' ORDER BY e.as_of_date DESC NULLS LAST LIMIT 1) AS source_url
+        FROM staging.competitive_partnership p WHERE p.competitor_id = '{{subject.competitor_id}}'
+        ORDER BY p.as_of_date DESC NULLS LAST LIMIT 10
+    - from: sql                  # 5. signals, projects, presence
+      query: |
+        SELECT 'SIGNAL' AS doc, s.event_date, s.title, s.classification AS label, d.source_url
+        FROM staging.competitive_signal s LEFT JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+        WHERE s.company_id = '{{subject.competitor_id}}' AND s.event_date >= current_date - 365
+        ORDER BY s.event_date DESC LIMIT 10
+    - from: sql
+      query: |
+        SELECT 'PROJECT' AS doc, p.project_title, p.stage, p.customer, p.latest_milestone, p.latest_milestone_date
+        FROM staging.competitive_project p WHERE p.competitor_id = '{{subject.competitor_id}}'
+        ORDER BY p.latest_milestone_date DESC NULLS LAST LIMIT 8
+    - from: sql
+      query: |
+        SELECT 'PRESENCE' AS doc, g.country_name AS country, p.activity_type, p.presence_status
+        FROM staging.competitive_geo_company_presence p JOIN staging.competitive_geo_location g ON g.location_id = p.location_id
+        WHERE p.competitor_id = '{{subject.competitor_id}}' ORDER BY g.country_name LIMIT 20
+    - from: sql                  # 6. the best harvested documents about the company (full text, cut)
+      query: |
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url, left(d.body_text, 1700) AS text
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> '' AND length(d.body_text) > 500
+          AND d.url !~* '(/tag/|/tags/|/category/|/archive|/page/[0-9]|[?&]pageno=|[?&]page=)'
+        ORDER BY (CASE WHEN d.triage->'route' ?| array['signal','moment','project','partnership','geo'] THEN 1 ELSE 0 END) DESC,
+                 greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0),
+                          coalesce((d.triage->'info'->>'spec')::numeric, 0)) DESC,
+                 (d.source_kind IN ('newsroom', 'gov')) DESC, d.published_at DESC NULLS LAST LIMIT 9
+
+context: [client, client_portfolio, client_markets, client_partners]
+
+task: |
+  TASK swot — list what {{subject.display_name}} ({{subject.origin_country}}) is strong at and weak at, as a competitor of
+  {{client.name}}, using only the ROWS and DOCUMENTS below. Each statement is one fact the sources show, and what that fact means
+  next to {{client.name}}. The page shows two boxes, Strengths and Weaknesses.
+
+  A STRENGTH is a stated fact that helps this company win business against {{client.name}}: size, order book, export wins, capacity,
+  a technology or product {{client.name}} has no equal of in CLIENT PORTFOLIO, strong partners, presence in a market of
+  {{client.name}}. A WEAKNESS is a stated fact that limits it: delivery delays, a failed trial, a loss of an order, a cancelled
+  tie, dependence on one partner, a narrow range, a dispute, a sanction, falling revenue. Judge the fact, not the company's mood.
+  Only what a source states. Opinion pieces, forecasts and the company's own boasts without a figure are not facts.
+  Do not turn a gap in our own lists into a fact about the company. The CATALOGUE rows count the products in the client's workbook;
+  they do not show what the company makes or lacks. Use them only to support a strength of breadth (a large count), never a
+  weakness. Do not write that the company or {{client.name}} "has no" or "lists no" something. Compare with {{client.name}} only by
+  naming something {{client.name}} does have.
+
+  Rows to write, table competitive_competitor_swot, 0-6 of swot_type strength and 0-6 of swot_type weakness (fewer is fine; do not
+  pad). Strongest first within a type.
+   - swot_type: strength | weakness
+   - statement: one fact and what it means next to {{client.name}}: 1-2 plain sentences, max 300 characters. State the figure, the
+     date and the party as the source does. Name the {{client.name}} product, market or partner it touches when one of CLIENT
+     PORTFOLIO / CLIENT MARKETS / CLIENT PARTNERS is touched; otherwise just state the fact.
+  Sources. For every row give "_sources": { "statement": [ { "url": ..., "quote": ... } ] } with one or two entries. The quote is the
+  verbatim sentence (max 300 characters) from a DOCUMENT or from the cell of a row (a PROFILE, TIE, SIGNAL, PROJECT row: quote the
+  field as printed, with the url shown in that row, or url null for a stored row with none). A statement with no quote is not
+  written. Cite the page of the article itself; never a tag, archive, category or page-number listing. The PROFILE row's workbook_urls are the pages the client's workbook cites for its figures; use one of them as the url for a
+  PROFILE figure. The CATALOGUE and MATCHUP rows are stored rows: quote the row, url null. "_reason": { "statement": "one sentence saying why the
+  fact is a strength or a weakness for {{client.name}}" }.
+  Nothing found: "records": [] and a "skip_reason".
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented. Never write the names of the blocks (CLIENT MARKETS...) in the text;
+  say "KSSL's markets" or "KSSL's range".
+
+  CLIENT: {{context.client}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
+
+  ROWS AND DOCUMENTS:
+  {{documents}}
+
+output:
+  competitive_competitor_swot:
+    card: true
+    key: [prompt_id, subject, swot_type, statement]
+    columns:
+      swot_type: {required: true, enum: [strength, weakness]}
+      statement: {required: true, judgement: true, max: 300, plain: strict}
+    loader:
+      swot_id: new_id
+      competitor_id: subject.competitor_id
+      record_count: 0            # set by derive.swot_counts
+
+derive:
+  - swot_counts                  # record_count per type; deletes a statement that has no source row

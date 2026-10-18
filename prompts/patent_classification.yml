@@ -1,6 +1,6 @@
 id: patent_classification
 title: Patent classification (category label per filing, IPC/CPC text)
-version: 1
+version: 2
 fills: [competitive_patent_classification, competitive_patent_filing]
 shows_on: "Patents page (Filings by category chips, technology-field rail, filing card classification line)"
 cadence: quarterly               # a batch re-runs when its filing list changes (the key includes a fingerprint of the filing ids)
@@ -39,7 +39,7 @@ subject:
         WHERE (r.rn - 1) / 60 = {{subject.batch_no}}
         ORDER BY r.rn
 
-context: [client, categories]
+context: [client, categories, client_portfolio]
 
 task: |
   TASK patent_classification — label each filing below (portfolio batch {{subject.batch_no}},
@@ -59,23 +59,33 @@ task: |
      <classification_code>: <official scheme title of that code>", the title verbatim from the
      official IPC/CPC scheme (url = the scheme page you read). If you cannot find the title, omit the
      field and put "competitive_patent_filing.classification_text:<handle>" in "not_found"
+   - area_label: the technology field in 2-4 plain words, max 40 characters, from the title and the scheme title of the code
+     ("Ammunition handling", "Fire control", "Vehicle noise reduction"). The same field gets the same words across filings.
+   - client_relevance: JUDGEMENT, max 200 characters, one plain sentence of 20 words or fewer. Name the product or line in
+     CLIENT PORTFOLIO that this invention would be used in or would compete with, and say how, from the title and code only.
+     Leave it empty when no product in CLIENT PORTFOLIO is of that kind. Never write "{{client.name}} should".
+     _reason: one short sentence naming the product line.
   Do not output competitive_patent_classification; the loader counts it from your labels.
 
   CLIENT: {{context.client}}
   CATEGORIES:
   {{context.categories}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
 
   FILINGS:
   {{documents}}
 
 output:
   competitive_patent_filing:
-    update_only: true            # rows exist already (raw load); only classification_text is written
+    update_only: true            # rows exist already (raw load); only classification_text, category_label, area_label and client_relevance are written
     key: [prompt_id, subject, ref_filing]
     refs: {ref_filing: batch_handle_to_filing_id}
     transient: {category_label: {from_ref: ref_category, judgement: true}}   # not stored on the filing: feeds competitive_patent_classification
     columns:
       classification_text: {max: 400}
+      area_label: {max: 40}
+      client_relevance: {judgement: true, max: 200, plain: warn}
   competitive_patent_classification:
     loader_only: true            # rebuilt for the whole portfolio from the transient labels of all its batches (latest run each)
     loader:
@@ -84,3 +94,5 @@ output:
       filing_count: count_of_filings_with_that_label
       lens: write_each_row_twice_as_rival_and_as_field    # the page reads both lenses: 'rival' (by competitor) and 'field' (by technology field)
       classification_id: new_id
+
+derive: [patent_trend]            # competitive_patent_classification / trend / field assessment are code roll-ups of the stored labels

@@ -1,0 +1,85 @@
+id: product_status
+title: Product lifecycle status - only a special case (in development, prototype, concept, in trials, retired, cancelled), each quoted
+version: 1
+fills: [competitive_product, client_product]
+shows_on: Products page and the KSSL product drawer - the status in brackets after the product name ("K9A3 (concept)")
+cadence: quarterly
+recurring: false          # a company is written once per prompt version (re-run: bump the version or use --rerun)
+handler: product_status   # prompts/product_status.py writes ONLY the status column (+ one fact_source row with the quote); a status whose
+                          # quote is not in the product's own name or description is dropped
+# User 2026-10-18: "when I click on a product, first show the product description, then the tech specs, and if any special case like in
+# development, in brackets". The description comes from the product spec workbook (backend/excel_load.py); this prompt reads it and the
+# product name and decides whether the product as a whole is NOT a normal fielded / offered product. A product in production or in service
+# has no status (NULL), so nothing is shown.
+#  - subject = one company with candidate products (a status word in the name or the description), or the client's own portfolio.
+#  - a re-run clears the statuses of that company's candidate products before it writes the new ones.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: company_key
+  query: |
+    WITH cand AS (
+      SELECT p.competitor_id::text AS company_key, c.display_name AS company, p.product_id::text AS pid
+      FROM staging.competitive_product p JOIN staging.competitive_competitor c USING (competitor_id)
+      WHERE (p.product_name || ' ' || coalesce(p.description, '')) ~* '(in|under) development|developing|prototype|concept|trials?\M|unveil|terminated|cancell?ed|retired|discontinued|out of production|pre-production|development phase|not yet in'
+      UNION ALL
+      SELECT 'client', a.client_name, cp.client_product_id::text
+      FROM staging.client_product cp JOIN staging.client_account a USING (client_id)
+      WHERE (cp.product_name || ' ' || coalesce(cp.description, '')) ~* 'develop|prototype|concept|trials?\M|unveil|terminated|cancell?ed|retired|discontinued|out of production|pre-production|not yet in'
+    )
+    SELECT company_key, company, count(*) AS candidates FROM cand GROUP BY 1, 2 ORDER BY (company_key = 'client') DESC, company
+  documents:
+    - from: sql                  # the candidate products of this company: id, name, description (from the maker-sourced workbook)
+      cap: 60000
+      query: |
+        SELECT 'PRODUCT' AS doc, p.product_id::text AS product_ref, p.product_name, p.description
+        FROM staging.competitive_product p
+        WHERE p.competitor_id::text = {{subject.company_key}}
+          AND (p.product_name || ' ' || coalesce(p.description, '')) ~* '(in|under) development|developing|prototype|concept|trials?\M|unveil|terminated|cancell?ed|retired|discontinued|out of production|pre-production|development phase|not yet in'
+        UNION ALL
+        SELECT 'PRODUCT', cp.client_product_id::text, cp.product_name, cp.description
+        FROM staging.client_product cp
+        WHERE {{subject.company_key}} = 'client'
+          AND (cp.product_name || ' ' || coalesce(cp.description, '')) ~* 'develop|prototype|concept|trials?\M|unveil|terminated|cancell?ed|retired|discontinued|out of production|pre-production|not yet in'
+        ORDER BY 3
+
+context: [client]
+
+task: |
+  TASK product_status — for {{subject.company}}'s products below, give the lifecycle status of each product that is NOT a normal product
+  in production, in service or on offer. WEB SEARCH is off. Use ONLY the PRODUCT rows (the product name and its description).
+
+  STATUS (exactly one of these words):
+   - in development: the product itself is still being developed or qualified, with no series production yet.
+   - prototype: only prototypes or demonstrators exist, shown or tested, no production order.
+   - concept: a design concept or study only (shown as a model or a drawing, "concept", "concept study").
+   - in trials: the product is in user trials, sea trials or field trials before entering service.
+   - retired: the product has been withdrawn from service or production ("retired", "out of production", "discontinued").
+   - cancelled: the programme was cancelled or terminated.
+
+  RULES
+   1. The status is about THIS product as a whole, today. A sentence about a part, a variant or the product's past is not its status:
+      "a development prototype was built on a Tatra chassis; production is in progress" is a product in production (no record);
+      "the PL-14 prototype led to the PL-15" says nothing about the product named; "a submunition concept" is not a concept product.
+   2. A product that is unveiled, newly launched, in production, delivered or in service gets NO record.
+   3. When the text gives two states, take the latest one it states (a programme "in development, later terminated" is cancelled).
+   4. Every record needs a quote: the exact words from that product's own name or description that state the status (verbatim, at
+      most 200 characters, copied character for character).
+   5. Unsure: no record. No record at all: "records": [] and "skip_reason".
+
+  One record per product with a special status, table product_status:
+   - product_ref: the PRODUCT row's product_ref, exactly
+   - status: one of the six words above
+   - quote: the verbatim words that state it
+
+  PRODUCTS:
+  {{documents}}
+
+output:
+  product_status:                 # documentary only (handler)
+    card: false
+    key: [prompt_id, subject]
+    columns:
+      product_ref: {required: true}
+      status: {required: true, enum: [in development, prototype, concept, in trials, retired, cancelled]}
+      quote: {required: true, max: 200}

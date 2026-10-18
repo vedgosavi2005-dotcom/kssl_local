@@ -1,0 +1,118 @@
+id: product_program
+title: Programmes and customers of one competitor's products (which programme each product is in, run by which authority, at what stage)
+version: 1
+fills: [competitive_product_program]
+shows_on: Products page, product drawer, "Programs" list (programme title, authority, status, date, description)
+cadence: quarterly
+# v1: documents only, no web search. A PROGRAMME is a named effort by a customer authority (an army, navy, air force, ministry, agency) in which
+# the product is selected, bid, trialled, ordered, built, delivered or in service: a procurement or modernisation programme, a development
+# programme, a competition or trial, a licence-production deal, an export order. A product is linked to a programme only when a source names
+# BOTH (the product, or its family name, and the programme or customer). Evidence, in this order: the stored projects and signals of the
+# competitor, the stored sales rows of the geo prompt (product, country, customer), then the harvested documents that name products of the
+# catalogue (the SQL below picks documents by the catalogue names found in their text). `ref_product` resolves the catalogue name exactly.
+# The status colour is not set here: the page uses its own neutral chip.
+
+subject:
+  key: competitor_id
+  query: |
+    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country
+    FROM staging.competitive_competitor c
+    WHERE EXISTS (SELECT 1 FROM staging.competitive_product p WHERE p.competitor_id = c.competitor_id)
+    ORDER BY (c.origin_country = 'India') DESC,
+             (SELECT count(*) FROM staging.source_document d WHERE c.competitor_id = ANY(d.competitor_ids)) DESC, c.display_name
+  documents:
+    - from: sql                  # 0. the whole catalogue, names only, exactly as stored (the context block of the same name is cut at 8 KB, so a big catalogue lost its tail)
+      query: |
+        SELECT 'CATALOGUE' AS doc, count(*) AS products, string_agg(p.product_name, ' | ' ORDER BY p.product_name) AS names
+        FROM staging.competitive_product p WHERE p.competitor_id = '{{subject.competitor_id}}'
+    - from: sql                  # 1. stored projects (a project is already a named programme)
+      query: |
+        SELECT 'PROJECT' AS doc, p.project_title, p.customer, p.stage, p.region, p.latest_milestone,
+               p.latest_milestone_date, left(p.what_the_project_is, 300) AS what
+        FROM staging.competitive_project p WHERE p.competitor_id = '{{subject.competitor_id}}'
+        ORDER BY p.latest_milestone_date DESC NULLS LAST LIMIT 12
+    - from: sql                  # 2. stored sales rows: product, country, customer, quantity
+      query: |
+        SELECT 'SALE' AS doc, g.country_name, gp.product_name, gp.customer_name, gp.local_partner, gp.quantity, gp.since_date, gp.activity_type,
+               left(gp.record_note, 220) AS note
+        FROM staging.competitive_geo_company_presence pr
+        JOIN staging.competitive_geo_product gp ON gp.presence_id = pr.presence_id
+        JOIN staging.competitive_geo_location g ON g.location_id = pr.location_id
+        WHERE pr.competitor_id = '{{subject.competitor_id}}' ORDER BY g.country_name, gp.product_name LIMIT 30
+    - from: sql                  # 3. stored signals of the last two years
+      query: |
+        SELECT 'SIGNAL' AS doc, s.event_date, s.title, d.glance_where AS where_, d.glance_third_party AS customer_or_partner, d.source_url
+        FROM staging.competitive_signal s LEFT JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+        WHERE s.company_id = '{{subject.competitor_id}}' AND s.event_date >= current_date - 730
+        ORDER BY s.event_date DESC LIMIT 15
+    - from: sql                  # 4. harvested documents: the best-scored ones, those that name the head of a catalogue product (its first two words) first
+      query: |
+        WITH heads AS (
+          SELECT DISTINCT lower(substring(split_part(p.product_name, ' (', 1) from '^\S+(?:\s+\S+)?')) AS k FROM staging.competitive_product p
+          WHERE p.competitor_id = '{{subject.competitor_id}}'),
+        keys AS (SELECT k FROM heads WHERE length(k) >= 6 AND k !~ '^[0-9]'),
+        d AS (
+          SELECT x.doc_id, x.published_at, x.title, x.source_name, x.url, x.body_text FROM staging.source_document x
+          WHERE '{{subject.competitor_id}}'::uuid = ANY(x.competitor_ids) AND coalesce(x.body_text, '') <> '' AND length(x.body_text) > 400
+            AND x.url !~* '(/tag/|/tags/|/category/|/archive|/page/[0-9]|[?&]pageno=|[?&]page=)'
+          ORDER BY (CASE WHEN x.triage->'route' ?| array['project','moment','signal','geo','partnership'] THEN 1 ELSE 0 END) DESC,
+                   greatest(coalesce((x.triage->'info'->>'deal')::numeric, 0), coalesce((x.triage->'info'->>'sales_geo')::numeric, 0)) DESC,
+                   x.published_at DESC NULLS LAST LIMIT 150)
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url, n.names AS catalogue_names_found, left(d.body_text, 1500) AS text
+        FROM d LEFT JOIN LATERAL (SELECT string_agg(k, ' ; ') AS names, count(*) AS c FROM keys WHERE position(k in lower(d.body_text)) > 0) n ON true
+        ORDER BY coalesce(n.c, 0) DESC, d.published_at DESC NULLS LAST LIMIT 10
+
+context: [client, client_portfolio]
+
+task: |
+  TASK product_program — list the programmes that products of {{subject.display_name}} ({{subject.origin_country}}) are part of, and
+  who the customer is. A product page shows each programme as: title, the authority, the status, a date and a short description.
+  Use only the PROJECT, SALE, SIGNAL and DOCUMENT rows below.
+
+  A PROGRAMME is a named effort by a customer authority (an army, navy, air force, ministry or agency) in which a product is
+  selected, bid, trialled, ordered, built, delivered or in service. Examples of the kind: a national artillery modernisation
+  programme; a trial or competition; an export order from a named ministry; a licence-production deal. Not a programme: a trade fair,
+  a marketing launch, a company-wide strategy, a sale with no named buyer. Write a row only when a source names the product (or its
+  family name) AND the programme or the customer. At most 12 rows, strongest evidence first. None found: "records": [] and a
+  "skip_reason".
+
+  Per row, table competitive_product_program:
+   - ref_product: the product's name, copied exactly from the CATALOGUE below. If the source names a product that is not in the
+     CATALOGUE, do not write the row.
+   - program_title: the programme as the source names it, max 250 characters. If the source names none, use "<customer> <product
+     family> purchase" built only from words in the source.
+   - authority: the customer or the body that runs the programme, as the source names it (for example a ministry, an army), max 200
+     characters
+   - program_date: the date of the latest step the source states for this programme (YYYY-MM-DD; month only -> first day and say so
+     in _precision)
+   - status: JUDGEMENT, one of: Concept | Development | Trials | Selected | Contract signed | In production | Delivering | In service |
+     Cancelled | Other. The stage the source shows at program_date.
+   - description: 1-2 plain sentences saying what the programme buys or builds, with quantity and value if the source gives them
+  Sources. Give "_sources" for program_title, authority and program_date: the verbatim sentence (max 300 characters) from the
+  PROJECT, SALE, SIGNAL or DOCUMENT row and the url shown in it (a PROJECT or SALE row has none: quote the row, url null). "_reason"
+  for status: one sentence naming the fact it rests on.
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented.
+
+  CLIENT: {{context.client}}
+  CLIENT PORTFOLIO (for context only; write nothing about it):
+  {{context.client_portfolio}}
+  ROWS AND DOCUMENTS (the CATALOGUE row first):
+  {{documents}}
+
+output:
+  competitive_product_program:
+    card: true
+    key: [prompt_id, subject, program_title, product_id]      # one programme per product; other rows of the competitor are left alone
+    columns:
+      product_id: {required: true, from_ref: ref_product}
+      program_title: {required: true, max: 250}
+      authority: {max: 200}
+      program_date: {type: date}
+      status: {judgement: true, enum: [Concept, Development, Trials, Selected, Contract signed, In production, Delivering, In service, Cancelled, Other]}
+      description: {plain: warn}
+    loader:
+      program_id: new_id

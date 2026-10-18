@@ -1,0 +1,183 @@
+id: client_partner_research
+title: The client's own partners, suppliers, licensors, JV partners and customers (one-off, provisional until the client's Excel)
+version: 5                       # 2026-10-18 v5: more leads (JVs and MoUs the v4 run missed), one search per lead, blogs and broker news banned by name.
+                                 # v4 2026-10-18: a re-run replaces the earlier records (runner replaces_history), so the task asks for the full list (20-25), not only new names;
+                                 # country from the partner's own site; a state customer is named by its buying body; no stock-news aggregators; derive sources_filter
+fills: [client_partner, client_partner_relationship, client_partner_product, client_partner_source]
+shows_on: Partnership page (KSSL partners list and the overlap check); context blocks client_partners / client_capabilities / client_markets
+cadence: on_demand               # never by routine (run.due() skips on_demand)
+recurring: true                  # keyed by an entity (the client), not an event: an explicit `--rerun` refreshes it (also what loader --selftest expects)
+web_search: true
+# One-off stop-gap (docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.0.1): the subject is the client itself. The data is PROVISIONAL: every
+# fact_source quote starts with "provisional research (replace with client Excel)" so Trace and the review copy show it, and the
+# client's "KSSL partners" Excel sheet replaces it later (run with --rerun to refresh before that). What each organisation supplies
+# or buys, at component / product level, is the field the supply-chain and overlap judgements of later prompts depend on.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: subject_id
+  query: |
+    SELECT a.client_id::text AS subject_id, a.client_id, a.client_name AS display_name, a.legal_name, a.country, a.headquarters
+    FROM staging.client_account a
+    ORDER BY a.client_id
+  documents:
+    - from: sql                  # canonical partner names already on record (rivals' and the client's): reuse them character for character
+      query: |
+        SELECT 'KNOWN PARTNER' AS doc, k.partner_name, k.region
+        FROM (SELECT partner_name, max(region) AS region FROM staging.competitive_partnership GROUP BY partner_name
+              UNION
+              SELECT partner_name, max(country) FROM staging.client_partner GROUP BY partner_name) k
+        ORDER BY k.partner_name
+    - from: sql                  # where the client is already known to be active (leads, not proof)
+      query: |
+        SELECT 'CLIENT FOOTPRINT' AS doc, l.country_name, p.activity_type, p.presence_status, p.relationship_text
+        FROM staging.competitive_geo_company_presence p
+        JOIN staging.competitive_geo_location l ON l.location_id = p.location_id
+        WHERE p.company_role = 'client'
+        ORDER BY l.country_name
+
+context: [client, client_products, categories]
+
+task: |
+  TASK client_partner_research — find the organisations that {{subject.display_name}}
+  ({{subject.legal_name}}, {{subject.country}}) works with, and what each one supplies or buys. This is
+  PROVISIONAL research: the client's own list will replace it. Use web search; the DOCUMENTS are only
+  leads (names already on record). The CLIENT PRODUCTS list below names several partners inside product
+  names (for example "Thales Belgium", "KRAS", "Junghans Defence", "AM General", "BAE Systems", "Arsenal JSCo",
+  "FN Herstal", "Zorya Mashproekt", "Duma Engineering", "BEML", "Analogic Controls"): treat each as a lead to
+  confirm in a source, and find others the sources state. Further leads from the partner names on record: the
+  Kalyani group's vehicle and drone ties (Paramount Group, Elbit Systems, General Atomics) and its government buyers.
+  Run at least one web search per lead before you give it up.
+
+  WHO COUNTS. One record per external organisation with which {{subject.display_name}} has, or has announced,
+  one of these ties, with partner_type:
+   - Supplier: supplies components, materials, subsystems or services to {{subject.display_name}}
+   - Customer: buys products or services from {{subject.display_name}} (armed forces, ministries,
+     governments and companies alike; for a customer say what it bought)
+   - Licensor: licenses a design or transfers technology (ToT) to {{subject.display_name}}
+   - Joint venture: the two own a joint company
+   - Technology partner: co-development, integration, teaming on a programme
+   - MoU / teaming: an MoU or teaming agreement with no contract yet
+  If several apply, take the first that applies in that order. Never a partner: {{subject.display_name}} itself,
+  its parent group or its own subsidiaries (a joint venture company with an outside owner is a partner), a
+  competitor named only as a rival, and ties a source reports as ended, cancelled or dissolved. At most 25
+  organisations, strongest evidence first. None found: "records": [] and "skip_reason".
+
+  WRITE ONLY WHAT A SOURCE STATES. The point of this research is WHAT each organisation supplies or buys, at
+  component or product level (for example "155 mm gun barrels", "fuzes for artillery", "Spike ATGM sub-systems",
+  "armoured steel", "gearboxes"). Take it from the source in its own words. If no source says what, leave
+  the field null and list it in "not_found": do not infer it from the partner's business. Dates, quantities and
+  values only as stated. Allowed sources are the usual ones (company, government, armed-forces and exchange
+  pages; defence trade press and independent news outlets): no wikis, blogs (any site that calls itself a blog,
+  e.g. thefirearmblog.com), forums, press-release wires, broker or stock-market news sites (scanx.trade, angelone.in,
+  businessupturn.com and the like).
+
+  WHERE TO LOOK. Customers: orders and deliveries announced by the company, a ministry or an armed force
+  (who ordered, which product, which year). Suppliers and licensors: supply agreements, technology-transfer
+  agreements, and named sub-suppliers of KSSL products (materials, propellants, fuzes, electronics, engines,
+  gearboxes). Search the company's own site and press releases, ministry pages and defence trade press for
+  each. This run REPLACES every record an earlier pass of this task wrote (the runner deletes them), so list
+  every organisation you can source, including the client's partners already in the KNOWN PARTNER rows; aim for
+  20 to 25 organisations across suppliers, customers, licensors, joint ventures and technology partners.
+
+  PARTNER NAMES. A customer that is a state is named by the body that buys (for example "Armenian Ministry of Defence",
+  "Indian Army"), never by the country alone. If the organisation (same legal entity or same named unit, also under an alias) is in the KNOWN
+  PARTNER rows, use that name character for character. Otherwise use the name it uses for itself in English,
+  without legal-form suffixes (Ltd, Pvt, GmbH, S.A., Inc.).
+
+  PROVISIONAL MARKER. In every "_sources" entry of this task, begin "quote" with the exact words
+  "provisional research (replace with client Excel) | " and then the verbatim sentence from the source (the
+  sentence itself max 240 characters, so that the whole quote stays within 300). Every non-null fact of every record AND of every child row (client_partner_product, client_partner_relationship, client_partner_source) needs its own "_sources" entry, in the child's own "_sources". In client_partner_source.source_note, write exactly: provisional research
+  (replace with client Excel)
+
+  Per organisation, one record, table client_partner:
+   - partner_name: as above
+   - legal_name: the full legal name if a source gives it, else null
+   - partner_type: one of the six above
+   - country: the organisation's home country, English short name, as stated by a source or by the organisation's own
+     website (its "about" or contact page counts; cite it); null only if neither states it
+   - relationship_scope: one sentence on the tie as stated (programme, product, work share)
+   - relationship_confidence: official if the organisation, {{subject.display_name}} or a government body itself
+     states the tie; else corroborated if two or more independent publishers state it; else single_source
+   - relationship_start_date: when the tie began (agreement, contract or first delivery), as stated; else null
+   - relationship_status: Active or Planned: Active when the tie is in place, Planned when
+     announced but not yet in place
+   children:
+   client_partner_relationship (1-3 rows per organisation, one per distinct tie):
+   - relationship_type: same six values as partner_type
+   - ref_category: the CATEGORIES name the tie belongs to, exactly as listed; null if none fits
+   - description: what is supplied, bought, licensed or built, at component / product level, as stated (max 300 characters)
+   - territory: where the tie applies (country or region) as stated; null otherwise
+   - start_date, end_date: as stated; null otherwise
+   - status: Active or Planned
+   client_partner_product (0-4 rows per organisation, one per item named):
+   - activity_type: one of Supplies to client, Buys from client, Licenses to client, Builds jointly with client,
+     Develops jointly with client
+   - scope: the component, product or service, as named in the source (max 200 characters)
+   - ref_client_product: the CLIENT PRODUCTS name this concerns, when the source ties the item to one; else null
+   - market: country or region the item is for, as stated; null otherwise
+   - status: Active or Planned
+   client_partner_source (1-2 rows per organisation, most informative first):
+   - source_label: the page or article title as published
+   - source_type: company | official | news
+   - source_url: the page url
+   - source_note: the marker sentence above
+   - as_of_date: date of the source (or of the event it reports)
+   - confidence: official | corroborated | single_source for the tie this source shows
+
+  CLIENT: {{context.client}}
+  CLIENT PRODUCTS (names of the client's products, ventures and capabilities; leads for partners):
+  {{context.client_products}}
+  CATEGORIES:
+  {{context.categories}}
+
+  DOCUMENTS (partner names on record, then the client's known footprint):
+  {{documents}}
+
+output:
+  client_partner:
+    card: true
+    key: [prompt_id, subject, partner_name]
+    columns:
+      partner_name: {required: true, max: 250}
+      legal_name: {max: 250}
+      partner_type: {required: true, enum: [Supplier, Customer, Licensor, Joint venture, Technology partner, MoU / teaming]}
+      country: {max: 120}
+      relationship_scope: {}
+      relationship_confidence: {required: true, enum: [official, corroborated, single_source]}
+      relationship_start_date: {type: date}
+      relationship_status: {enum: [Active, Planned]}
+    loader:
+      client_partner_id: new_id
+      client_id: subject.client_id
+    children:
+      client_partner_relationship:
+        columns: [relationship_type, description, territory, start_date, end_date, status]
+        required: [relationship_type]
+        enum:
+          relationship_type: [Supplier, Customer, Licensor, Joint venture, Technology partner, MoU / teaming]
+          status: [Active, Planned]
+        max: {description: 300, territory: 250}
+        type: {start_date: date, end_date: date}
+        from_ref: {category: ref_category}
+        loader: {relationship_id: new_id, client_partner_id: parent_id}
+      client_partner_product:
+        columns: [activity_type, scope, market, status]
+        required: [scope]
+        enum:
+          activity_type: [Supplies to client, Buys from client, Licenses to client, Builds jointly with client, Develops jointly with client]
+          status: [Active, Planned]
+        max: {scope: 200}
+        from_ref: {client_product_id: ref_client_product}
+        loader: {partner_product_id: new_id, client_partner_id: parent_id}
+      client_partner_source:
+        columns: [source_label, source_type, source_url, source_note, as_of_date, confidence]
+        required: [source_label, source_url]
+        enum:
+          source_type: [company, official, news]
+          confidence: [official, corroborated, single_source]
+        type: {as_of_date: date}
+        loader: {source_id: new_id, client_partner_id: parent_id}
+
+derive:
+  - sources_filter          # v4: drop fact_source rows that cite a blocked source (wiki, blog, forum, wire, aggregator; backend/sources.py)

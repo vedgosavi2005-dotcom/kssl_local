@@ -1,12 +1,30 @@
+import { clientShort } from "../../lib/client.js";
 import { useMemo, useState } from "react";
 import { useAppState } from "../../state/AppState";
+import { titleCaseHeadline } from "../../lib/profile";
+import { companyShort } from "../../lib/companyNames";
 import { Review } from "../review/Review";
 
-/* The category label is the stored category_code, shown as stored. */
-const formatCategoryLabel = (str) => (str ? String(str).trim() : "Uncategorised");
+/* Split "Maker · Product" the way the dataset stores it (product after the LAST "·"),
+   so the row can headline the PRODUCT and drop the maker to a small line beneath it. */
+function splitComp(comp) {
+  const s = String(comp || "");
+  const i = s.lastIndexOf("·"); // "·"
+  if (i < 0) return { company: "", product: s.trim() };
+  return { company: s.slice(0, i).trim(), product: s.slice(i + 1).trim() };
+}
+
+/* POS_CATS labels are served already cased ("UAVs & Drones"). The splitter that used to
+   live here broke a word on every lower-to-upper boundary and re-cased the pieces, so
+   the category filter offered "Ua Vs & Drones" -- a label no row carries. Raise only,
+   through the same function the product names go through, and eat no acronym. */
+const formatCategoryLabel = (str) => {
+  if (!str) return "—";
+  return titleCaseHeadline(String(str).replace(/&amp;/g, "&").trim());
+};
 
 /* The competitor-product list: category → KSSL anchor product → the rivals paired
-   against it. Categories collapse; the four selects narrow each other, so a combination
+   against it. Groups collapse; the four selects narrow each other, so a combination
    that matches nothing can't be chosen. */
 export default function MatchupList({ data, selected, onSelect, products = [], compare = null, onCompare }) {
   const { matchups, POS_CATS, CAT_KEY } = data;
@@ -19,7 +37,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
   const productGroups = useMemo(() => {
     const g = new Map();
     products.forEach((p) => {
-      const k = p.side === "client" ? `${data.client?.short || "KSSL"} products` : p.cat;
+      const k = p.side === "client" ? `${clientShort()} products` : p.cat;
       if (!g.has(k)) g.set(k, []);
       g.get(k).push(p);
     });
@@ -92,15 +110,16 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
     };
   }, [matchups, CAT_KEY, co, cat, koel, country, labels]);
 
-  /* category → anchor → matchups, filtered. Anchors are ordered by how many rivals they
-     face, and within an anchor rivals are alphabetical by company. */
+  /* band → anchor → matchups, filtered. Anchors are ordered by how many rivals they
+     face, and within an anchor rivals are alphabetical by company (global primes lead
+     only among rows of the same company). */
   const groups = useMemo(() => {
     const q = (query || searchQuery || "").toLowerCase().trim();
     const tokens = q.split(/\s+/).filter(Boolean);
     /* An unknown cat must still render somewhere — mirror how wireDataset appends a
        chip for unknown techCats. Without this, the row counts in the nav badge but
        appears in no group. */
-    const catDefs = [...POS_CATS, ["__uncat", "Uncategorised"]];
+    const catDefs = [...POS_CATS, ["__uncat", "—"]];
     return catDefs.map(([key, label]) => {
       const items = Object.keys(matchups).filter((id) =>
         key === "__uncat"
@@ -120,10 +139,13 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
           const ids = byAnchor[anchor]
             .sort((a, b) =>
               String(matchups[a].compBy || matchups[a].comp || "").localeCompare(
-                String(matchups[b].compBy || matchups[b].comp || ""), "en", { sensitivity: "base" }))
+                String(matchups[b].compBy || matchups[b].comp || ""), "en", { sensitivity: "base" })
+              || (matchups[b].global ? 1 : 0) - (matchups[a].global ? 1 : 0))
             .filter((id) => {
               const m = matchups[id];
-              const search = `${m.comp || ""} ${m.compBy || ""} ${m.cat || ""} ${m.country || ""} ${m.anchor || ""}`.toLowerCase();
+              const search = `${m.title || ""} ${m.comp || ""} ${m.compBy || ""} ${m.cat || ""} ${m.country || ""} ${m.anchor || ""}${
+                m.global ? " global prime benchmark" : ""
+              }`.toLowerCase();
               if (tokens.length > 0 && !tokens.every((tok) => search.includes(tok))) return false;
               if (co && (m.compBy || "").toLowerCase() !== co) return false;
               if (cat && CAT_KEY[m.cat] !== cat) return false;
@@ -179,7 +201,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
             ))}
           </select>
           <select className="mu-fsel" onChange={select(setKoel)} value={koel}>
-            <option value="">All {data.client?.short || "KSSL"} Products</option>
+            <option value="">All {clientShort()} Products</option>
             {options.koel.map((v) => (
               <option key={v} value={v}>
                 {labels.koelLabel[v] || v}
@@ -249,18 +271,18 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
               {g.anchors.map(({ anchor, ids }) => (
                 <div key={anchor}>
                   <div className="mu-anchor">
-                    <span className="ma-koel">{data.client?.short || "KSSL"}</span> {anchor}{" "}
+                    <span className="ma-koel">{clientShort()}</span> {anchor}{" "}
                     <span className="ma-count">
                       {ids.length} rival{ids.length > 1 ? "s" : ""}
                     </span>
                   </div>
                   {ids.map((id) => {
                     const m = matchups[id];
-                    /* Product is the headline; the maker sits under it, small: the stored
-                       short_name of the competitor, else its name. The KSSL side it is paired
-                       against is the anchor heading above this group. */
-                    const product = m.compProduct || m.comp;
-                    const company = m.compShort || m.compBy;
+                    /* Product is the headline; the maker sits under it, small and
+                       abbreviated. No leading bullet and no "·" separator -- the row is
+                       the product, attributed. The KSSL side it is paired against is the
+                       anchor heading above this group, so it is not repeated per row. */
+                    const { company, product } = splitComp(m.comp);
                     return (
                       <div
                         className={`mu-item${selected === id ? " active" : ""}`}
@@ -277,7 +299,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
                         }}
                       >
                         <div className="comp-prod">{product}</div>
-                        {company ? <div className="cp-co">{company}</div> : null}
+                        {company ? <div className="cp-co">{companyShort(company)}</div> : null}
                         <Review src={m._src} />
                       </div>
                     );

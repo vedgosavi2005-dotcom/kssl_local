@@ -1,107 +1,160 @@
 id: global_requirement
-title: Global requirements of governments and armed forces, per category
-version: 2
-fills: [market_global_requirement, market_global_requirement_specification, market_global_requirement_source]
-shows_on: "Global Requirements page (cards; detail with scope, target specifications, platform match, strategic assessment, sources)"
-cadence: quarterly
-web_search: true
-# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+title: Global requirements of governments and armed forces, from stored documents
+version: 4
+fills: [market_global_requirement, market_global_requirement_specification, market_global_requirement_source, market_global_requirement_rival]
+shows_on: "Global Requirements page (cards; detail with scope, target specifications, platform match, strategic assessment, rivals, sources)"
+cadence: weekly
+rerun_on_version: false   # one run per document: a new version applies to new documents only (2026-10-18)
+# v3 (prompt rebuild, step 5; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.2.3, C):
+#  - one run per STORED DOCUMENT (staging.source_document rows routed 'global_requirement', plus government pages routed 'opportunity'), not one
+#    web-search run per category. The text is already in the raw layer; nothing is fetched unless it is too short.
+#  - `stage` replaces the open / monitored / closed guess: need_stated | approved_funded | rfi | rfp_tender | downselect_prototype | production_award |
+#    delivered | cancelled, with `stage_date` and `last_confirmed` (the newest date the documents state). status_state (current / unconfirmed) and the
+#    old `status` word are computed by code (derive.requirement_state); the model writes neither.
+#  - dedupe: the same buyer country + category + programme is one record. KNOWN REQUIREMENT rows are listed; reuse the title exactly. The record id is
+#    stable by category + title, so a requirement found again by another document updates the same card.
+#  - rivals positioned (child table) and the KSSL fit use the tender checks: a stated parameter against a client spec, else unknown.
+# No web search: the document is the only source.
+# v4 (2026-10-18, market audit): 13 v3 documents lost requirement cards (9 runs rejected outright) because ref_client_product did not resolve
+#  (CLIENT PORTFOLIO cuts names over 84 characters with "...", or the model left off the bracketed part). CLIENT PRODUCT FULL NAME rows now
+#  give the uncut names. Subjects are limited to credible sources (source_tier primary / listed / independent).
+#  Dedupe: every KNOWN REQUIREMENT row is listed (was the newest 60) except this document's own earlier cards (a re-run matched itself), and the task says a re-worded programme name is still the same record
+#  (three cards were written for one US Air Force medium-calibre gun RFI). value_text states its 120-character limit (a 121-character value rejected a run).
 
 subject:
-  key: category_id
+  key: doc_id
   query: |
-    SELECT c.category_id, c.category_name, c.category_description
-    FROM staging.technology_category c
-    WHERE c.is_active
-    ORDER BY c.display_order
+    SELECT d.doc_id, d.title AS headline, d.url AS article_url, d.source_name AS publisher, d.published_at AS published_date, d.source_kind
+    FROM staging.source_document d
+    WHERE ((d.triage->'route') @> '"global_requirement"'::jsonb
+           OR (d.source_kind = 'gov' AND (d.triage->'route') @> '"opportunity"'::jsonb))
+      AND d.published_at >= current_date - 1095 AND length(coalesce(d.body_text, '')) >= 400
+      AND d.source_tier IN ('primary', 'listed', 'independent')
+    ORDER BY ((d.triage->'route') @> '"global_requirement"'::jsonb) DESC, d.published_at DESC NULLS LAST, d.doc_id
   documents:
-    - from: sql                  # requirements already on record: reuse their titles so a re-run updates, not duplicates
+    - from: source_document
+      field: article_url
+      min_chars: 400
+      cap: 10000
+    - from: url
+      field: article_url
+    - from: sql                  # requirements already on record, so one programme is not stored twice
       query: |
-        SELECT 'KNOWN REQUIREMENT' AS doc, r.title, r.country_name, r.region, r.status, r.deadline
+        SELECT 'KNOWN REQUIREMENT' AS doc, r.title, r.country_name, r.category, r.stage, r.last_confirmed
         FROM staging.market_global_requirement r
-        WHERE lower(trim(r.category)) = lower(trim('{{subject.category_name}}'))
-        ORDER BY r.title
-    - from: sql
+        WHERE r.requirement_id::text NOT IN (
+          SELECT e->>'id' FROM staging.prompt_run p, jsonb_array_elements(p.loaded) e
+          WHERE p.prompt_id = 'global_requirement' AND p.subject_key = {{subject.doc_id}}::text AND p.status = 'loaded'
+            AND e->>'table' = 'market_global_requirement')
+        ORDER BY r.last_confirmed DESC NULLS LAST, r.title
+        LIMIT 250
+    - from: sql                  # client product names CLIENT PORTFOLIO cuts (over 84 characters), so ref_client_product can be copied in full
       query: |
-        SELECT 'CLIENT PRODUCT SPEC' AS doc, p.product_name, s.spec_name, s.value_text, s.value_numeric, s.unit
-        FROM staging.client_product p
-        LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
-        WHERE lower(trim(p.category)) = lower(trim('{{subject.category_name}}'))
-        ORDER BY p.product_name, s.display_order
+        SELECT 'CLIENT PRODUCT FULL NAME' AS doc, p.product_name FROM staging.client_product p
+        WHERE length(p.product_name) > 84 ORDER BY p.product_name
 
-context: [client, client_products, categories]
+context: [client, client_portfolio, client_markets, competitors_extended, categories]
 
 task: |
-  TASK global_requirement — list the current and announced requirements of governments and armed
-  forces worldwide for products in the category "{{subject.category_name}}"
-  ({{subject.category_description}}). Web search is the main source; the DOCUMENTS give titles
-  already on record and the client's stored specs.
+  TASK global_requirement - from one stored document, list the REQUIREMENTS of governments and armed forces that {{client.name}}'s categories
+  could serve. Judge from {{client.name}}'s point of view, using only the blocks at the end of this task for facts about {{client.name}}.
 
-  A REQUIREMENT is a need a government, ministry or armed force has stated: a programme, a planned
-  purchase, a capability gap it says it must fill, an RFI / RFP / tender, or a budget line for a
-  named item. NOT a company's sales pitch, an analyst's forecast, or a contract already being
-  delivered. Only requirements first stated or updated in the last 3 years. At most 8 records, the
-  most recent or largest first (stop searching once you have them; a run must finish in a few minutes); fewer if
-  the sources support fewer. For a requirement in KNOWN REQUIREMENT that you find again, use its title
-  exactly and re-check its status. Put KNOWN REQUIREMENT titles you could not confirm in
-  "not_found" as "market_global_requirement.<title>".
+  DOCUMENT: "{{subject.headline}}" - {{subject.publisher}}, {{subject.published_date}}
+  URL: {{subject.article_url}}
+
+  A REQUIREMENT is a need a government, ministry or armed force has stated: a programme, a planned purchase, a capability gap it says it must fill,
+  an RFI / RFP / tender, an approval or a budget line for a named item. NOT a company's sales pitch, an analyst's forecast, a contract only being
+  delivered, or a company winning an order. The item must fall in one of the CATEGORIES (judge the item, not the buyer).
+  At most 4 records; none if the document states no requirement ("records": [] and "skip_reason" = one sentence). A requirement that is already in
+  KNOWN REQUIREMENT (same buyer country, category and programme) keeps its title exactly; give the newer stage and date. The same buyer
+  and the same item is the same programme even when the wording differs ("Veland 36 mounted guns" = "Veland mounted gun programme"):
+  copy the KNOWN REQUIREMENT title character for character.
 
   Per requirement, one record, table market_global_requirement:
-   - title: a plain name, the programme name if the source gives one; max 100 characters, no adjectives
+   - title: a plain name, the programme name if the document gives one; max 100 characters, no adjectives
    - buyer_name: the ministry, armed force or agency, as written
-   - country_name: the single country, English short name; null when the need is a group's
-   - region: a group or region exactly as the source states it (e.g. a bloc), else null
-   - ref_category: {{subject.category_name}}, unless the item clearly belongs to another CATEGORIES name
-   - description: 2-3 sentences of stated facts: who needs what, quantity, timeline, budget, with the
-     date of the latest statement. No estimate, no recommendation
-   - status: by the latest procurement step a source states: monitored (need stated, no formal
-     procurement step reported), open (RFI, RFP, tender, trials or shortlist reported, no award),
-     closed (award or cancellation reported). The quote must state the step.
-     Allowed: open | monitored | closed
-   - deadline: the stated response or bid deadline as written; null if none
-   - value_text: the stated value or budget as written, with currency; null if none
-   - kssl_fit: JUDGEMENT. strong, partial or weak, from the requirement's stated parameters against
-     CLIENT PRODUCT SPEC rows; null if the client has no product in this category or no stated
-     parameter can be checked. ref_client_product (kssl_model): the best-fitting client product
-   - strategic_assessment: JUDGEMENT. 1-3 sentences: what this requirement means for {{client.name}}
-     in this category, naming the product and the facts it rests on
+   - country_name: the single country, English short name; empty when the need is a group's. region: a group or bloc as the document states it, else null
+   - ref_category: the single CATEGORIES name the item belongs to, exactly as written
+   - description: 2-3 plain sentences of stated facts: who needs what, how many, by when, how much money, and the date of the latest statement. No estimate, no advice
+   - stage: JUDGEMENT. The furthest step the document states: need_stated | approved_funded (approved, accepted necessity, budgeted) | rfi | rfp_tender |
+     downselect_prototype (shortlist, trials, prototype award) | production_award | delivered | cancelled. Take the furthest step that is stated, not
+     the one expected. "Plans to" and "intends to" are need_stated. Give the quote of the step in _sources
+   - stage_date: the date of that step as stated (else the document date; say so in _precision)
+   - last_confirmed: the document's own date (published date), the newest date the document supports
+   - deadline: a response or bid deadline as written; null if none. value_text: the stated value or budget as written with currency, max 120 characters; null if none
+   - ref_client_product: JUDGEMENT. The client product (the part after ":" in CLIENT PORTFOLIO, the whole name with any bracketed part, stopping before
+     the " (calibre; ...)" list) of the same kind as the item; empty if none. A name cut with "…" is given in full in a CLIENT PRODUCT FULL NAME row: copy that
+   - kssl_fit: JUDGEMENT. strong = the document states a parameter (calibre, range, type, quantity of a system) and a client spec meets it, none fails;
+     partial = a client product of the same kind but nothing stated to check, or one stated parameter fails; weak = no client product of that kind.
+     Empty when the client has no product in the category
+   - strategic_assessment: JUDGEMENT. 1-3 plain sentences: what this requirement touches for {{client.name}}: the product, the market (is the country in
+     CLIENT MARKETS?) and the facts it rests on. Name what is unknown ("The document gives no calibre."). No advice, never "{{client.name}} should"
+   - _reason for every JUDGEMENT field, one sentence naming the document fact or block line it rests on
    children:
-   market_global_requirement_specification (0-10 rows, the stated target parameters in source order):
-   - spec_label, spec_value (as written, with unit; no conversion)
-   market_global_requirement_source (1-3 rows):
-   - source_label (page or document title as published), source_type (official | news | company),
-     source_url
+   market_global_requirement_specification (0-10 rows, the stated target parameters in document order): spec_label, spec_value (as written, with unit)
+   market_global_requirement_source (exactly one row, the document): source_label (its title), source_type (official | news | company), source_url
+   market_global_requirement_rival (0-3 rows): a tracked competitor from COMPETITORS that the document names as selected, shortlisted or offered for
+     THIS requirement, or that sells in the buyer's country in this category (the COMPETITORS block shows the countries):
+     ref_competitor (exactly as in COMPETITORS), ref_product (empty if the document names no product),
+     basis: selected | shortlisted | offered | presence, note: one plain sentence, max 160 characters. No rival the document and the block do not support.
+
+  PLAIN ENGLISH. Read by managers who are not weapons specialists. Sentences of 20 words or fewer, one idea each, active voice. Name the thing and the number
+  with its unit; explain a technical term in a few words the first time. No hype ("robust", "leverage", "state-of-the-art", "game-changer").
+
+  EXAMPLE of the shape only. Every name and figure in it is fictional; do not reuse any of them.
+  {"prompt_id": "global_requirement", "subject": "Veland mounted guns", "skip_reason": null, "records": [
+   {"table": "market_global_requirement", "values": {"title": "Veland mounted gun system", "buyer_name": "Veland Army", "country_name": "Veland",
+     "ref_category": "Artillery", "description": "The Veland army needs 36 mounted 155 mm guns. The defence council accepted the need on 12 September 2026. A tender is expected in 2027.",
+     "stage": "approved_funded", "stage_date": "2026-09-12", "last_confirmed": "2026-09-13", "deadline": null, "value_text": null,
+     "ref_client_product": "MArG 155 mm/52 cal Mounted Gun System", "kssl_fit": "partial",
+     "strategic_assessment": "The MArG 155/52 is a mounted 155 mm gun. The document gives no barrel length or range. Veland is not in the client markets.",
+     "_reason": {"stage": "approved_funded: the council accepted the need; no tender yet.", "kssl_fit": "Same kind of gun; no parameter stated beyond calibre.",
+                 "strategic_assessment": "Rests on the stated calibre and the client markets block.", "ref_client_product": "Both are mounted 155 mm guns."},
+     "_precision": {"stage_date": "day"}, "_sources": {"stage": [{"url": "https://example-defence-news.test/veland", "quote": "The council accepted the necessity on 12 September."}]}},
+    "children": {
+     "market_global_requirement_specification": [{"spec_label": "Calibre", "spec_value": "155 mm"}, {"spec_label": "Quantity", "spec_value": "36 guns"}],
+     "market_global_requirement_source": [{"source_label": "Veland council accepts gun need", "source_type": "news", "source_url": "https://example-defence-news.test/veland"}],
+     "market_global_requirement_rival": [{"ref_competitor": "Nordvik Defence", "ref_product": "NV-155", "basis": "presence", "note": "The competitors block lists Veland among Nordvik's markets."}]}}],
+   "not_found": [], "conflicts": []}
 
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  COMPETITORS (name, sub-types they make, countries they sell in):
+  {{context.competitors_extended}}
   CATEGORIES:
   {{context.categories}}
 
-  DOCUMENTS (requirements on record, then client specs):
+  DOCUMENTS (the document text, then requirements on record, then client product full names):
   {{documents}}
 
 output:
   market_global_requirement:
     card: true
     key: [prompt_id, subject, title]
+    transient:
+      story_product: {max: 200}
     columns:
       title: {required: true, max: 100}
       buyer_name: {max: 240}
       country_name: {max: 160}
       region: {}
       category: {from_ref: ref_category, required: true}
-      description: {required: true}
-      status: {required: true, enum: [open, monitored, closed]}
+      description: {required: true, plain: warn}
+      stage: {required: true, judgement: true, enum_from: code_label.market_global_requirement.stage}
+      stage_date: {type: date}
+      last_confirmed: {type: date}
       deadline: {max: 120}
       value_text: {max: 120}
       kssl_fit: {judgement: true, enum: [strong, partial, weak]}
       kssl_model: {from_ref: ref_client_product, judgement: true}
-      strategic_assessment: {judgement: true}
+      strategic_assessment: {judgement: true, plain: warn}
     loader:
       requirement_id: new_id_stable_by_category_and_title
       empty_state_message: from_ui.market_global_requirement_view.empty_state_text
-      # days_remaining is NOT stored (no closing date column; the page does not count days)
+      # status (open / monitored / closed) and status_state (current / unconfirmed) are set by derive.requirement_state; days_remaining is not stored.
     children:
       market_global_requirement_specification:
         columns: [spec_label, spec_value]
@@ -112,3 +165,16 @@ output:
         required: [source_label, source_url]
         enum: {source_type: [official, news, company]}
         loader: {requirement_source_id: new_id, requirement_id: parent_id, display_order: index}
+      market_global_requirement_rival:
+        columns: [basis, note]
+        refs: {ref_competitor: competitive_competitor, ref_product: competitive_product}
+        enum_from: {basis: code_label.market_global_requirement_rival.basis}
+        max: {note: 160}
+        loader:
+          rival_id: new_id
+          requirement_id: parent_id
+          competitor_id: resolved_ref_competitor_id
+          product_id: resolved_ref_product_id
+          display_order: index
+
+derive: [requirement_state, doc_source_facts, story_link]

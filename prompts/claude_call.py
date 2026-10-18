@@ -55,7 +55,8 @@ def parse_cli_output(stdout: str) -> ModelResult:
         tokens_out=int(u.get("output_tokens") or 0),
         cost_usd=env.get("total_cost_usd"),
         api_ms=env.get("duration_api_ms"),
-        meta={k: env.get(k) for k in ("num_turns", "stop_reason", "terminal_reason", "session_id")},
+        meta={**{k: env.get(k) for k in ("num_turns", "stop_reason", "terminal_reason", "session_id", "duration_ms")},
+              "usage": u, "model_usage": env.get("modelUsage")},
     )
 
 

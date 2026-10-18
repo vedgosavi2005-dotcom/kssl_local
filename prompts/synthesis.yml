@@ -1,0 +1,132 @@
+id: synthesis
+title: Partnership read of one competitor (thesis, structural weaknesses traced to its ties, what its web of ties reveals)
+version: 1
+fills: [competitive_synthesis, competitive_synthesis_vulnerability, competitive_synthesis_vulnerability_trace]
+shows_on: Partnership page, competitor drawer ("Read on this competitor", "Structural weaknesses" with the partner chips each one comes from, "What their web reveals"); clicking a weakness lights the partner nodes it traces to
+cadence: quarterly
+# v1: a ROLL-UP of what is already stored, not a new reading of the news. The documents are the competitor's stored ties (competitive_partnership +
+# the evidence cards under each, with their urls), then its stored signals, projects and geo presence for context. Nothing is fetched and no web
+# search is made, so every claim can be checked against a row on the page. Each weakness names the ties it rests on (`ref_partnership` = the
+# partner_name of a TIE row); code (derive.synthesis_finish) writes the chips (`from_labels`) from those links and the url of each tie's best
+# evidence, so the chips can never disagree with the trace.
+# A competitor with fewer than 3 stored ties has no subject yet: a pattern needs several ties. Re-run after the partnership prompt has grown.
+# Every judgement is made from KSSL's point of view (docs/audit_v2/PROMPT_LOGIC_COMPETITIVE.md section 5).
+
+subject:
+  key: competitor_id
+  query: |
+    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country,
+           (SELECT count(*) FROM staging.competitive_partnership p WHERE p.competitor_id = c.competitor_id) AS ties
+    FROM staging.competitive_competitor c
+    WHERE (SELECT count(*) FROM staging.competitive_partnership p WHERE p.competitor_id = c.competitor_id) >= 3
+    ORDER BY (c.origin_country = 'India') DESC, ties DESC, c.display_name
+  documents:
+    - from: sql                  # 1. the ties, one row each, with the dated evidence cards (url in square brackets) and the partnership prompt's own reads
+      query: |
+        SELECT 'TIE' AS doc, p.partner_name, p.partner_type, p.region AS partner_country, p.status, p.relationship_confidence AS confidence,
+               p.as_of_date, p.description, p.relationship_scope AS scope, p.value_to_competitor, p.value_to_partner, p.kssl_read,
+               p.overlap_kind, p.overlap_component, p.overlap_effect,
+               (SELECT string_agg(coalesce(e.as_of_date::text, 'undated') || ' ' || coalesce(e.step_type, '') || ': ' || left(e.evidence_text, 420)
+                                  || ' [' || e.source_url || ']', ' ## ' ORDER BY e.as_of_date NULLS LAST, e.card_number)
+                  FROM staging.competitive_partnership_evidence e WHERE e.relationship_id = p.relationship_id) AS evidence
+        FROM staging.competitive_partnership p
+        WHERE p.competitor_id = '{{subject.competitor_id}}'
+        ORDER BY p.as_of_date DESC NULLS LAST, p.partner_name LIMIT 30
+    - from: sql                  # 2. stored signals of the last year (context only; a weakness still traces to a tie)
+      query: |
+        SELECT 'SIGNAL' AS doc, s.event_date, s.title, s.classification AS label, s.impact_dimension, s.in_client_market, d.source_url
+        FROM staging.competitive_signal s LEFT JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+        WHERE s.company_id = '{{subject.competitor_id}}' AND s.event_date >= current_date - 365
+        ORDER BY s.event_date DESC, s.title LIMIT 15
+    - from: sql                  # 3. stored projects
+      query: |
+        SELECT 'PROJECT' AS doc, p.project_title, p.stage, p.customer, p.region, p.latest_milestone, p.latest_milestone_date
+        FROM staging.competitive_project p WHERE p.competitor_id = '{{subject.competitor_id}}'
+        ORDER BY p.latest_milestone_date DESC NULLS LAST LIMIT 10
+    - from: sql                  # 4. stored geo presence
+      query: |
+        SELECT 'PRESENCE' AS doc, g.country_name AS country, p.activity_type, p.presence_status, p.overlap_status, left(p.products_summary, 200) AS products
+        FROM staging.competitive_geo_company_presence p
+        JOIN staging.competitive_geo_location g ON g.location_id = p.location_id
+        WHERE p.competitor_id = '{{subject.competitor_id}}' ORDER BY g.country_name LIMIT 25
+
+context: [client, client_portfolio, client_capabilities, client_markets, client_partners]
+
+task: |
+  TASK synthesis — read the web of ties of {{subject.display_name}} ({{subject.origin_country}}) as one picture, from the point of
+  view of {{client.name}}. The page shows: a short read of the company; its structural weaknesses (each marked with the partners it
+  comes from); and what the web of ties as a whole reveals. Use only the TIE, SIGNAL, PROJECT and PRESENCE rows below. A TIE row has
+  its dated evidence cards, each with its url in square brackets. Add no fact from outside them.
+
+  One record, table competitive_synthesis:
+   - thesis: JUDGEMENT. 2-3 plain sentences, max 450 characters: what the ties say about this company (who it relies on, where, for
+     what). Name partners and countries from the TIE rows.
+   - strategy_thesis: JUDGEMENT. One sentence, max 200 characters: the one thing its web of ties shows about where it is heading.
+   - strategy_pattern: JUDGEMENT. 1-2 plain sentences, max 350 characters: the pattern across the ties (for example most ties are
+     supplier ties in one country; or most are MoUs with no contract). Give the count you rely on ("5 of 9 ties").
+   - strategy_sowhat: JUDGEMENT. 1-2 plain sentences, max 350 characters: what this means for {{client.name}}. Name the
+     {{client.name}} product (CLIENT PORTFOLIO), market (CLIENT MARKETS) or partner (CLIENT PARTNERS) it touches, and say whether it
+     is a risk or an opening. Never write "{{client.name}} should".
+   children:
+   competitive_synthesis_vulnerability (2-4 rows, strongest first): a STRUCTURAL WEAKNESS is a feature of the ties that limits the
+   company. Examples of the kind (use one only if the rows show it): a key input comes from one partner only; the main ties are MoUs
+   or announcements with no contract or delivery step yet; a tie is stated by one source only; a tie has ended; the ties cluster in
+   one country, so other markets are open; a partner also works with {{client.name}}; the capacity or technology sits with the partner.
+   - title: JUDGEMENT. The weakness as a short plain phrase, max 110 characters.
+   - intel: JUDGEMENT. 2-3 plain sentences, max 420 characters: what the ties show (partners, dates, counts as the rows state them),
+     why that limits the company, and what it means for {{client.name}}.
+   children (inside each weakness):
+   competitive_synthesis_vulnerability_trace (1-4 rows): the ties the weakness rests on.
+   - ref_partnership: the partner_name of a TIE row, written exactly as in that row. Only ties that really support this weakness.
+  Fewer than 2 weaknesses that the rows genuinely support: "records": [] and a "skip_reason" saying what is missing. Do not pad.
+
+  REASONS AND SOURCES. For every JUDGEMENT field give "_reason": one sentence naming the TIE facts it rests on (partner names, dates,
+  counts). Give "_sources" for thesis, strategy_pattern and each intel: one or two entries, each the verbatim sentence (max 300
+  characters) copied from an evidence card, with the url in the square brackets after it. A fact you cannot quote from a card is
+  not written.
+
+  PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
+  A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
+  ecosystem, robust, cutting-edge, state-of-the-art, game-changer, going forward, end-to-end, strengthens its position, extends its
+  footprint, poses a threat to, positions itself, unprecedented. Say what IS there, not what is absent. Never write the names of the
+  blocks (CLIENT MARKETS...) in the text; say "KSSL's markets" or "KSSL's range".
+
+  CLIENT: {{context.client}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT MARKETS (countries where {{client.name}} sells, makes, has offered, or has a partner or customer):
+  {{context.client_markets}}
+  CLIENT PARTNERS (partner - type - what it supplies or does with {{client.name}}):
+  {{context.client_partners}}
+
+  ROWS (the stored ties with their evidence, then signals, projects, presence):
+  {{documents}}
+
+output:
+  competitive_synthesis:
+    card: true
+    columns:
+      thesis: {required: true, judgement: true, max: 450, plain: strict}
+      strategy_thesis: {judgement: true, max: 200, plain: strict}
+      strategy_pattern: {judgement: true, max: 350, plain: strict}
+      strategy_sowhat: {judgement: true, max: 350, plain: strict}
+    loader:
+      competitor_id: subject.competitor_id
+    children:
+      competitive_synthesis_vulnerability:
+        columns: [title, intel]
+        required: [title, intel]
+        judgement: [title, intel]
+        max: {title: 110, intel: 420}
+        plain: {title: strict, intel: strict}
+        count: {min: 2, max: 4}
+        loader: {vulnerability_id: new_id, competitor_id: parent_id, display_order: index}
+        children:
+          competitive_synthesis_vulnerability_trace:
+            from_ref: {relationship_id: ref_partnership}
+            required: [relationship_id]
+            count: {min: 1, max: 4}
+            loader: {trace_id: new_id, vulnerability_id: parent_id}
+
+derive:
+  - synthesis_finish           # from_labels (chips) from the trace links; url + tier of each tie's best stored evidence

@@ -1,106 +1,137 @@
 id: innovation_detail
 title: Innovation detail (one candidate innovation)
-version: 2
-fills: [technology_innovation, technology_innovation_status, technology_innovation_company, technology_innovation_source, technology_innovation_analysis, technology_source, technology_company]
-shows_on: "Innovation Pipeline (list row badges; detail panel with why it matters, what's new, competitive landscape, background, status block, sources)"
+version: 3
+fills: [technology_innovation, technology_innovation_status, technology_innovation_company, technology_innovation_source, technology_innovation_analysis, technology_innovation_milestone, technology_source, technology_company]
+shows_on: "Innovation Pipeline (list row badges; detail panel with why it matters, what's new, competitive landscape, background, status block, milestones, sources)"
 cadence: quarterly               # STAGE 2 of 2: picks up every technology_innovation row left at status 'candidate' by innovation_discovery
-web_search: true
-# The record UPDATES the candidate row (same innovation_id) and sets status 'active'. A candidate the sources show
-# is not an innovation (routine re-order, no named developer) is left at 'candidate' with "records": [] and a skip_reason.
+# v3 (step 7; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.3.2): the GATE. Only a real, sourced innovation becomes 'active'. The record
+# UPDATES the candidate row (same innovation_id). A candidate the sources show is not an innovation (a product, a routine re-order, no
+# named developer, nothing dated) stays at 'candidate' (hidden) with "records": [] and a skip_reason.
+#  - maturity_level 1-5 beside the text label; client_position with unknown (a position needs a KSSL product spec row);
+#  - stance watch | partner | license | develop | ignore with a reason; derive.innovation_stance allows only what the facts support;
+#  - technology_innovation_milestone: a dated timeline announced -> prototype -> trials -> contract -> production -> fielded, each with a source;
+#  - documents are the raw layer's stored text of the candidate's sources (a url fetch only when the raw layer has none). No web search.
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
 subject:
   key: innovation_id
   query: |
-    SELECT i.innovation_id, i.title, i.list_description, i.category_id, c.category_name,
+    SELECT i.innovation_id, i.title, i.list_description, i.category_id, c.category_name, i.technology_kind, current_date AS today,
            (SELECT ts.url FROM staging.technology_innovation_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
-             WHERE s.innovation_id = i.innovation_id ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 0) AS url_1,
+             WHERE s.innovation_id = i.innovation_id AND ts.url !~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)'
+             ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 0) AS url_1,
            (SELECT ts.url FROM staging.technology_innovation_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
-             WHERE s.innovation_id = i.innovation_id ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 1) AS url_2,
+             WHERE s.innovation_id = i.innovation_id AND ts.url !~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)'
+             ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 1) AS url_2,
            (SELECT ts.url FROM staging.technology_innovation_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
-             WHERE s.innovation_id = i.innovation_id ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 2) AS url_3
+             WHERE s.innovation_id = i.innovation_id AND ts.url !~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)'
+             ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 2) AS url_3
     FROM staging.technology_innovation i
     JOIN staging.technology_category c ON c.category_id = i.category_id
     WHERE i.status = 'candidate'
+      -- 2026-10-18 credible sources only (subject filter, task unchanged, no version bump): a blog / copy-aggregator source is never
+      -- fed to the model, and a candidate resting only on one is not a subject (it stays hidden)
+      AND EXISTS (SELECT 1 FROM staging.technology_innovation_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
+                  WHERE s.innovation_id = i.innovation_id AND ts.url !~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)')
     ORDER BY i.created_at, i.innovation_id
   documents:
+    - {from: source_document, field: url_1, min_chars: 400, cap: 9000}
+    - {from: source_document, field: url_2, min_chars: 400, cap: 9000}
+    - {from: source_document, field: url_3, min_chars: 400, cap: 9000}
     - {from: url, field: url_1}
     - {from: url, field: url_2}
     - {from: url, field: url_3}
-    - from: sql                  # the client's stored specs in this category, only for the client judgements
-      query: |
-        SELECT 'CLIENT PRODUCT SPEC' AS doc, p.product_name, s.spec_name, s.value_text, s.value_numeric, s.unit
-        FROM staging.client_product p
-        LEFT JOIN staging.client_product_specification s ON s.client_product_id = p.client_product_id
-        WHERE lower(trim(p.category)) = lower(trim('{{subject.category_name}}'))
-        ORDER BY p.product_name, s.display_order
 
-context: [client, client_products, competitors]
+context: [client, client_portfolio, client_capabilities, competitors]
 
 task: |
-  TASK innovation_detail — build the full record for one innovation: "{{subject.title}}" (category
-  {{subject.category_name}}; found as: {{subject.list_description}}). Use the DOCUMENTS (the
-  candidate's sources, then client specs), then web search for gaps. Fields marked JUDGEMENT are
-  your assessment: base them only on cited facts and CLIENT PRODUCT SPEC rows, give _reason, and
-  cite in _sources the facts they rest on.
+  TASK innovation_detail - build the full record for one candidate innovation: "{{subject.title}}" (category {{subject.category_name}};
+  technology kind {{subject.technology_kind}}; found as: {{subject.list_description}}). Today is {{subject.today}}. Use only the DOCUMENTS
+  (the candidate's sources). Fields marked JUDGEMENT are your assessment: base them only on cited facts and on the CLIENT PORTFOLIO
+  lines, give _reason, and cite in _sources the facts they rest on.
 
-  One record, table technology_innovation (updates the candidate row; do NOT output title, category
-  or any field not listed here):
-   - summary: 1-2 sentences, max 300 characters, what it is and who makes it
-   - background_what_it_is: 3-5 sentences of facts: what the system is, how it works, stated
-     performance figures with units as stated, who develops it
-   - whats_new: 1-3 sentences: the latest reported development with its date; null if none is dated
-   - competitive_note: JUDGEMENT. 1-3 sentences: which other companies the sources name as offering or
-     developing a comparable capability, and how they compare on stated figures; null if none named
-   - why_matters_to_kssl: JUDGEMENT. 2-3 sentences: how this bears on {{client.name}}'s products
-     (CLIENT PRODUCT SPEC: which product, which spec, which market), e.g. it outranges a product or
-     creates demand for one. No revenue claim
-   - client_position: JUDGEMENT. Compare the innovation with the client products in this category on
-     its key stated figures. ahead = a client product's sourced spec exceeds the innovation's stated
-     figure; parity = a client product offers the capability with a comparable sourced spec;
-     behind = no client product offers the capability, or its sourced specs fall short; null = the
-     client has a related product but the rows lack the specs to compare. Allowed: behind | parity | ahead
-   - maturity: JUDGEMENT. A short phrase, max 100 characters, for the furthest stage a source reports
-     (research, prototype, field trials, contract or order, serial production, in service), as
-     the sources describe it, e.g. "Live-fire trials completed"
-   - horizon_year: a single year a source states for service entry, production start or
-     availability; null if none or if the source gives a range (the range goes in horizon_text)
+  STEP 1 - THE GATE. It passes only if all hold: (a) the documents report a technology developed, tested, demonstrated, ordered or fielded
+  by a NAMED developer; (b) it is a technology, not a product by its own name (a gun, vehicle or drone model) and not a routine repeat order;
+  (c) at least one dated development is stated. Otherwise: "records": [] and "skip_reason" = one sentence naming the test that failed.
+
+  STEP 2 - one record, table technology_innovation (updates the candidate row; do NOT output title, category, technology_kind or any field
+  not listed here):
+   - summary: 1-2 plain sentences, max 300 characters: what it is and who makes it
+   - background_what_it_is: 3-5 plain sentences of facts: what the technology is, how it works, stated performance figures with their units,
+     who develops it
+   - whats_new: 1-3 plain sentences: the latest reported development with its date; null if none is dated
+   - competitive_note: JUDGEMENT. 1-3 plain sentences: which other companies the documents name as offering or developing a comparable
+     capability, and how they compare on stated figures; null if none is named
+   - why_matters_to_kssl: JUDGEMENT. 2-3 plain sentences: how this bears on {{client.name}}'s products. Name the product and the spec from
+     CLIENT PORTFOLIO that is touched, e.g. it outranges a product or creates demand for one. If no product is touched, write exactly:
+     "No <product> product line is touched; kept because <reason>." No revenue claim. Never write "{{client.name}} should".
+   - client_position: JUDGEMENT. behind | parity | ahead | unknown. Other than unknown ONLY when CLIENT PORTFOLIO gives a figure for the same
+     spec on a {{client.name}} product AND the documents give a comparable figure for the innovation. behind = the innovation's figure is
+     better or no {{client.name}} product offers the capability; parity = comparable; ahead = {{client.name}}'s figure is better. Otherwise unknown.
+   - maturity_level: JUDGEMENT, 1-5. The furthest stage the documents REPORT as done: 1 concept or research, 2 prototype built or shown,
+     3 trials with a result, 4 production (a production contract or serial production started), 5 fielded (in service or delivered to a user).
+   - maturity: a short phrase, max 100 characters, for that stage as the documents describe it, e.g. "Live-fire trials completed"
+   - relevance (transient, not stored): JUDGEMENT, 1-5. How directly it touches a {{client.name}} product line: 5 same sub-type and a figure on a
+     spec {{client.name}} competes on, 4 same sub-type or an adjacent one with a figure, 3 same category or an enabling technology, 2 adjacent
+     category, 1 general.
+   - stance: JUDGEMENT. One of watch | partner | license | develop | ignore, with a reason. watch = follow it, nothing to do yet.
+     partner / license = {{client.name}} could team on or license it (only when the developer is NOT a competitor). develop = {{client.name}} is
+     behind and the technology matters to a product line (needs relevance 4 or 5). ignore = it does not touch the business (relevance 1 or 2).
+     The loader checks the rule and falls back to watch when the facts do not support your stance.
+   - horizon_year: a single year a document states for service entry, production start or availability; null if none or if it gives a range
+   - _reason (one sentence for EVERY judgement above, including competitive_note, why_matters_to_kssl, maturity_level, maturity, relevance and stance,
+     each naming the anchor or the portfolio line and the fact it rests on)
    children:
    technology_innovation_status (exactly one row):
-   - horizon_text: the year or range exactly as stated (e.g. "2028-2031"); null if not stated.
-     Never estimate; say in _reason which event the year is for
+   - horizon_text: the year or range exactly as stated (e.g. "2028-2031"); null if not stated. Never estimate; say in _reason which event the
+     year is for
    technology_innovation_company (1-4 rows):
-   - display_name: the company or government body as the sources name it (do not list {{client.name}})
+   - display_name: the company or government body as the documents name it (do not list {{client.name}})
    - ref_competitor: the COMPETITORS name if it is the same company, else null
-   - relationship_type: driver (developer, maker or leading government body; at least one),
-     partner (named co-developer, supplier or teaming partner), competitor (named as offering a
-     rival solution)
-   - relationship: what this company does in the sources, max 80 characters
-   technology_innovation_source (the sources used, 1-5 rows; the loader finds or creates each by url):
+   - relationship_type: driver (developer, maker or leading government body; at least one), partner (named co-developer, supplier or teaming
+     partner), competitor (named as offering a rival solution)
+   - relationship: what this company does in the documents, max 80 characters
+   technology_innovation_milestone (2-6 rows, oldest first; only steps the documents date):
+   - step_date: the date the documents give (YYYY-MM-DD; month only = the first day)
+   - step_type: announced | prototype | trials | contract | production | fielded
+   - note: what happened, one plain sentence, max 160 characters
+   - source_url: the document url that states it, exactly as in the DOCUMENTS
+   - _sources: the verbatim sentence and the url
+   technology_innovation_source (the documents used, 1-3 rows; the loader finds or creates each by url):
    - source_url, publisher, source_kind (company | official | news); is_primary true for exactly one
   Do not output technology_innovation_analysis; the loader builds it from the fields above.
 
+  PLAIN ENGLISH. Sentences of 20 words or fewer, one idea each, active voice. Name the company and the thing. Explain a technical term in a few
+  words the first time. Numbers keep their unit and date; never convert or round. Never use: leverage, synergy, ecosystem, robust, cutting-edge,
+  state-of-the-art, game-changer, going forward, end-to-end, unprecedented. Never write the names of the blocks (CLIENT PORTFOLIO...) in the text.
+
   CLIENT: {{context.client}}
-  CLIENT PRODUCTS:
-  {{context.client_products}}
+  CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):
+  {{context.client_portfolio}}
+  CLIENT CAPABILITIES (lines, ventures, capabilities and what partners supply):
+  {{context.client_capabilities}}
   COMPETITORS:
   {{context.competitors}}
 
-  DOCUMENTS (the candidate's sources, then client specs):
+  DOCUMENTS (the candidate's sources):
   {{documents}}
 
 output:
   technology_innovation:
     card: true
     key: [prompt_id, subject]
+    transient:
+      relevance: {judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
     columns:
-      summary: {max: 300}
-      background_what_it_is: {required: true}
-      whats_new: {}
-      competitive_note: {judgement: true}
-      why_matters_to_kssl: {judgement: true}
-      client_position: {judgement: true, enum: [behind, parity, ahead]}
+      summary: {max: 300, plain: warn}
+      background_what_it_is: {required: true, plain: warn}
+      whats_new: {plain: warn}
+      competitive_note: {judgement: true, plain: warn}
+      why_matters_to_kssl: {judgement: true, plain: strict}
+      client_position: {judgement: true, enum_from: code_label.technology_innovation.client_position}
+      maturity_level: {required: true, judgement: true, type: number, enum: [1, 2, 3, 4, 5]}
       maturity: {judgement: true, max: 100}
+      stance: {required: true, judgement: true, enum_from: code_label.technology_innovation.stance}
       horizon_year: {type: number}
     loader:
       innovation_id: subject.innovation_id       # updates the candidate row
@@ -122,18 +153,26 @@ output:
           maturity_label: copy_of_maturity
           innovation_id: parent_id
           effective_date: run_date
-          position_label: {behind: "{{client.name}} behind", parity: "{{client.name}} at parity", ahead: "{{client.name}} ahead"}   # keyed by client_position; null stays null
-          assessment_badge: {behind: GAP, parity: WATCH, ahead: AHEAD}   # keyed by client_position; null stays null
+          position_label: {behind: "{{client.name}} behind", parity: "{{client.name}} at parity", ahead: "{{client.name}} ahead"}   # keyed by client_position; unknown / null stays null
+          assessment_badge: {behind: GAP, parity: WATCH, ahead: AHEAD}   # keyed by client_position; unknown / null stays null
       technology_innovation_company:
         columns: [display_name, relationship, relationship_type]
         refs: {ref_competitor: competitive_competitor}
         required: [display_name, relationship, relationship_type]
         enum: {relationship_type: [driver, partner, competitor]}
         max: {relationship: 80}
+        count: {min: 1, max: 4}
         loader: {innovation_company_id: new_id, innovation_id: parent_id, display_order: index, company_id: id_of_technology_company_found_or_created_by_display_name}
         creates:
           technology_company:
             loader: {company_id: new_id_if_missing, display_name: copy_of_display_name, is_client: false}
+      technology_innovation_milestone:
+        columns: [step_date, step_type, note, source_url]
+        required: [step_date, step_type, note]
+        enum_from: {step_type: code_label.technology_innovation_milestone.step_type}
+        max: {note: 160}
+        count: {min: 1, max: 6, min_action: warn}
+        loader: {milestone_id: new_id, innovation_id: parent_id}
       technology_innovation_source:
         columns: [is_primary]
         required: [is_primary]
@@ -157,3 +196,5 @@ output:
           - {section_code: competitive, section_label: "Competitive landscape", narrative: copy_of_competitive_note, is_client_assessment: false}
           - {section_code: why_it_matters, section_label: "Why this matters to {{client.name}}", narrative: copy_of_why_matters_to_kssl, is_client_assessment: true}
         loader: {analysis_id: new_id, innovation_id: parent_id, display_order: index}
+
+derive: [innovation_stance]

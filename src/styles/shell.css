@@ -142,9 +142,10 @@
   .dirtag{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;white-space:nowrap}
   .dirtag.threat{color:var(--threat-badge);border:1px solid rgba(240,89,60,.55)}
   .dirtag.watch{color:var(--watch-badge);border:1px solid rgba(224,160,32,.55)}
-  .dirtag.fav{color:var(--fav-badge);border:1px solid rgba(63,168,106,.55)}
-  /* Technology: an ADOPTABLE advance reads in the favourable green, whatever its dir */
-  .dirtag.k-adopt{color:var(--fav-badge);border:1px solid rgba(63,168,106,.55)}
+  /* Technology: an ADOPTABLE advance reads in the green accent, whatever its dir */
+  .dirtag.k-tender{color:var(--ok-badge);border:1px solid rgba(63,168,106,.55)}
+  .dirtag.k-opportunity,.dirtag.k-requirement{color:var(--watch-badge);border:1px solid rgba(224,160,32,.55)}
+  .dirtag.k-adopt{color:var(--ok-badge);border:1px solid rgba(63,168,106,.55)}
   .sevtag{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
   .sevtag.high{color:var(--threat-badge)}
   .sevtag.medium{color:var(--watch-badge)}
@@ -166,18 +167,18 @@
     font-family:var(--mono);font-size:9.5px;letter-spacing:.01em;text-decoration:none;line-height:1.5;
     color:var(--d-txt-3);border:1px solid var(--d-line);border-radius:3px;padding:1px 5px;transition:.14s}
   .srcchip::before{content:'\2197';margin-right:4px;opacity:.55}
-  .srcchip:hover{color:var(--fav-badge);border-color:var(--fav-badge)}
+  .srcchip:hover{color:var(--ok-badge);border-color:var(--ok-badge)}
   /* light reading surfaces */
   .ctx .srcchip,.mu-dossier .srcchip,.tp-asmt .srcchip,.tech-det .srcchip,.geo-det .srcchip,.pat-canvas .srcchip,.trep-sources .srcchip{
     color:var(--l-txt-3);border-color:var(--l-line-2);max-width:100%;box-sizing:border-box}
   .ctx .srcchip:hover,.mu-dossier .srcchip:hover,.tp-asmt .srcchip:hover,.tech-det .srcchip:hover,.geo-det .srcchip:hover,.pat-canvas .srcchip:hover,.trep-sources .srcchip:hover{
-    color:var(--fav);border-color:var(--fav)}
+    color:var(--ok);border-color:var(--ok)}
   .metric .srcchip{font-size:9px;padding:0 4px;max-width:150px}
   .pg-drawer-head .srcchips{margin-left:8px;text-transform:none;letter-spacing:0}
   .src-list{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
   .src-list .srcchip{max-width:100%}
   .provdot{display:inline-block;width:4px;height:4px;border-radius:50%;margin-left:6px;vertical-align:1px}
-  .provdot.s{background:var(--fav)}
+  .provdot.s{background:var(--ok)}
   .provdot.x{background:var(--synthetic)}
   .synmini{color:var(--synthetic);font-style:italic;font-size:11px}
 
@@ -221,7 +222,7 @@
   .relrow .rv{font-family:var(--mono);font-size:12px;color:var(--l-txt);font-weight:500}
   .ctx-h.dir-threat{border-left-color:var(--threat)}
   .ctx-h.dir-watch{border-left-color:var(--watch)}
-  .ctx-h.dir-fav{border-left-color:var(--fav)}
+  .ctx-h.dir-adopt{border-left-color:var(--ok)}
   .ctx-h .dirpill, .tech-d-h .dirpill, .tp-asmt-h .dirpill, .dirpill {
     font-family: var(--mono);
     font-size: 9.5px;
@@ -244,8 +245,8 @@
     background: rgba(154, 106, 8, 0.08);
     border: 1px solid rgba(154, 106, 8, 0.35);
   }
-  .dirpill.dir-fav, .dirpill.ahead, .dirpill.normal {
-    color: var(--fav, #1f6e45);
+  .dirpill.dir-adopt, .dirpill.ahead, .dirpill.normal {
+    color: var(--ok, #1f6e45);
     background: rgba(31, 110, 69, 0.08);
     border: 1px solid rgba(31, 110, 69, 0.35);
   }
@@ -270,9 +271,9 @@
   .cd-kssl.kssl-threat{border-left-color:var(--threat);background:rgba(240,89,60,.07)}
   .cd-kssl.kssl-threat .eyebrow{color:var(--threat-badge)}
   .cd-kssl.kssl-opportunity,.cd-kssl.kssl-adoptable,
-  .cd-kssl.kssl-demand,.cd-kssl.kssl-tech-advance{border-left-color:var(--fav);background:rgba(63,168,106,.07)}
+  .cd-kssl.kssl-demand,.cd-kssl.kssl-tech-advance{border-left-color:var(--ok);background:rgba(63,168,106,.07)}
   .cd-kssl.kssl-opportunity .eyebrow,.cd-kssl.kssl-adoptable .eyebrow,
-  .cd-kssl.kssl-demand .eyebrow,.cd-kssl.kssl-tech-advance .eyebrow{color:var(--fav-badge)}
+  .cd-kssl.kssl-demand .eyebrow,.cd-kssl.kssl-tech-advance .eyebrow{color:var(--ok-badge)}
   /* The summary is the one block in this panel with internal structure: a paragraph,
      then the specifics as a list. .cd-prose alone left the <p>/<ul> the writer emits
      wearing the browser defaults -- 1em margins that fight .ctx-sec's own padding, and
@@ -295,14 +296,21 @@
   .cd-bullets{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
   .cd-bullets li{position:relative;padding-left:14px;font-size:13px;line-height:1.62;color:var(--l-txt-2)}
   .cd-bullets li::before{content:"";position:absolute;left:3px;top:.62em;width:4px;height:4px;border-radius:50%;background:var(--l-txt-3)}
+  /* signal v2: story timeline */
+  .cd-timeline{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;border-left:2px solid var(--l-line-2);padding-left:12px}
+  .cd-timeline li{font-size:12.5px;line-height:1.5;color:var(--l-txt-2)}
+  .cd-timeline li.cur{font-weight:600}
+  .cd-timeline .tl-d{font-family:var(--mono);font-size:11px;color:var(--l-txt-3);margin-right:8px}
+  .cd-timeline .tl-t{font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-right:8px;color:var(--l-txt-3)}
+  .cd-timeline .tl-c{color:var(--l-txt-3);font-weight:400}
   /* The row is now a COLUMN of two lines: the label/value pair, then the field's gloss
      across the full width. The gloss cannot live inside the 110px key column -- it would
      stack five words deep and shove the value away from the label it belongs to. */
   .cd-frow{display:flex;flex-direction:column;padding:8px 0;border-bottom:1px solid var(--l-bg-2);box-sizing:border-box;width:100%}
-  .cd-fline{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;width:100%}
+  .cd-fline{display:flex;justify-content:space-between;align-items:baseline;gap:16px;width:100%}
   .cd-frow:last-child{border-bottom:none}
-  .cd-fk{color:var(--l-txt-3);font-size:12px;width:110px;flex-shrink:0;word-break:break-word}
-  .cd-fv{font-family:var(--mono);color:var(--l-txt);font-size:11px;text-align:right;flex:1;min-width:0;word-break:break-word;overflow-wrap:anywhere}
+  .cd-fk{color:var(--l-txt-3);font-size:12px;flex:0 0 auto;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cd-fv{font-family:var(--mono);color:var(--l-txt);font-size:11px;text-align:right;margin-left:auto;flex:1 1 auto;min-width:0;overflow-wrap:anywhere;text-wrap:pretty}
 
   /* positioning compare bars */
   .pos-row{margin-bottom:13px}
@@ -316,7 +324,6 @@
   .pos-track i.bf{background:var(--l-txt)}
   .pos-track i.comp{background:var(--threat)}
   .pos-track i.comp.d-watch{background:var(--watch)}
-  .pos-track i.comp.d-fav{background:var(--fav)}
   .pos-note{font-size:10.5px;color:var(--l-txt-3);font-family:var(--mono);margin-top:9px;line-height:1.5}
 
   /* activity sparkline */
@@ -336,13 +343,12 @@
   .track i{display:block;height:100%;background:var(--l-txt-2)}
   .scoreset.dir-threat .track i{background:var(--threat)}
   .scoreset.dir-watch .track i{background:var(--watch)}
-  .scoreset.dir-fav .track i{background:var(--fav)}
 
   .cta{display:block;width:100%;text-align:left;font-size:12px;color:var(--l-txt-2);border:1px solid var(--l-line);background:var(--l-bg-1);padding:11px 13px;margin-bottom:8px;cursor:pointer;transition:.12s;line-height:1.4}
   .cta:hover{border-color:var(--l-line-2);color:var(--l-txt);background:var(--l-bg-2)}
   .cta .ch{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--l-txt-4);display:block;margin-bottom:5px}
   .cta .ch.act-defend{color:var(--threat)}
-  .cta .ch.act-capture{color:var(--fav)}
+  .cta .ch.act-capture{color:var(--ok)}
   .cta .ch.act-monitor{color:var(--watch)}
 
   .askbox{margin-top:auto;border-top:1px solid var(--l-line);padding:14px 18px;background:var(--l-bg-1);flex-shrink:0;position:relative;z-index:2;width:100%;box-sizing:border-box}
@@ -455,3 +461,7 @@
   margin-top:3px;font-style:italic}
   /* a detail header with no stance (Technology competitor advance): neutral stripe */
   .ctx-h.dir-none{border-left-color:var(--d-line-2)}
+
+/* a product name that opens that product in Products (tender "Matched products" and "Competitor fit") */
+.prod-link{background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;text-align:left;cursor:pointer;text-decoration:underline;text-decoration-color:var(--l-line-2,#cfcdc3);text-underline-offset:3px}
+.prod-link:hover,.prod-link:focus-visible{color:var(--ok,#1f6e45);text-decoration-color:currentColor}
