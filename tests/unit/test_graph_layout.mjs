@@ -28,7 +28,7 @@
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-const file = process.argv[2] || "../../src/lib/partners.js";
+const file = process.argv[2] || "src/lib/partners.js";
 const mod = await import(pathToFileURL(resolve(file)).href);
 const partners = mod.createPartners({
   competitors: {},

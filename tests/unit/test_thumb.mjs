@@ -22,7 +22,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-const src = readFileSync("../../src/components/thumb/Thumb.jsx", "utf8");
+const src = readFileSync("src/components/thumb/Thumb.jsx", "utf8");
 const from = src.indexOf("const FAILED = new Set();");
 const to = src.indexOf("export default function Thumb");
 const { thumbUsable, thumbMarkFailed } = await import(

@@ -14,7 +14,7 @@ import { formatDate } from "../utils/formatDate.js";
 // the patent country vocabulary. patents.js imports nothing from here, so this edge
 // adds no cycle -- and the normaliser lives with the rest of the patent display rules.
 import { normCountry } from "./patents.js";
-import { cutGroupsByDirection, marketAttention, technologyAttention, isRivalCard, dateVal, ATTENTION_DAYS, capThreats } from "./overview.js";
+import { cutGroupsByDirection, marketAttention, technologyAttention, isRivalCard, dateVal, ATTENTION_DAYS, capThreats, clubByStory } from "./overview.js";
 import { sortCompaniesByName } from "./roster.js";
 import { rosterIndex, rosterLookup } from "./partners.js";
 import { markOverlaps } from "./overlap.js";
@@ -285,7 +285,7 @@ export function wireDataset(raw) {
       competitive: {
         ...d.overviewConfig.competitive,
         ...competitiveLane(),
-        cards: capThreats((d.competitiveCards || []).filter((c) => !c.noStance), THREAT_CAP),
+        cards: capThreats(clubByStory((d.competitiveCards || []).filter((c) => !c.noStance)), THREAT_CAP),
         groups: cutGroupsByDirection(d.overviewConfig.competitive.groups),
       },
       market: { ...d.overviewConfig.market, ...marketLane(), cards: d.marketCards || [] },

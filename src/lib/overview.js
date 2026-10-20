@@ -130,6 +130,26 @@ export const compareRisk = (a, b) => (b.risk || 0) - (a.risk || 0) || tteOf(a) -
 
 /* At most THREAT_CAP threats are shown (competitive spec): the riskiest by compareRisk; the cards behind them stay on
    record but are not offered on the overview. Every other card passes through, in its order. */
+/* ONE CARD PER STORY (user, 2026-10-20): signals that are episodes of one event share a stored story (storyId); the
+   overview shows only the LATEST of them (stored card date; same day -> the later sequence), carrying how many signals
+   the story holds (`episodes`) -- the earlier ones are the story's timeline in the drawer. A card with no story stands
+   alone. Runs before capThreats, so the 10 threats are 10 different stories. */
+export function clubByStory(cards) {
+  const list = cards || [];
+  const latest = new Map();
+  const count = new Map();
+  list.forEach((c) => {
+    const k = c && c.storyId;
+    if (!k) return;
+    count.set(k, (count.get(k) || 0) + 1);
+    const cur = latest.get(k);
+    if (!cur || dateVal(c.ago) > dateVal(cur.ago) || (dateVal(c.ago) === dateVal(cur.ago) && (c.seq || 0) > (cur.seq || 0))) latest.set(k, c);
+  });
+  return list
+    .filter((c) => !c || !c.storyId || latest.get(c.storyId) === c)
+    .map((c) => (c && c.storyId && count.get(c.storyId) > 1 ? { ...c, episodes: count.get(c.storyId) } : c));
+}
+
 export function capThreats(cards, cap) {
   const top = new Set((cards || []).filter((c) => c && c.dir === "threat").sort(compareRisk).slice(0, cap));
   return (cards || []).filter((c) => !c || c.dir !== "threat" || top.has(c));

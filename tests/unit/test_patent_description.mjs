@@ -19,9 +19,9 @@ const ck = (name, ok, d) => {
 };
 
 /* ---- the constant is gone: the words are the stored classification_text ---- */
-ck("the IPC subclass table (ipc.js) is deleted", !fs.existsSync("../../src/lib/ipc.js"));
-ck("patents.js carries no IPC subclass meaning", !/armour, armoured vehicles|explosive charges|jet-propulsion/i.test(fs.readFileSync("../../src/lib/patents.js", "utf8")));
-const fx = JSON.parse(fs.readFileSync("../../fixtures/kssl_dataset.json", "utf8"));
+ck("the IPC subclass table (ipc.js) is deleted", !fs.existsSync("src/lib/ipc.js"));
+ck("patents.js carries no IPC subclass meaning", !/armour, armoured vehicles|explosive charges|jet-propulsion/i.test(fs.readFileSync("src/lib/patents.js", "utf8")));
+const fx = JSON.parse(fs.readFileSync("fixtures/kssl_dataset.json", "utf8"));
 const stored = Object.values(fx.PATENTS.byArea).flat().find((r) => r.ipcText && (r.ipc || []).length);
 ck("the fixture stores a classification text with its code", !!stored);
 

@@ -17,9 +17,9 @@ const ck = (name, cond) => {
   else { console.log("  %s FAIL", name.padEnd(64)); bad++; }
 };
 
-const tenders = readFileSync("../../src/pages/market/Tenders.jsx", "utf8").replace(/\r/g, "");
-const panel = readFileSync("../../src/components/detailPanel/DetailPanel.jsx", "utf8").replace(/\r/g, "");
-const card = readFileSync("../../src/components/signalCard/SignalCard.jsx", "utf8").replace(/\r/g, "");
+const tenders = readFileSync("src/pages/market/Tenders.jsx", "utf8").replace(/\r/g, "");
+const panel = readFileSync("src/components/detailPanel/DetailPanel.jsx", "utf8").replace(/\r/g, "");
+const card = readFileSync("src/components/signalCard/SignalCard.jsx", "utf8").replace(/\r/g, "");
 
 // ---- 1. Tenders: `sel` inits null and is NOT read from localStorage --------------
 ck("sel initialises to null (not persisted, collapses on return)",

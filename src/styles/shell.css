@@ -157,6 +157,7 @@
      on the row -- and it is the one value a reader checks against what they already know,
      so it has to be legible before anything else on the card is. Full-strength ink. */
   .ago{font-family:var(--mono);font-size:10px;color:var(--d-txt)}
+  .episodes{font-family:var(--mono);font-size:9.5px;color:var(--d-dim, var(--d-txt));opacity:.8;letter-spacing:.04em;white-space:nowrap}
 
   .syn{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--synthetic);font-size:0;line-height:0;color:transparent;vertical-align:middle;flex-shrink:0;border:none;padding:0}
   .syn::after{content:"";display:none}

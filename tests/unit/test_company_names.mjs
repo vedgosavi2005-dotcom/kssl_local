@@ -5,7 +5,7 @@ import fs from "node:fs";
 import * as cn from "../../src/lib/companyNames.js";
 import { competitorFullName, companyShort, initialisms, isAbbreviated } from "../../src/lib/companyNames.js";
 
-const d = JSON.parse(fs.readFileSync("../../fixtures/kssl_dataset.json", "utf8"));
+const d = JSON.parse(fs.readFileSync("fixtures/kssl_dataset.json", "utf8"));
 let fails = 0;
 const ck = (name, ok, detail) => {
   console.log(`  ${String(name).padEnd(66)} ${ok ? "ok" : "FAIL"}${!ok && detail ? "  " + detail : ""}`);
@@ -14,7 +14,7 @@ const ck = (name, ok, detail) => {
 
 ck("COMPANY_NAMES, nameOf, listLine, detailLine are gone",
   !("COMPANY_NAMES" in cn) && !("nameOf" in cn) && !("listLine" in cn) && !("detailLine" in cn));
-const src = fs.readFileSync("../../src/lib/companyNames.js", "utf8");
+const src = fs.readFileSync("src/lib/companyNames.js", "utf8");
 ck("no source tags or expansion entries in the module", !/workbook|expands:|full:/i.test(src));
 
 const [cid, row] = Object.entries(d.competitors).find(([, c]) => c.legal && c.legal !== c.name);

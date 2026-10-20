@@ -30,7 +30,7 @@ const ck = (name, want, got) => {
   else { console.log("  %s FAIL (want %j, got %j)", name.padEnd(64), want, got); bad++; }
 };
 
-const src = readFileSync("../../src/components/detailPanel/DetailPanel.jsx", "utf8");
+const src = readFileSync("src/components/detailPanel/DetailPanel.jsx", "utf8");
 
 // ---- 1. the panel recognises a tender by its id, not by `kind` -------------------
 ck("a tender is detected from the id prefix, not detail.kind alone", true,

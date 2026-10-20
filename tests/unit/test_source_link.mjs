@@ -15,7 +15,7 @@
  */
 import { readFileSync } from "node:fs";
 
-const src = readFileSync("../../src/components/sourceLink/SourceLink.jsx", "utf8");
+const src = readFileSync("src/components/sourceLink/SourceLink.jsx", "utf8");
 const from = src.indexOf("export function sourceHref");
 const to = src.indexOf("\n}", from) + 2;
 const { sourceHref } = await import(
@@ -39,8 +39,8 @@ for (const u of [null, undefined, "", "   ", 42, {}, "example.test/a", "/relativ
 
 // 3. no drawer may print the publisher as inert text again
 const PAGES = [
-  "../../src/pages/competitive/Profile.jsx",
-  "../../src/pages/competitive/Products.jsx",
+  "src/pages/competitive/Profile.jsx",
+  "src/pages/competitive/Products.jsx",
 ];
 for (const f of PAGES) {
   const text = readFileSync(f, "utf8");

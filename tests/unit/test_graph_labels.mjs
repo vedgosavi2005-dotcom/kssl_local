@@ -13,7 +13,7 @@
  */
 import { readFileSync } from "node:fs";
 
-const src = readFileSync("../../src/lib/partners.js", "utf8");
+const src = readFileSync("src/lib/partners.js", "utf8");
 const from = src.indexOf("function pgResolveLabelCollisions");
 if (from < 0) { console.log("  FAIL resolver not found in partners.js"); process.exit(1); }
 const to = src.indexOf("\n}", from) + 2;

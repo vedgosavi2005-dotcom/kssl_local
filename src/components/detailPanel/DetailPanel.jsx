@@ -283,7 +283,7 @@ export default function DetailPanel({ detail, onClose, badge }) {
 
         {/* the story timeline, drawn like the Projects timeline: dated steps on a rail, the event, what changed in grey,
             its source chip; a label change (a stance moving) is not an event of the story and is not listed */}
-        {v2 && detail.story && detail.story.steps.some((s) => !LABEL_CHANGE.test(String(s.type || ""))) ? (
+        {detail.story && (detail.story.steps || []).some((s) => !LABEL_CHANGE.test(String(s.type || ""))) ? (
           <div className="ctx-sec">
             <span className="eyebrow">Timeline</span>
             <ol className="pj-time">

@@ -10,8 +10,8 @@ const ck = (name, ok, d) => {
 };
 
 ck("the hardcoded ROSTER and applyRoster are gone", !("ROSTER" in roster) && !("applyRoster" in roster));
-ck("roster.js carries no company id list", !/rheinmetall|kalashnikov/i.test(fs.readFileSync("../../src/lib/roster.js", "utf8")));
-ck("the duplicate-merge module is gone", !fs.existsSync("../../src/lib/dedupeCompanies.js"));
+ck("roster.js carries no company id list", !/rheinmetall|kalashnikov/i.test(fs.readFileSync("src/lib/roster.js", "utf8")));
+ck("the duplicate-merge module is gone", !fs.existsSync("src/lib/dedupeCompanies.js"));
 
 const s = sortCompaniesByName({
   competitors: {

@@ -49,7 +49,7 @@ ck("...so the next page lands on its default, not on BAE", getItem("kssl_profile
 ck("clearing an already-empty store is not an error", (clearViewState(), viewStateKeys().length === 0));
 
 /* ---- and no page may quietly go back to a durable store ---- */
-const PAGES = "../../src/pages/competitive";
+const PAGES = "src/pages/competitive";
 const offenders = readdirSync(PAGES)
   .filter((f) => f.endsWith(".jsx"))
   .filter((f) => /(^|[^.\w])localStorage\s*\./.test(readFileSync(`${PAGES}/${f}`, "utf8")
@@ -60,7 +60,7 @@ ck("no competitive page writes a selection to localStorage any more",
 
 /* AppState is the ONE place that empties it. If a second caller appears, the rule stops
    being "a pillar change clears" and becomes "something, somewhere, sometimes clears". */
-const appState = readFileSync("../../src/state/AppState.jsx", "utf8");
+const appState = readFileSync("src/state/AppState.jsx", "utf8");
 ck("AppState imports the clear", /import \{ clearViewState \}/.test(appState));
 ck("...and calls it from setPillar", /if \(prev !== next\) clearViewState\(\);/.test(appState));
 ck("...guarded on a real change, so re-clicking the open pillar keeps the selection",
@@ -69,7 +69,7 @@ ck("...guarded on a real change, so re-clicking the open pillar keeps the select
 const callers = readdirSync("./src", { recursive: true })
   .filter((f) => typeof f === "string" && /\.(jsx?|mjs)$/.test(f))
   .filter((f) => !f.endsWith("viewState.js"))
-  .filter((f) => /clearViewState\s*\(/.test(readFileSync(`../../src/${f}`, "utf8")));
+  .filter((f) => /clearViewState\s*\(/.test(readFileSync(`src/${f}`, "utf8")));
 ck("exactly one caller clears the store", callers.length === 1, callers);
 
 console.log(fail ? `\n${fail} FAILED` : "\nall passed");

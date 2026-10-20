@@ -233,7 +233,7 @@ eq(
    how the head-office comparison survived a rewrite of everything around it. So the
    caller is checked too: it must reach these rules, and it must no longer carry the raw
    comparison or the label-append that produced the reported string. */
-const MAP = readFileSync("../../src/components/geoMap/GeoMap.jsx", "utf8");
+const MAP = readFileSync("src/components/geoMap/GeoMap.jsx", "utf8");
 for (const call of ["presenceBadge(", "companyRole(", "isHeadOffice("])
   if (!MAP.includes(call)) fail(`GeoMap.jsx never calls ${call})`);
 if (/String\(c\.hq\)\.toLowerCase\(\)\s*===\s*String\(ct\)/.test(MAP))

@@ -65,8 +65,8 @@ ck("slug: empty in, empty out", "", rosterKey(null));
 
 // ---- the join and the guard must ask the SAME question ---------------------------
 // Asserted on the source, because the failure mode is precisely the two drifting apart.
-const dsrc = readFileSync("../../src/lib/dataset.js", "utf8");
-const psrc = readFileSync("../../src/lib/partners.js", "utf8");
+const dsrc = readFileSync("src/lib/dataset.js", "utf8");
+const psrc = readFileSync("src/lib/partners.js", "utf8");
 ck("dataset.js attaches koel through the shared index", true,
    /rosterIndex\(d\.KSSL_PARTNERS\)/.test(dsrc) && /rosterLookup\(roster, p\)/.test(dsrc));
 ck("...and no longer requires p.cid to attach it", false, /p\.shared && p\.cid && roster\[p\.cid\]/.test(dsrc));
@@ -75,7 +75,7 @@ ck("selfCheck uses the same index, not its own", true,
 ck("...and the same lookup", true, /rosterLookup\(roster, p\)/.test(psrc));
 
 // ---- the fixture snapshot: every flagged partner now resolves -----------------------
-const d = JSON.parse(readFileSync("../../fixtures/kssl_dataset.json", "utf8"));
+const d = JSON.parse(readFileSync("fixtures/kssl_dataset.json", "utf8"));
 (await import("../../src/lib/client.js")).setClient(d.client);
 const wired = (await import("../../src/lib/dataset.js")).wireDataset(d);
 const live = rosterIndex(wired.KSSL_PARTNERS);

@@ -56,6 +56,8 @@ export default function SignalCard({ card, dirWord, badgeClass, selected, fresh,
             an empty corner alongside that made it look like a rendering slip rather than
             a fact about the article. */}
         <span className="ago">{when || card.ago || NO_DATE_LABEL}</span>
+        {/* one card per story: the latest signal stands for the event, the earlier ones are its timeline (drawer) */}
+        {card.episodes > 1 ? <span className="episodes" title="Earlier signals of this event are in its timeline">{card.episodes} updates</span> : null}
       </div>
     </div>
   );
