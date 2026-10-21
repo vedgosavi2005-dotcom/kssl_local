@@ -12,7 +12,7 @@ const num = (x) => (x == null ? "—" : Number(x).toLocaleString("en-IN"));
 
 export default function RiskBasis({ basis, stats }) {
   if (!basis && !stats) return null;
-  const { probability: p, impact: i, dimensions = [], tests = [], mainDimension, label, summary, score, confidence } = basis || {};
+  const { probability: p, impact: i, dimensions = [], tests = [], mainDimension, label, labelText, summary, score, confidence } = basis || {};
   const failed = tests.filter((t) => !t.pass).length;
   const dot = p && i;
   // signal rule only: tech / tender / partnership bases carry no probability x impact, so no grid and the summary moves down
@@ -63,7 +63,7 @@ export default function RiskBasis({ basis, stats }) {
 
       {tests.length ? (
         <div className="ctx-sec">
-          <span className="eyebrow">Why {label ? label.replace(/_/g, " ") : "this label"}</span>
+          <span className="eyebrow">{labelText || `Why ${label ? label.replace(/_/g, " ") : "this label"}`}</span>
           {!grid && summary ? <p className="rk-summary">{summary}</p> : null}
           {allPass ? <span className="rk-sum">{failed ? `A threat must pass all ${tests.length} checks. This one misses ${failed}.` : `Passes all ${tests.length} threat checks.`}</span> : null}
           {tests.map((t) => (
