@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import "../../styles/review.css";
 
 /* The review copy. Same app in Vite mode "review" (`npm run dev:review`, 127.0.0.1:5180) against
@@ -23,6 +23,17 @@ async function post(path, params) {
 
 export function ReviewProvider({ initial, children }) {
   const [st, setSt] = useState(initial || {});
+  /* every card bar mounted right now ("t|id" -> mount count): what "Approve all on this page" acts on */
+  const onPage = useRef(new Map());
+  const register = useRef((key) => {
+    onPage.current.set(key, (onPage.current.get(key) || 0) + 1);
+    return () => {
+      const n = (onPage.current.get(key) || 1) - 1;
+      if (n > 0) onPage.current.set(key, n);
+      else onPage.current.delete(key);
+    };
+  }).current;
+  const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n} | {kind: "setup"}
   if (!REVIEW) return children;
   const apply = (body) => {
@@ -33,6 +44,31 @@ export function ReviewProvider({ initial, children }) {
     post("/api/review", { table: t, key: id, action }).then(apply, (e) => alert(`Could not ${action}: ${e.message}`));
   const actTable = (schema, table, action) =>
     post("/api/review/table", { schema, table, action }).then(apply, (e) => alert(`Could not ${action}: ${e.message}`));
+  /* bulk approve: every new / changed card on the current page, in one request (backend retries a child
+     whose parent is approved in the same batch) */
+  const approvePage = async () => {
+    const want = [...onPage.current.keys()]
+      .map((k) => { const i = k.indexOf("|"); return { table: k.slice(0, i), key: k.slice(i + 1) }; })
+      .filter(({ table, key }) => { const s = (st.cards?.[table]?.[key] || { s: "new" }).s; return s === "new" || s === "changed"; });
+    if (!want.length) return alert("Nothing new or changed on this page.");
+    const n = { new: 0, changed: 0 };
+    want.forEach(({ table, key }) => (n[(st.cards?.[table]?.[key] || { s: "new" }).s] += 1));
+    if (!window.confirm(`Approve ${want.length} card(s) on this page (${n.new} new, ${n.changed} changed)? They go to the live UI.`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/review/bulk", { method: "POST", headers: { "X-KSSL-Write": "1", "Content-Type": "application/json" }, body: JSON.stringify(want) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `${res.status}`);
+      apply(body);
+      if (body.failed && body.failed.length) {
+        alert(`Approved ${body.approved}. Not approved ${body.failed.length}:\n` + body.failed.slice(0, 10).map((f) => `${f.table} ${f.key}: ${f.error}`).join("\n"));
+      }
+    } catch (e) {
+      alert(`Could not bulk approve: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
   const counts = {};
   Object.values(st.cards || {}).forEach((tab) => Object.values(tab).forEach((c) => (counts[c.s] = (counts[c.s] || 0) + 1)));
   const pending = Object.values(st.tables || {}).reduce(
@@ -40,12 +76,15 @@ export function ReviewProvider({ initial, children }) {
     0,
   );
   return (
-    <Ctx.Provider value={{ st, act, actTable, openTrace: (t, id) => setPanel({ kind: "trace", t, id }) }}>
+    <Ctx.Provider value={{ st, act, actTable, register, openTrace: (t, id) => setPanel({ kind: "trace", t, id }) }}>
       {children}
       <div className="rv-banner">
         <span>
           REVIEW COPY · {counts.new || 0} new · {counts.changed || 0} changed · {counts.live || 0} live · {counts.rejected || 0} rejected
         </span>
+        <button type="button" className="rv-ok" disabled={busy} onClick={approvePage} title="Approve every new or changed card shown on this page">
+          {busy ? "Approving…" : "Approve all on this page"}
+        </button>
         <button type="button" onClick={() => setPanel({ kind: "setup" })}>
           Setup tables{pending ? ` · ${pending} to approve` : ""}
         </button>
@@ -61,6 +100,9 @@ export function ReviewProvider({ initial, children }) {
 /* Approve / Reject / Undo / Unpublish / Trace for one card. `src` = the object's _src. */
 export function Review({ src, style }) {
   const ctx = useContext(Ctx);
+  const regKey = src && src.t && src.id !== undefined && src.id !== null && src.id !== "" ? `${src.t}|${src.id}` : null;
+  const reg = ctx && ctx.register;
+  useEffect(() => (REVIEW && reg && regKey ? reg(regKey) : undefined), [reg, regKey]);
   if (!REVIEW || !ctx || !src || !src.t || src.id === undefined || src.id === null || src.id === "") return null;
   const { t } = src;
   const id = String(src.id);

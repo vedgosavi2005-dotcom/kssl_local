@@ -11,7 +11,7 @@ from typing import Any
 
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -199,6 +199,36 @@ def review_decide(table: str, key: str, action: str) -> dict[str, Any]:
     if action not in review.ACTIONS:
         raise HTTPException(status_code=400, detail=f"action must be one of {sorted(review.ACTIONS)}")
     return {"table": table, "key": key, "action": action, "review": _run(review.ACTIONS[action], table, key)}
+
+
+@app.post("/api/review/bulk")
+def review_bulk(items: list[dict[str, str]] = Body(...)) -> dict[str, Any]:
+    """Approve many cards at once (the review banner's "Approve all on this page"): new and changed alike.
+    Each card commits on its own; a card whose parent is not live yet ("Approve its ... first") is retried
+    after the others, pass after pass while a pass still approves something. Cards still failing are returned."""
+    _review_only()
+    todo = list({(i.get("table", ""), i.get("key", "")): None for i in items if i.get("table") and i.get("key")})
+    if len(todo) > 2000:
+        raise HTTPException(status_code=400, detail="at most 2000 cards per bulk approve")
+    approved, failed = 0, {}
+    while todo:
+        left = []
+        for t, k in todo:
+            try:
+                with review.session() as (st, sv):
+                    review.approve(st, sv, t, k)
+                approved += 1
+                failed.pop((t, k), None)
+            except (ValueError, psycopg2.Error) as exc:
+                failed[(t, k)] = str(getattr(exc, "pgerror", None) or exc).strip()
+                left.append((t, k))
+        if len(left) == len(todo):
+            break                                   # no progress: what is left needs something outside this page
+        todo = left
+    with review.session() as (st, sv):
+        fresh = review.statuses(st, sv)
+    return {"approved": approved, "failed": [{"table": t, "key": k, "error": e} for (t, k), e in failed.items()],
+            "review": fresh}
 
 
 @app.post("/api/review/table")
