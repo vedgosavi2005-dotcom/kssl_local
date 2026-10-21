@@ -275,10 +275,13 @@ export default function ThreatAnalysis() {
                   </ol>
                 </div>
               ) : null}
-              <div className="ctx-sec">
-                <span className="eyebrow">Analysis{clientName ? ` · what it means for ${clientName}` : ""}</span>
-                <div className="cd-prose">{meaning || "Not assessed."}</div>
-              </div>
+              {/* moment v5 lenses carry their own "What it means for KSSL": the short analysis would repeat it */}
+              {lenses && lenses.some((l) => /^what it means for/i.test(String(l.view || ""))) ? null : (
+                <div className="ctx-sec">
+                  <span className="eyebrow">Analysis{clientName ? ` · what it means for ${clientName}` : ""}</span>
+                  <div className="cd-prose">{meaning || "Not assessed."}</div>
+                </div>
+              )}
               {lenses ? (
                 <div className="ctx-sec">
                   <span className="eyebrow">Deeper analysis · by view</span>
