@@ -1,0 +1,24 @@
+/* signal drawer: risk grid, impact by dimension, the threat tests (components/detailPanel/RiskBasis.jsx) */
+.rk-wrap{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.rk-grid{display:grid;grid-template-columns:repeat(5,22px);grid-template-rows:repeat(5,22px);gap:2px;flex:0 0 auto}
+.rk-cell{background:var(--l-bg-2);border-radius:2px;display:flex;align-items:center;justify-content:center}
+.rk-cell.zone{background:rgba(240,89,60,.18)}
+.rk-dot{width:12px;height:12px;border-radius:50%;background:var(--l-txt)}
+.rk-dot.threat{background:var(--threat)}
+.rk-dot.watch{background:var(--watch)}
+.rk-axes{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--l-txt);min-width:0}
+.rk-note{color:var(--l-txt-3);font-size:11px}
+.rk-dim{display:grid;grid-template-columns:120px 1fr minmax(28px,auto);align-items:center;gap:8px;font-size:12px;padding:3px 0;color:var(--l-txt-3)}
+.rk-dim.main{color:var(--l-txt);font-weight:600}
+.rk-bar{height:6px;background:var(--l-bg-2);border-radius:3px;overflow:hidden}
+.rk-bar span{display:block;height:100%;background:var(--l-txt-3)}
+.rk-dim.main .rk-bar span{background:var(--watch)}
+.rk-dv{font-family:var(--mono);text-align:right;white-space:nowrap}
+.rk-sum{font-size:12px;color:var(--l-txt-3);margin-bottom:6px}
+.rk-test{display:grid;grid-template-columns:16px auto 1fr;column-gap:12px;padding:6px 0;border-bottom:1px solid var(--l-bg-2);font-size:12px;color:var(--l-txt-3)}
+.rk-test:last-child{border-bottom:none}
+.rk-test.fail{color:var(--l-txt)}
+.rk-test.fail .rk-ic{color:var(--threat);font-weight:700}
+.rk-ic{color:var(--ok)}
+.rk-tg{font-family:var(--mono);text-align:right;overflow-wrap:break-word;min-width:0}
+.rk-tneed{grid-column:2 / 4;font-size:11px;opacity:.75}

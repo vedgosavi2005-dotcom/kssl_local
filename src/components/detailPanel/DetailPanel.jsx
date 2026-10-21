@@ -1,6 +1,7 @@
 import { clientShort } from "../../lib/client.js";
 import { useEffect, useRef } from "react";
 import AskBox from "../askBox/AskBox";
+import RiskBasis from "./RiskBasis";
 import { isVisible } from "../../lib/visibility";
 import { articleBullets } from "../../lib/detail";
 import { tenderFactRows, NOT_ON_RECORD } from "../../lib/tenderRow";
@@ -280,6 +281,9 @@ export default function DetailPanel({ detail, onClose, badge }) {
             </ul>
           </div>
         ) : null}
+
+        {/* review API only: the scores and tests behind watch / threat (the live API ships no labelBasis) */}
+        <RiskBasis basis={detail.labelBasis} />
 
         {/* the story timeline, drawn like the Projects timeline: dated steps on a rail, the event, what changed in grey,
             its source chip; a label change (a stance moving) is not an event of the story and is not listed */}
