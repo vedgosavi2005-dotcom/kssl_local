@@ -359,8 +359,11 @@ def _count(plan: Plan, company: str, key: str, n: int = 1):
     plan.stats.setdefault(company, defaultdict(int))[key] += n
 
 
-def build_plan(sheets: dict, existing: dict[str, str] | None = None) -> Plan:
-    """existing: display_name -> competitor_id already in the database (the three mapped companies must be there)."""
+def build_plan(sheets: dict, existing: dict[str, str] | None = None, include_unverified: bool = False) -> Plan:
+    """existing: display_name -> competitor_id already in the database (the three mapped companies must be there).
+    include_unverified (owner 2026-10-22, "yes load the bullets"): a bullet the workbook's own check did not support is loaded anyway,
+    its fact_source marked '(unverified)' with the verdict kept in the report; roles the person no longer holds, bullets whose only
+    source is a blocked domain and bullets with no URL stay held."""
     existing = existing or {}
     cd, rv = sheets[SHEET_DIR], sheets[SHEET_SUM]
     claims = build_claims(sheets.get(SHEET_CE, []), sheets.get(SHEET_P2, []))
@@ -469,12 +472,21 @@ def build_plan(sheets: dict, existing: dict[str, str] | None = None) -> Plan:
                 srcs, cited_blocked = pick_sources(sup[pos - 1]), pick_sources(sup[pos - 1], blocked=True)
                 if not srcs and not cited_blocked and first_url:
                     srcs = [(first_url, None)]
+                unverified = None
                 if not ok:
-                    _count(plan, company, f"{rtype}_held")
                     if not why.startswith("longer"):
                         why = f"field {fstat}: {why}" if not why.startswith("field") else why
-                    held(company, person, col, b, why, suggested, srcs[0][0] if srcs else "")
-                    continue
+                    cited = sup[pos - 1] + uns[pos - 1]          # every claim the workbook matched to this bullet
+                    only_blocked = bool(pick_sources(cited, blocked=True)) and not pick_sources(cited)
+                    if include_unverified and not why.startswith("longer") and srcs and not only_blocked:
+                        unverified = why            # loaded below, marked; still listed in the report
+                        plan.warnings.append(f"row {row} {person} {rtype} #{pos}: loaded unverified ({why[:80]})")
+                    else:
+                        _count(plan, company, f"{rtype}_held")
+                        if include_unverified and only_blocked:      # its claims cite only blocked domains (blogs, wikipedia): never loaded
+                            why = "blocked_source: every source this line's claims cite is on a blocked domain; " + why
+                        held(company, person, col, b, why, suggested, srcs[0][0] if srcs else "")
+                        continue
                 if not srcs and (cited_blocked or urls):          # every source of this line is on a blocked domain
                     plan.warnings.append(f"row {row} {person} {rtype} #{pos}: only blocked sources (skipped)")
                     _count(plan, company, f"{rtype}_held")
@@ -490,8 +502,11 @@ def build_plan(sheets: dict, existing: dict[str, str] | None = None) -> Plan:
                 plan.records.append({"record_id": rid, "leader_id": lid, "record_type": rtype, "headline": b, "source_url": srcs[0][0]})
                 for url, quote in srcs:
                     plan.facts.append({"table_name": "competitive_leader_record", "row_id": rid, "column_name": "headline", "source_url": url,
-                                       "quote": quote, "company": company})
+                                       "quote": quote, "company": company, "unverified": unverified})
                 _count(plan, company, f"{rtype}_loaded")
+                if unverified:
+                    _count(plan, company, f"{rtype}_unverified")
+                    held(company, person, col, b, "LOADED UNVERIFIED (--include-unverified): " + unverified, suggested, srcs[0][0])
     return plan
 
 
@@ -598,7 +613,8 @@ def apply_plan(conn, plan: Plan, dry_run: bool) -> dict:
         tier = classify(f["source_url"], company_domains(f["source_url"], names[f["company"]])) or "unlisted"
         tiers[tier] += 1
         cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, document_id, retrieved_at) "
-                    "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, now())", (f["table_name"], f["row_id"], f["column_name"], f["source_url"], tier, f["quote"], EXCEL_DOC))
+                    "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, now())", (f["table_name"], f["row_id"], f["column_name"], f["source_url"], tier, f["quote"],
+                                                                    EXCEL_DOC + (" (unverified)" if f.get("unverified") else "")))
     res.update(leaders=len(plan.leaders), records=len(plan.records), facts=len(plan.facts), tiers=dict(tiers))
     if dry_run:
         conn.rollback()
@@ -623,7 +639,7 @@ def cmd_leadership(args) -> int:
             print(f"  -> {len(overrides)} cells taken from the second file (it differs from the first)")
     conn = batch.connect_db(args.db)
     try:
-        plan = build_plan(sheets, existing_competitors(conn.cursor()))
+        plan = build_plan(sheets, existing_competitors(conn.cursor()), include_unverified=getattr(args, "include_unverified", False))
         plan.warnings += [f"row {r} {c!r} taken from the second file: {str(o)[:70]!r} -> {str(n)[:70]!r}" for r, c, o, n in overrides]
         held_path, sum_path = write_reports(plan, Path(args.reports), args.dry_run)
         res = apply_plan(conn, plan, args.dry_run)
@@ -1782,6 +1798,9 @@ def _selftest() -> None:
     assert [h["field"] for h in p.held] == ["Professional Experience", "Education Background"] and p.held[1]["reason"].count("Contradicted") == 1
     assert p.held[1]["suggested_correction"] == "it was Hannover"
     assert [r["record_id"] for r in p.records] == [r["record_id"] for r in build_plan(sheets, {"Larsen & Toubro": "11111111-1111-1111-1111-111111111111"}).records]
+    pu = build_plan(sheets, {"Larsen & Toubro": "11111111-1111-1111-1111-111111111111"}, include_unverified=True)   # held bullets load, marked
+    assert len(pu.records) == len(p.records) + len(p.held) and all(h["reason"].startswith("LOADED UNVERIFIED") for h in pu.held)
+    assert sum(1 for f in pu.facts if f.get("unverified")) == len(p.held) and not any(f.get("unverified") for f in p.facts)
     # company details: year / count / revenue parsers (fictional values)
     assert parse_year("1889")[0] == 1889 and parse_year("3 Mar 2019 incorporation; operations began 1 Jun 2019")[0] == 2019
     assert parse_year("2015 formed; renamed in 2016")[0] is None and parse_year("Founded long ago")[0] is None
@@ -1979,6 +1998,7 @@ def main(argv=None) -> int:
     lp.add_argument("--compare", help="a second workbook (a subset); differences are printed")
     lp.add_argument("--db", choices=["local", "vps"], default="local")
     lp.add_argument("--dry-run", action="store_true")
+    lp.add_argument("--include-unverified", action="store_true", help="also load bullets the workbook's check did not support (marked '(unverified)')")
     lp.add_argument("--reports", default=str(DEFAULT_REPORTS), help="reports folder (default db/excel_reports/, gitignored)")
     cp_ = sub.add_parser("company", help="company details (sheet COMPANY DIRECTORY) -> competitive_competitor + fact_source")
     cp_.add_argument("--file", required=True)
