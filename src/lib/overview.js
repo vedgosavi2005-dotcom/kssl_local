@@ -126,7 +126,9 @@ const bySeq = (a, b) => {
 const TTE_RANK = { lt_1y: 0, "1_3y": 1, gt_3y: 2 };
 const tteOf = (c) => (c && c.timeToEffect in TTE_RANK ? TTE_RANK[c.timeToEffect] : 3);
 const inMarketOf = (c) => (c && String(c.inClientMarket || "").toLowerCase() === "yes" ? 0 : 1);
-export const compareRisk = (a, b) => (b.risk || 0) - (a.risk || 0) || tteOf(a) - tteOf(b) || inMarketOf(a) - inMarketOf(b);
+/* rule s3: the stored 0-100 riskScore leads when the card has one (null on serving until Approve copies it: the old order then) */
+const scoreOf = (c) => (c && c.riskScore != null ? c.riskScore : -1);
+export const compareRisk = (a, b) => scoreOf(b) - scoreOf(a) || (b.risk || 0) - (a.risk || 0) || tteOf(a) - tteOf(b) || inMarketOf(a) - inMarketOf(b);
 
 /* At most THREAT_CAP threats are shown (competitive spec): the riskiest by compareRisk; the cards behind them stay on
    record but are not offered on the overview. Every other card passes through, in its order. */
