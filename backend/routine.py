@@ -89,6 +89,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("tech_article", "prompt", "tech_article"), ("patent_classification", "prompt", "patent_classification"),
         ("tech_rollups", "cmd", ["-m", "prompts.tech_rollups"]),
         ("story_prune", "cmd", ["-m", "prompts.story", "--prune", "--write"]),    # timeline steps of cards a re-run or purge removed
+        ("source_fill", "cmd", ["-m", "scripts.fill_sources", "--write"]),     # every shown row a source from stored ones (never invented)
         # 7. report
         ("flood_report", "cmd", ["-m", "backend.flood_report"]),
     ]
@@ -292,7 +293,7 @@ def _selftest() -> None:
                  ("spec_enrich", "matchup_compare"), ("client_spec_enrich", "matchup_merge"), ("matchup_merge", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"), ("tender", "tender_category"), ("tender_category", "tender_assessment"),
                  ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine"),
                  ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
-                 ("story_prune", "flood_report")):
+                 ("story_prune", "flood_report"), ("tender_assessment", "source_fill"), ("story_prune", "source_fill"), ("source_fill", "flood_report")):
         assert order[a] < order[b], f"{a} must run before {b}"
     assert all(k in ("cmd", "prompt") for _, k, _ in steps())
     print("routine self-check ok")
