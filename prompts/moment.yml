@@ -1,12 +1,17 @@
 id: moment
 title: Competitor moment (the dated moves of one competitor, as a timeline)
-version: 4
+version: 5
 fills: [competitive_competitor_moment, competitive_competitor_moment_analysis, competitive_competitor_moment_source]
 shows_on: Competitor Moment page (move list as a timeline, drawer facts, "Analysis - what it means", "Deeper analysis - by view", source link)
 cadence: weekly                  # one run per competitor; the runner re-runs a subject when its cadence period has passed
+# v5 (2026-10-21, owner via the review audit: 45 moves carried one 170-character note each): the analysis rows are five fixed LENSES
+#    per move (What happened / What it means for KSSL / Buyer and programme / Supply chain and partners / What to watch next), each
+#    2-4 sentences from the documents; a lens the documents say nothing about is left out (never a guess).
 # v4 (2026-10-18, competitive audit; user rule s2 "threat / watch only"): the model grades a move high or watch only (no opportunity / favourable
 #    grade); a SIGNAL row labelled none (a done move of low impact, not shown on the overview) is not made a moment; only competitors that
 #    qualify (competitive_competitor.qualifies, the only ones the UI shows) are subjects.
+# v4 query fix (2026-10-19, no version bump so no competitor is re-run at once): a signal whose event_date is empty is dated by its
+#    published_date (coalesce) in the subject query, the signals document and its ordering; before, such a signal never reached a moment (2 of 163 in the window when checked).
 # v3 (prompt rebuild, docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.1.3, C "moment.yml (v3)"; user brief section 7):
 #  - a moment is a roll-up, not a second reading of the news: the documents are the competitor's STORED SIGNALS (with the steps of their
 #    story) of the last 120 days, then the best-scored harvested documents of the raw layer for moves no signal covers yet. Nothing is fetched.
@@ -22,25 +27,25 @@ subject:
     SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country
     FROM staging.competitive_competitor c
     WHERE c.qualifies IS TRUE        -- the UI shows only qualifying competitors (backend/areas/a_competitive.visible_database)
-      AND (EXISTS (SELECT 1 FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND s.event_date >= current_date - 120)
+      AND (EXISTS (SELECT 1 FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND coalesce(s.event_date, s.published_date) >= current_date - 120)
        OR EXISTS (SELECT 1 FROM staging.source_document d
                    WHERE c.competitor_id = ANY(d.competitor_ids) AND coalesce(d.published_at, current_date) >= current_date - 120
                      AND coalesce(d.body_text, '') <> ''
                      AND (coalesce((d.triage->'info'->>'deal')::numeric, 0) >= 0.6 OR coalesce((d.triage->'info'->>'sales_geo')::numeric, 0) >= 0.6
                           OR d.triage->'route' ? 'moment')))
-    ORDER BY (SELECT count(*) FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND s.event_date >= current_date - 120) DESC,
+    ORDER BY (SELECT count(*) FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND coalesce(s.event_date, s.published_date) >= current_date - 120) DESC,
              c.display_name
   documents:
     - from: sql                  # 1. the competitor's stored signals and the steps of their stories
       query: |
-        SELECT 'SIGNAL' AS doc, s.title AS signal_title, s.event_date, s.classification AS label, s.probability, s.impact, s.impact_dimension,
+        SELECT 'SIGNAL' AS doc, s.title AS signal_title, coalesce(s.event_date, s.published_date) AS event_date, s.classification AS label, s.probability, s.impact, s.impact_dimension,
                d.glance_move, d.glance_where, d.glance_third_party, left(d.what_article_says, 450) AS what_it_says, d.source_url,
                (SELECT string_agg(t.step_date::text || ' ' || t.step_type || ': ' || coalesce(t.one_line, ''), ' ; ' ORDER BY t.step_no)
                   FROM staging.story_step t WHERE t.story_id = s.story_id) AS story_steps
         FROM staging.competitive_signal s
         JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
-        WHERE s.company_id = '{{subject.competitor_id}}' AND s.event_date >= current_date - 120
-        ORDER BY (s.classification IN ('threat', 'watch')) DESC, s.event_date DESC, s.title LIMIT 25   -- shown labels first; none rows only fill spare slots
+        WHERE s.company_id = '{{subject.competitor_id}}' AND coalesce(s.event_date, s.published_date) >= current_date - 120
+        ORDER BY (s.classification IN ('threat', 'watch')) DESC, coalesce(s.event_date, s.published_date) DESC, s.title LIMIT 25   -- shown labels first; none rows only fill spare slots
     - from: sql                  # 2. best-scored harvested documents (deal / sales scores of the triage, or routed to moment)
       query: |
         SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
@@ -110,9 +115,16 @@ task: |
      With ref_signal given, leave grade empty.
    - source_url: the most informative document URL (a SIGNAL row: its source_url); source_label: its publisher
    children:
-   competitive_competitor_moment_analysis (0-3 rows, only for a view named in VIEWS WITH ROWS):
-   - view_name: one of the views listed in VIEWS WITH ROWS, exactly as written; if the list is empty, write no row
-   - analysis_text: JUDGEMENT. 1-3 plain sentences, stated facts plus what they imply for {{client.name}}
+   competitive_competitor_moment_analysis (up to 5 rows, one per LENS, in this order; leave a lens out when the documents state
+   nothing it could rest on -- never fill one with a guess):
+   - view_name: the lens, exactly one of: What happened | What it means for KSSL | Buyer and programme | Supply chain and partners |
+     What to watch next
+   - analysis_text: JUDGEMENT. 2-4 plain sentences grounded in the SIGNAL and DOCUMENT rows:
+       What happened = who did what, where, with quantities, values and dates as stated (more than what_happened, not a copy);
+       What it means for KSSL = the {{client.name}} product, market or partner it touches (CLIENT blocks) and how, or why it still matters;
+       Buyer and programme = the customer, the programme or tender and its stage, as stated;
+       Supply chain and partners = the suppliers, partners, joint ventures or local production the documents name;
+       What to watch next = the next stated step: a date, a delivery, a decision, a follow-on order. Only what a document states.
    competitive_competitor_moment_source (1-3 rows, one per document that reports the move):
    - publisher, source_type (company = the competitor's own site; official = government, ministry, armed forces; news = editorial
      outlet or trade press), source_url
@@ -174,7 +186,7 @@ output:
         required: [view_name, analysis_text]
         judgement: [analysis_text]
         plain: {analysis_text: warn}
-        enum: {view_name: [Products, Product Evaluation, Partnerships, Projects, Geo Footprint, Patents]}
+        enum: {view_name: [What happened, What it means for KSSL, Buyer and programme, Supply chain and partners, What to watch next]}
         loader: {analysis_id: new_id, moment_id: parent_id, display_order: index}
       competitive_competitor_moment_source:
         columns: [publisher, source_type, source_url]

@@ -42,6 +42,13 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/19_product_role.sql           # product_class.role (like-for-like gate: same role inside a sub-type)
 "${PSQL[@]}" -d "$STG" < db/setup/20_matchup_advantage_kind.sql  # competitive_matchup_advantage.kind (compared / stated)
 "${PSQL[@]}" -d "$STG" < db/setup/22_product_description_status.sql  # product description + status (product drawer)
+"${PSQL[@]}" -d "$STG" < db/setup/23_signal_risk_v3.sql          # rule s3: risk_score, risk_confidence, label_basis
+"${PSQL[@]}" -d "$STG" < db/setup/24_signal_prompt_stats.sql     # view: per-signal prompt cost (review drawer)
+"${PSQL[@]}" -d "$STG" < db/setup/25_leader_record_text.sql      # leader record headline -> text
+"${PSQL[@]}" -d "$STG" < db/setup/26_competitor_short_details.sql  # short company details + revenue_usd (revenue filter)
+"${PSQL[@]}" -d "$STG" < db/setup/27_tender_translation.sql      # tender originals kept beside the English
+"${PSQL[@]}" -d "$STG" < db/setup/28_media_images.sql           # media.image: article pictures stored in the DB (/api/image/<id>)
+"${PSQL[@]}" -d "$STG" < db/setup/29_text_translation.sql       # originals of translated market cells + translation cache
 build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/08_competitor_text_columns.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/11_foundations.sql              # same DDL on the serving schemas (Approve copies by column name); no seed rows here
@@ -52,6 +59,10 @@ build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/18_tender_notice_merge.sql    # same column in serving
 "${PSQL[@]}" -d "$SRV" < db/setup/20_matchup_advantage_kind.sql  # same column in serving
 "${PSQL[@]}" -d "$SRV" < db/setup/22_product_description_status.sql  # same columns in serving
+"${PSQL[@]}" -d "$SRV" < db/setup/23_signal_risk_v3.sql          # same columns in serving
+"${PSQL[@]}" -d "$SRV" < db/setup/25_leader_record_text.sql      # same column in serving
+"${PSQL[@]}" -d "$SRV" < db/setup/26_competitor_short_details.sql  # same columns in serving
+"${PSQL[@]}" -d "$SRV" < db/setup/27_tender_translation.sql      # same columns in serving
 for d in "$STG" "$SRV"; do
     "${PSQL[@]}" -d "$d" -At -c "SELECT '$d: ' || string_agg(nspname || '=' || n, ' ') FROM (SELECT nspname, count(*) n FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE relkind = 'r' AND nspname IN ('ui','serving','staging','staging_ui') GROUP BY nspname ORDER BY nspname) t"
 done

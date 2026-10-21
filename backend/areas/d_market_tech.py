@@ -20,7 +20,14 @@ Enumerations the UI expects (stored text, compared case-insensitively; unknown v
 
 from collections import defaultdict
 
+from prompts.derive import pursue_basis
 from backend.common import first_nonempty, slug, table, text
+
+
+def _review() -> bool:
+    """The review site (KSSL_VIEW=review) ships the plain-English "why this label" panels; the live site never does (2026-10-21)."""
+    import os
+    return os.environ.get("KSSL_VIEW", "").strip().lower() == "review"
 
 
 def group(rows, key):
@@ -175,6 +182,9 @@ def build_tenders(database):
             "strategicScore": fit.get("strategic_score"),
             "timeToAward": fit.get("time_to_award"),
             "fitPercent": fit.get("fit_score"),
+            **({"labelBasis": pursue_basis(
+                fit.get("fit_grade") or fit.get("kssl_fit"), fit.get("attractiveness"), fit.get("ability"), fit.get("pursue_label"))}
+               if _review() and fit else {}),
             "eligibility": [
                 {"item": e.get("item"), "state": e.get("state"), "fixable": e.get("fixable"), "note": e.get("note"),
                  "_src": src("market_tender_eligibility", "eligibility_id", e.get("eligibility_id"))}

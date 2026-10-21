@@ -156,18 +156,24 @@ export function marketMetrics(tenders) {
       act: "active",
       v: String(open.length),
       sub: `open of ${list.length} tracked · ${awarded.length} awarded, ${closed.length} closed`,
+      rows: open,
+      how: "tenders whose status is open (closing date not passed, not awarded)",
     },
     {
       id: "markets",
       act: "markets",
       v: String(countries.size),
       sub: topOf(list, "country"),
+      rows: list.filter((t) => t.country),
+      how: "distinct countries of the tenders in this slice",
     },
     {
       id: "source-portals",
       act: "portals",
       v: String(portals.size),
       sub: `distinct portals feeding this slice`,
+      rows: list.filter((t) => hostOf(t.url)),
+      how: "distinct website hosts of the tender links",
     },
     {
       /* An unmeasured total is "—", never 0 — a zero here would read as "these
@@ -179,6 +185,8 @@ export function marketMetrics(tenders) {
       sub: priced.length
         ? `${priced.length} of ${list.length} publish an amount${totals.length > 1 ? ` · ${totals.length} currencies, not converted` : ""}`
         : "no tender on record publishes an amount",
+      rows: priced,
+      how: "sum of each tender's stated amount, per currency; converted to rupees only with a stored exchange rate",
     },
   ];
   return tiles.map(({ id, ...t }) => ({ ...t, key: id, l: MARKET_TILE_LABEL[id] }));

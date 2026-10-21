@@ -130,6 +130,15 @@ def h_new_id_stable(m, row, L, col):
     return L.stable_id(row.table, col, f"{' '.join(str(cat or '').casefold().split())}|{' '.join(str(title).casefold().split())}")
 
 
+def h_new_id_stable_product(m, row, L, col):
+    """The same product + programme title is the same row whichever batch or run found it (product_program v2: a batch re-runs under a new
+    document fingerprint, so its subject key changes; the row is updated, not duplicated). Falls back to the run's own id."""
+    pid, title = row.get("product_id"), row.get("program_title")
+    if not pid or not title:
+        return L.new_id(row, col)
+    return L.stable_id(row.table, col, f"{pid}|{' '.join(str(title).casefold().split())}")
+
+
 def h_new_id_or_ref(m, row, L, col):
     ref = "ref_" + m.group(1)
     got = row.resolved.get(ref)
@@ -452,6 +461,7 @@ def h_bare(m, row, L, col):
 # order matters: the first match wins; the last entry is the bare-column fallback
 TOKENS = [
     (r"new_id_stable_by_category_and_title", h_new_id_stable),
+    (r"new_id_stable_by_product_and_title", h_new_id_stable_product),
     (r"new_id(?:_if_missing)?", h_new_id),
     (r"new_id_or_ref_(\w+)", h_new_id_or_ref),
     (r"parent_id", h_parent_id),

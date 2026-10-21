@@ -249,7 +249,7 @@ def renumber_signals(cur, ctx: dict) -> None:
 # The model scores and states the modifiers; CODE decides the label, so the same scores always give the same label. Each rule has a
 # version that is stored on the row it labelled (rule_version), so a rule change can be re-derived without a model call.
 
-RULE_VERSIONS = {"signal": "s2", "pursue": "p1", "tech": "t2"}   # t2 (2026-10-18): tech has threat / watch only, no fav
+RULE_VERSIONS = {"signal": "s3", "pursue": "p1", "tech": "t2"}   # t2 (2026-10-18): tech has threat / watch only, no fav
 IMPACT_DIMENSIONS = ("orders_revenue", "market_standing", "supply_chain", "technology_gap", "partnerships", "policy_export", "funding")
 DIMENSION_WORD = {"orders_revenue": "Orders", "market_standing": "Market standing", "supply_chain": "Supply chain",
                   "technology_gap": "Technology", "partnerships": "Partnerships", "policy_export": "Policy", "funding": "Funding"}
@@ -324,6 +324,191 @@ def signal_label(probability, impact, time_to_effect, in_client_market, subtype_
     return "watch"
 
 
+def signal_label_tests(probability, impact, time_to_effect, in_client_market, subtype_match, impact_dimension, direction=None) -> list:
+    """The threat tests of signal_label, one row each, for the review site's "why watch / threat" panel (owner 2026-10-21):
+    [{"test", "need", "got", "pass"}]. A signal is a threat when every row passes; signal_label decides, this only explains it."""
+    p, i = score(probability), score(impact)
+    dim = _word(impact_dimension)
+    tte = _word(effective_time_to_effect(probability, time_to_effect))
+    favourable = _word(direction) == "favourable"
+    return [
+        {"test": "Direction", "need": "not favourable to KSSL", "got": _word(direction) or "unknown", "pass": not favourable},
+        {"test": "Probability", "need": "4 or 5 (happening or near certain)", "got": p, "pass": p is not None and p >= 4},
+        {"test": "Impact on KSSL", "need": "4 or 5", "got": i, "pass": i is not None and i >= 4},
+        {"test": "Time to effect", "need": "under 1 year or 1-3 years", "got": tte or "unknown", "pass": tte in NEAR_TERM},
+        {"test": "Where", "need": "in a KSSL market, or a supply-chain / partnership / export-policy / funding move",
+         "got": f"in client market: {_word(in_client_market) or 'unknown'}; dimension: {dim or 'unknown'}",
+         "pass": _word(in_client_market) == "yes" or dim in MARKET_FREE_DIMS},
+        {"test": "Product line", "need": "same or adjacent to a KSSL product, or a supply-chain / partnership move",
+         "got": f"subtype match: {_word(subtype_match) or 'unknown'}", "pass": _word(subtype_match) in ("same", "adjacent") or dim in SUBTYPE_FREE_DIMS},
+    ]
+
+
+# ---- signal risk v3 (owner 2026-10-21, kssl-02's audit): inputs resolved by code before "unknown", a graded 0-100 score, a
+# confidence, and every test in plain English. The label rule is the same (signal_label); only its inputs are resolved first.
+
+# the move a card reports (competitive_signal_detail.glance_move) -> (probability when the model gave none, time to effect when unknown)
+MOVE_STAGE = {"Contract": (5, "lt_1y"), "Order": (5, "lt_1y"), "Supply deal": (5, "lt_1y"), "Delivery": (5, "lt_1y"), "Induction": (5, "lt_1y"),
+              "Acquisition": (5, "lt_1y"), "Cancellation": (5, "lt_1y"), "Selection": (4, "1_3y"), "Export approval": (4, "1_3y"),
+              "Policy": (4, "1_3y"), "Capacity": (4, "1_3y"), "Trial": (3, "1_3y"), "MoU": (3, "1_3y"), "JV": (3, "1_3y"), "Launch": (3, "1_3y")}
+MOVE_WORD = {"Contract": "contract signed", "Order": "order placed", "Supply deal": "supply deal signed", "Delivery": "delivered",
+             "Induction": "inducted into service", "Acquisition": "acquisition made", "Cancellation": "cancelled", "Selection": "selected",
+             "Export approval": "export approved", "Policy": "policy decided", "Capacity": "capacity being built", "Trial": "in trials",
+             "MoU": "MoU signed", "JV": "joint venture formed", "Launch": "product launched"}
+PROXIMITY = {"lt_1y": 1.0, "1_3y": 0.8, "gt_3y": 0.4, "unknown": 0.6}
+FIT_MARKET = {"yes": 1.0, "unknown": 0.7, "no": 0.4}
+FIT_PRODUCT = {"same": 1.0, "adjacent": 0.8, "unknown": 0.6, "none": 0.3}
+WHEN_WORD = {"lt_1y": "Within a year", "1_3y": "In 1-3 years", "gt_3y": "Not before 3 years", "unknown": "The article doesn't say"}
+LIKELY_WORD = {5: "Already happening", 4: "Near certain", 3: "Possible", 2: "Unlikely so far", 1: "Remote"}
+HIT_WORD = {5: "Very hard", 4: "Hard", 3: "Medium", 2: "Light", 1: "Barely"}
+DIM_PHRASE = {"orders_revenue": "orders and revenue", "market_standing": "market standing", "supply_chain": "supply chain",
+              "technology_gap": "the technology gap", "partnerships": "partnerships", "policy_export": "export policy", "funding": "funding"}
+
+
+def resolve_signal_inputs(row: dict, move, places: list, kssl_markets: set, product: dict | None) -> dict:
+    """{input: {"value", "basis": stated | derived | unknown, "how"}} for probability, time_to_effect, in_client_market, subtype_match.
+    The model's value wins when it gave one, except the market, which code decides whenever the place is known (one KSSL market
+    list for every card). places = canonical lower-case countries the card names; product = {"match", "kssl", "rival"} or None."""
+    out = {}
+    p = score(row.get("probability"))
+    stage = MOVE_STAGE.get(move)
+    if p is not None:
+        out["probability"] = {"value": p, "basis": "stated", "how": "scored from the article", "move": MOVE_WORD.get(move)}
+    elif stage:
+        out["probability"] = {"value": stage[0], "basis": "derived", "how": f"from the move: {MOVE_WORD[move]}"}
+    else:
+        out["probability"] = {"value": None, "basis": "unknown", "how": "no score and no move type"}
+    t = _word(row.get("time_to_effect"))
+    if t in NEAR_TERM or t == "gt_3y":
+        out["time_to_effect"] = {"value": t, "basis": "stated", "how": "from the article"}
+    elif score(out["probability"]["value"]) == 5:
+        out["time_to_effect"] = {"value": "lt_1y", "basis": "derived", "how": "the event is done, so it acts now"}
+    elif stage:
+        out["time_to_effect"] = {"value": stage[1], "basis": "derived", "how": f"from the move: {MOVE_WORD[move]}"}
+    else:
+        out["time_to_effect"] = {"value": "unknown", "basis": "unknown", "how": "the article gives no date and no move type"}
+    if places:
+        inside = [c for c in places if c in kssl_markets]
+        shown = [c.title() for c in (inside or places)]
+        out["in_client_market"] = {"value": "yes" if inside else "no", "basis": "derived", "places": shown,
+                                   "how": ("KSSL market: " if inside else "not a KSSL market: ") + ", ".join(shown)}
+    elif _word(row.get("in_client_market")) in ("yes", "no"):
+        out["in_client_market"] = {"value": _word(row.get("in_client_market")), "basis": "stated", "places": [], "how": "from the article"}
+    else:
+        out["in_client_market"] = {"value": "unknown", "basis": "unknown", "places": [], "how": "the article names no country"}
+    m = _word(row.get("subtype_match"))
+    if m in ("same", "adjacent", "none"):
+        out["subtype_match"] = {"value": m, "basis": "stated", "how": "from the article", **{k: v for k, v in (product or {}).items() if k != "match"}}
+    elif product and product.get("match") in ("same", "adjacent", "none"):
+        out["subtype_match"] = {"value": product["match"], "basis": "derived", "how": "from the product classes",
+                                **{k: v for k, v in product.items() if k != "match"}}
+    else:
+        out["subtype_match"] = {"value": "unknown", "basis": "unknown", "how": "no product of known class on the card"}
+    return out
+
+
+def signal_risk_score(probability, impact, inputs: dict, dims: dict, main_dim) -> int | None:
+    """0-100: p x i (of 25) x proximity x market fit x product fit, + 5 per other dimension scoring 3 or more (max +15)."""
+    p, i = score(probability), score(impact)
+    if p is None or i is None:
+        return None
+    dim = _word(main_dim)
+    s = p * i / 25 * 100 * PROXIMITY.get(inputs["time_to_effect"]["value"], 0.6)
+    s *= 1.0 if dim in MARKET_FREE_DIMS else FIT_MARKET.get(inputs["in_client_market"]["value"], 0.7)
+    s *= 1.0 if dim in SUBTYPE_FREE_DIMS else FIT_PRODUCT.get(inputs["subtype_match"]["value"], 0.6)
+    s += 5 * min(3, sum(1 for d, v in dims.items() if d != dim and (score(v) or 0) >= 3))
+    return max(0, min(100, round(s)))
+
+
+def signal_confidence(inputs: dict) -> str:
+    """high: nothing unknown and at most one input worked out by code; low: two or more unknown; else medium."""
+    unknown = sum(1 for v in inputs.values() if v["basis"] == "unknown")
+    derived = sum(1 for v in inputs.values() if v["basis"] == "derived")
+    return "low" if unknown >= 2 else ("high" if unknown == 0 and derived <= 1 else "medium")
+
+
+def signal_plain_tests(inputs: dict, impact, main_dim, direction) -> list:
+    """The six threat tests in plain English: {key, question, answer, need, pass, basis}; pass = the tests of signal_label."""
+    p, i, dim = score(inputs["probability"]["value"]), score(impact), _word(main_dim)
+    t, mk, sm = inputs["time_to_effect"], inputs["in_client_market"], inputs["subtype_match"]
+    fav = _word(direction) == "favourable"
+
+    def why(x):
+        return f" ({x['how']})" if x["basis"] == "derived" else ""
+
+    if mk["value"] == "yes":
+        where = f"Yes, {', '.join(mk['places'])}" if mk.get("places") else "Yes"
+    elif mk["value"] == "no":
+        where = f"No, {', '.join(mk['places'])} {'is' if len(mk.get('places') or []) == 1 else 'are'} not a KSSL market" if mk.get("places") else "No"
+    else:
+        where = "The article doesn't say where"
+    if dim in MARKET_FREE_DIMS and mk["value"] != "yes":
+        where += f"; it doesn't need one: it is a {DIM_PHRASE[dim]} move"
+    kssl, rival = sm.get("kssl"), sm.get("rival")
+    product = {"same": f"Same product class as KSSL's {kssl}" if kssl else "Same product class as a KSSL product",
+               "adjacent": f"Close to KSSL's {kssl}" if kssl else "Close to a KSSL product",
+               "none": "No KSSL product of this kind" + (f" ({rival})" if rival else ""),
+               "unknown": "The product isn't clear from the article"}[sm["value"]]
+    if dim in SUBTYPE_FREE_DIMS and sm["value"] not in ("same", "adjacent"):
+        product += f"; it doesn't need one: it is a {DIM_PHRASE[dim]} move"
+    rows = [
+        ("direction", "Is this bad news for KSSL?", "No, it favours KSSL" if fav else "Yes, it strengthens a rival", "Bad news for KSSL",
+         not fav, "stated"),
+        # the move is named so "already happening" reads as what happened (a test firing is done; the orders it may bring are not)
+        ("probability", "Will it happen?", (f"{LIKELY_WORD[p]} ({p} of 5)" if p else "Not scored")
+         + (f": {inputs['probability']['move']}" if p and inputs["probability"].get("move") else "") + why(inputs["probability"]),
+         "Near certain or already happening (4-5 of 5)", p is not None and p >= 4, inputs["probability"]["basis"]),
+        ("impact", "How hard does it hit KSSL?", f"{HIT_WORD[i]} ({i} of 5), mainly through {DIM_PHRASE.get(dim, 'its main effect')}" if i else "Not scored",
+         "Hard or very hard (4-5 of 5)", i is not None and i >= 4, "stated" if i else "unknown"),
+        ("time_to_effect", "When will KSSL feel it?", WHEN_WORD.get(t["value"], WHEN_WORD["unknown"]) + why(t), "Within 3 years",
+         t["value"] in NEAR_TERM, t["basis"]),
+        ("in_client_market", "Is it in a KSSL market?", where, "In a KSSL market, or a supply-chain, partnership, export or funding move",
+         mk["value"] == "yes" or dim in MARKET_FREE_DIMS, mk["basis"]),
+        ("subtype_match", "Does it compete with a KSSL product?", product, "Same or close to a KSSL product, or a supply-chain or partnership move",
+         sm["value"] in ("same", "adjacent") or dim in SUBTYPE_FREE_DIMS, sm["basis"]),
+    ]
+    return [{"key": k, "question": q, "answer": a, "need": n, "pass": bool(ok), "basis": b} for k, q, a, n, ok, b in rows]
+
+
+FAIL_PHRASE = {"direction": "it favours KSSL", "probability": "it isn't near certain yet", "impact": "it hits KSSL only lightly",
+               "time_to_effect": "KSSL won't feel it within 3 years", "in_client_market": "it isn't in a KSSL market",
+               "subtype_match": "it doesn't compete with a KSSL product"}
+UNKNOWN_PHRASE = {"probability": "nobody has scored how likely it is", "impact": "its impact on KSSL isn't scored",
+                  "time_to_effect": "the article doesn't say when KSSL will feel it", "in_client_market": "the article doesn't say where",
+                  "subtype_match": "the product isn't clear"}
+
+
+def signal_summary(label: str, tests: list) -> str:
+    """One plain sentence: why this label."""
+    if label == "none":
+        return "Not shown: it has already happened and barely affects KSSL."
+    by = {t["key"]: t for t in tests}
+    good = [w for k, w in (("probability", "near certain"), ("impact", "hits KSSL hard"), ("time_to_effect", "soon"),
+                           ("in_client_market", "in a KSSL market"), ("subtype_match", "against a KSSL product")) if by[k]["pass"]]
+    if label == "threat":
+        return "Threat: " + ", ".join(good) + "."
+    bad = [UNKNOWN_PHRASE[t["key"]] if t["basis"] == "unknown" and t["key"] in UNKNOWN_PHRASE else FAIL_PHRASE[t["key"]]
+           for t in tests if not t["pass"]]
+    lead = " and ".join(good[:2])
+    return f"Watch: {lead + ', but ' if lead else ''}{'; '.join(bad)}."
+
+
+def signal_assessment(row: dict, move, places: list, kssl_markets: set, product: dict | None) -> dict:
+    """Everything the label rests on (stored as competitive_signal.label_basis): resolved inputs, the label (signal_label on the
+    resolved inputs), the 0-100 score, the confidence, the plain tests and the one-line summary."""
+    dims = {d: row.get(f"impact_{d}") for d in IMPACT_DIMENSIONS}
+    impact, d1, _ = impact_max(dims)
+    if impact is None:
+        impact, d1 = row.get("impact"), row.get("impact_dimension")
+    inputs = resolve_signal_inputs(row, move, places, kssl_markets, product)
+    v = {k: x["value"] for k, x in inputs.items()}
+    label = signal_label(v["probability"], impact, v["time_to_effect"], v["in_client_market"], v["subtype_match"], d1, row.get("direction"))
+    tests = signal_plain_tests(inputs, impact, d1, row.get("direction"))
+    return {"label": label, "probability": score(v["probability"]), "impact": score(impact), "main_dimension": d1,
+            "score": signal_risk_score(v["probability"], impact, inputs, dims, d1), "confidence": signal_confidence(inputs),
+            "inputs": inputs, "tests": tests, "summary": signal_summary(label, tests), "rule_version": "s3"}
+
+
 def glance_impact(impact, dimension):
     """"Orders · high" (impact 4-5 high, 3 medium, 1-2 low); None without an impact."""
     i = score(impact)
@@ -352,6 +537,82 @@ def tech_direction(classification, relevance, maturity) -> str:
     if c in TECH_RIVAL_CLASSES and r is not None and r >= 4 and m is not None and m >= 3:
         return "threat"
     return "watch"
+
+
+# ---- plain-English "why this label" for technology, market and partnership cards (owner 2026-10-21, review site only) ----------------
+# Same shape as the signal panel: {label, summary, tests [{key, question, answer, need, pass, basis}]}. The tests are the label's rule.
+
+TECH_CLASS_WORD = {"competitor_advance": "A rival's technology advance", "threat_to_position": "A threat to KSSL's position",
+                   "adoptable": "Something KSSL could adopt", "industry_trend": "An industry trend"}
+RELEVANCE_WORD = {5: "Very high", 4: "High", 3: "Medium", 2: "Low", 1: "Very low"}
+MATURITY_WORD = {5: "Fielded", 4: "In production", 3: "In trials", 2: "Prototype", 1: "Concept"}
+
+
+def tech_basis(classification, relevance, maturity) -> dict:
+    c, r, m = _word(classification), score(relevance), score(maturity)
+    tests = [
+        {"key": "classification", "question": "What kind of development is it?", "answer": TECH_CLASS_WORD.get(c, "Not classified"),
+         "need": "A rival's advance or a threat to KSSL's position", "pass": c in TECH_RIVAL_CLASSES, "basis": "stated" if c else "unknown"},
+        {"key": "relevance", "question": "How much does it matter to KSSL?", "answer": f"{RELEVANCE_WORD[r]} ({r} of 5)" if r else "Not scored",
+         "need": "High or very high (4-5 of 5)", "pass": r is not None and r >= 4, "basis": "stated" if r else "unknown"},
+        {"key": "maturity", "question": "How ready is it?", "answer": f"{MATURITY_WORD[m]} ({m} of 5)" if m else "Not scored",
+         "need": "In trials or further (3-5 of 5)", "pass": m is not None and m >= 3, "basis": "stated" if m else "unknown"},
+    ]
+    label = tech_direction(classification, relevance, maturity)
+    bad = {"classification": f"it is {TECH_CLASS_WORD.get(c, 'not classified').lower()}, not a rival's advance",
+           "relevance": f"it matters to KSSL only at a {RELEVANCE_WORD[r].lower()} level ({r} of 5)" if r else "its relevance to KSSL isn't scored",
+           "maturity": f"it is still at {MATURITY_WORD[m].lower()} stage ({m} of 5)" if m else "its maturity isn't scored"}
+    summary = ("Threat: a rival's advance that matters to KSSL and is ready to use." if label == "threat"
+               else "Watch: " + "; ".join(bad[t["key"]] for t in tests if not t["pass"]) + ".")
+    return {"label": label, "summary": summary, "tests": tests}
+
+
+FIT_WORD = {"strong": "Strong fit", "partial": "Partial fit", "weak": "Weak fit"}
+PURSUE_SUMMARY = {"pursue": "Pursue: a good fit, worth winning, and KSSL can win it.",
+                  "position": "Position: worth winning, but KSSL's chance needs work first.",
+                  "monitor": "Monitor: not worth the effort yet, or KSSL's chance is low.",
+                  "pass": "Pass: KSSL's products don't fit, or a requirement rules KSSL out."}
+
+
+def pursue_basis(fit_grade, attractiveness_score, ability_score, label) -> dict:
+    g, a, w = _word(fit_grade), score(attractiveness_score), score(ability_score)
+    tests = [
+        {"key": "fit", "question": "Do KSSL's products fit what the buyer wants?", "answer": FIT_WORD.get(g, "Not assessed"),
+         "need": "Strong or partial fit", "pass": g in ("strong", "partial"), "basis": "stated" if g else "unknown"},
+        {"key": "attractiveness", "question": "Is it worth winning?", "answer": f"{a} of 5 (value and strategic weight)" if a else "Not scored",
+         "need": "3 of 5 or more", "pass": a is not None and a >= 3, "basis": "derived" if a else "unknown"},
+        {"key": "ability", "question": "Can KSSL win it?", "answer": f"{w} of 5 (fit, eligibility, rivals, KSSL's presence)" if w else "Not scored",
+         "need": "4 of 5 or more to pursue (3 to position)", "pass": w is not None and w >= 4, "basis": "derived" if w else "unknown"},
+    ]
+    label = _word(label) or pursue_label(fit_grade, attractiveness_score, ability_score) or ""      # older assessments stored no label
+    return {"label": label or None, "summary": PURSUE_SUMMARY.get(label, "Not assessed yet."), "tests": tests}
+
+
+OVERLAP_WORD = {"none": "No: it shares no KSSL partner, product or market",
+                "kssl_market": "Yes: it is in a KSSL market",
+                "same_partner_other_scope": "Yes: the partner also works with KSSL, on something else",
+                "same_component": "Yes: the same partner or component KSSL relies on"}
+EFFECT_WORD = {"risk": "A risk for KSSL", "opportunity": "An opportunity for KSSL", "both": "Both a risk and an opportunity", "unknown": "Not clear"}
+OVERLAP_LABEL = {"none": "No KSSL overlap", "kssl_market": "In a KSSL market", "same_partner_other_scope": "Shares a partner",
+                 "same_component": "Same partner or component"}
+
+
+def partnership_basis(overlap_kind, overlap_effect, kssl_partner=None, component=None) -> dict:
+    k, e = _word(overlap_kind), _word(overlap_effect)
+    touch = OVERLAP_WORD.get(k, "Not checked")
+    if kssl_partner and k in ("same_partner_other_scope", "same_component"):
+        touch += f" ({kssl_partner}{', ' + component if component else ''})"
+    tests = [
+        {"key": "overlap", "question": "Does it touch KSSL?", "answer": touch, "need": "Shares a KSSL partner, component or market",
+         "pass": k not in ("", "none"), "basis": "derived" if k else "unknown"},
+        {"key": "effect", "question": "What does it mean for KSSL?", "answer": EFFECT_WORD.get(e, "Not judged"), "need": "Judged from the source",
+         "pass": e in ("risk", "opportunity", "both"), "basis": "stated" if e and e != "unknown" else "unknown"},
+    ]
+    summary = ("No KSSL overlap: tracked for the competitor's picture only." if k in ("", "none")
+               else (lambda t: t[:1].upper() + t[1:])(touch.split(': ', 1)[-1])
+               + ". Effect: " + {"risk": "a risk for KSSL", "opportunity": "an opportunity for KSSL", "both": "both a risk and an opportunity for KSSL"}
+                 .get(e, "not clear yet") + ".")
+    return {"label": k or None, "labelText": OVERLAP_LABEL.get(k), "summary": summary, "tests": tests}
 
 
 def _round_half_up(x: float) -> int:
@@ -550,46 +811,87 @@ def client_market_state(cur, name=None, code=None) -> str:
     return "yes" if _country_names(cur, name, code) & names else "no"
 
 
+def _place_list(text, canon: dict) -> list:
+    """Countries a card names (glance_where: "India", "Greece; Israel", "Global"), canonical lower-case; unknown words are dropped."""
+    parts = re.split(r"[,;/&|]|\band\b|\(|\)", str(text or ""), flags=re.I)
+    out = []
+    for p in parts:
+        c = canon.get(p.strip().lower())
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def relabel_signals(cur, signal_ids=None, ctx: dict | None = None) -> int:
+    """Rule s3 for the given signals (None = all): resolve the label inputs (signal_assessment), then store classification, impact,
+    impact_dimension(_2), risk_score, risk_confidence, label_basis and rule_version. No model call. A card with no probability, no
+    impact and no dimension score (an old-style card) keeps the label it has, but still gets its basis."""
+    import json
+    from prompts.derive_comp import client_market_countries
+    cur.execute("SELECT country_name, iso2, aliases FROM staging.country_reference")
+    canon: dict = {}
+    for r in cur.fetchall():
+        for a in (r["country_name"], r["iso2"], *(r["aliases"] or [])):
+            if a:
+                canon[str(a).strip().lower()] = r["country_name"].lower()
+    markets = client_market_countries(cur)
+    cur.execute("""SELECT pc.sub_type, p.product_name, lower(trim(p.category)) AS cat FROM staging.client_product p
+                   LEFT JOIN staging.product_class pc ON pc.product_side = 'client' AND pc.product_id = p.client_product_id::text
+                   ORDER BY p.client_product_id""")
+    kssl_line, kssl_cat = {}, {}
+    for r in cur.fetchall():
+        if r["sub_type"] and r["sub_type"] != "unknown":
+            kssl_line.setdefault(r["sub_type"], r["product_name"])
+        if r["cat"]:
+            kssl_cat.setdefault(r["cat"], r["product_name"])
+    where = "" if signal_ids is None else "WHERE s.signal_id::text = ANY(%(ids)s)"
+    cur.execute(f"""SELECT s.*, d.glance_move, d.glance_where, d.source_url FROM staging.competitive_signal s
+                    LEFT JOIN staging.competitive_signal_detail d USING (signal_id) {where}""", {"ids": [str(x) for x in signal_ids or []]})
+    rows = [dict(r) for r in cur.fetchall()]
+    n = 0
+    for r in rows:
+        cur.execute("""SELECT p.product_name, lower(trim(p.category)) AS cat, pc.sub_type FROM staging.competitive_product p
+                       LEFT JOIN staging.product_class pc ON pc.product_side = 'competitor' AND pc.product_id = p.product_id::text
+                       WHERE p.product_id IN (SELECT product_id FROM staging.competitive_product_news WHERE article_url = %s)
+                          OR p.product_id = (SELECT product_id FROM staging.story WHERE story_id = %s)""", (r.get("source_url"), r.get("story_id")))
+        prods = [dict(x) for x in cur.fetchall()]
+        product = None
+        same = next((x for x in prods if x["sub_type"] in kssl_line), None)
+        near = next((x for x in prods if x["sub_type"] and x["sub_type"] != "unknown" and x["cat"] in kssl_cat), None)
+        if same:
+            product = {"match": "same", "kssl": kssl_line[same["sub_type"]], "rival": same["product_name"]}
+        elif near:
+            product = {"match": "adjacent", "kssl": kssl_cat[near["cat"]], "rival": near["product_name"]}
+        elif any(x["sub_type"] and x["sub_type"] != "unknown" for x in prods):
+            product = {"match": "none", "rival": prods[0]["product_name"]}
+        a = signal_assessment(r, r.get("glance_move"), _place_list(r.get("glance_where"), canon), markets, product)
+        dims = {d: r.get(f"impact_{d}") for d in IMPACT_DIMENSIONS}
+        impact, d1, d2 = impact_max(dims)
+        if impact is None:
+            impact, d1, d2 = r.get("impact"), r.get("impact_dimension"), r.get("impact_dimension_2")
+        label = a["label"]
+        if r.get("probability") is None and score(impact) is None and r.get("classification"):
+            label = r["classification"]                 # an old-style card with no scores keeps the label it was given
+            a["summary"] = f"{label.capitalize()}: the card was labelled before scoring; it has no impact score."
+        a["label"] = label
+        cur.execute("""UPDATE staging.competitive_signal SET classification = %s, impact = %s, impact_dimension = %s, impact_dimension_2 = %s,
+                              risk_score = %s, risk_confidence = %s, label_basis = %s, rule_version = %s WHERE signal_id = %s""",
+                    (label, impact, d1, d2, a["score"], a["confidence"], json.dumps(a, default=str), RULE_VERSIONS["signal"], r["signal_id"]))
+        cur.execute("UPDATE staging.competitive_signal_detail SET glance_impact = %s WHERE signal_id = %s", (glance_impact(impact, d1), r["signal_id"]))
+        if ctx is not None:
+            ctx["notes"].append(f"signal_label: {r['signal_id']}: {label} score {a['score']} ({a['confidence']}): {a['summary']}")
+        n += 1
+    return n
+
+
 @hook("signal_label")
 def signal_label_hook(cur, ctx: dict) -> None:
-    """For every competitive_signal this run wrote: impact = the maximum of the six impact_* scores, impact_dimension (+ _2 when
-    a second dimension scores 4 or more), classification = signal_label(...) with rule_version, and the detail's glance_impact.
-    A signal with no probability and no dimension score (an old-style card) keeps the label the model gave."""
-    for sid in ids(ctx, "competitive_signal"):
-        r = _row(cur, "competitive_signal", "signal_id", sid)
-        if r is None:
-            continue
-        dims = {d: r.get(f"impact_{d}") for d in IMPACT_DIMENSIONS}
-        if r.get("probability") is None and all(v is None for v in dims.values()):
-            if not r.get("classification"):                 # no scores and no label from the model: the safe default
-                cur.execute("UPDATE staging.competitive_signal SET classification = 'watch', rule_version = %s WHERE signal_id = %s",
-                            (RULE_VERSIONS["signal"], r["signal_id"]))
-                cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, quote, retrieved_at) VALUES "
-                            "('competitive_signal', %s, 'classification', 'judgement', 'judgement', %s, now())",
-                            (str(r["signal_id"]), "watch by rule: the card has no probability and no impact score, so it cannot be a threat."))
-                ctx["warnings"].append(f"signal_label: {sid} has no scores: labelled watch")
-            else:
-                ctx["notes"].append(f"signal_label: {sid}: no scores, label left as written ({r.get('classification')})")
-            continue
-        impact, d1, d2 = impact_max(dims)
-        if impact is None:                                  # no dimension scored: keep a stored impact, if any
-            impact, d1, d2 = r.get("impact"), r.get("impact_dimension"), r.get("impact_dimension_2")
-        tte = effective_time_to_effect(r.get("probability"), r.get("time_to_effect"))
-        if tte == "lt_1y" and _word(r.get("time_to_effect")) in ("", "unknown"):
-            cur.execute("UPDATE staging.competitive_signal SET time_to_effect = %s WHERE signal_id = %s", (tte, r["signal_id"]))
-            cur.execute("DELETE FROM staging.fact_source WHERE table_name = 'competitive_signal' AND row_id = %s AND column_name = 'time_to_effect' AND source_url = 'judgement'",
-                        (str(r["signal_id"]),))
-            cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, quote, retrieved_at) VALUES "
-                        "('competitive_signal', %s, 'time_to_effect', 'judgement', 'judgement', %s, now())",
-                        (str(r["signal_id"]), "lt_1y by rule: the event is done (probability 5), so it already affects the market; the article states no later effect date."))
-            ctx["notes"].append(f"signal_label: {sid}: time_to_effect {r.get('time_to_effect')!r} -> lt_1y (done event)")
-            r["time_to_effect"] = tte
-        label = signal_label(r.get("probability"), impact, r.get("time_to_effect"), r.get("in_client_market"), r.get("subtype_match"), d1, r.get("direction"))
-        cur.execute("""UPDATE staging.competitive_signal SET impact = %s, impact_dimension = %s, impact_dimension_2 = %s, classification = %s, rule_version = %s
-                       WHERE signal_id = %s""", (impact, d1, d2, label, RULE_VERSIONS["signal"], r["signal_id"]))
-        cur.execute("UPDATE staging.competitive_signal_detail SET glance_impact = %s WHERE signal_id = %s", (glance_impact(impact, d1), r["signal_id"]))
-        ctx["notes"].append(f"signal_label: {sid}: {label} (p={r.get('probability')}, impact={impact} {d1}, {r.get('time_to_effect')}, "
-                            f"market={r.get('in_client_market')}, subtype={r.get('subtype_match')}, direction={r.get('direction')})")
+    """For every competitive_signal this run wrote: rule s3 (relabel_signals): impact = the highest impact_* score and its dimension,
+    the label inputs resolved by code before 'unknown', classification = signal_label on them, risk_score, risk_confidence and the
+    plain-English label_basis, and the detail's glance_impact."""
+    sids = ids(ctx, "competitive_signal")
+    if sids:
+        relabel_signals(cur, sids, ctx)
 
 
 def client_name(cur) -> str:
@@ -1062,6 +1364,25 @@ def selftest() -> None:
     assert effective_time_to_effect(5, "unknown") == "lt_1y" and effective_time_to_effect(5, None) == "lt_1y" and effective_time_to_effect(5, "gt_3y") == "gt_3y"
     assert effective_time_to_effect(4, "unknown") == "unknown" and effective_time_to_effect(None, None) == "unknown" and effective_time_to_effect(3, "1_3y") == "1_3y"
     assert signal_label(5, 4, "unknown", "yes", "same", "orders_revenue") == "threat" and signal_label(4, 4, "unknown", "yes", "same", "orders_revenue") == "watch"
+    for args in ((5, 4, "unknown", "yes", "same", "orders_revenue"), (4, 4, "unknown", "yes", "same", "orders_revenue"), (5, 3, "lt_1y", "no", "none", "partnerships"),
+                 (4, 5, "1_3y", "no", "unknown", "supply_chain"), (None, 2, "unknown", "unknown", "unknown", "market_standing")):
+        assert all(t["pass"] for t in signal_label_tests(*args)) == (signal_label(*args) == "threat"), args   # the panel never contradicts the label
+    # rule s3: a contract in a KSSL market on a KSSL product class is a threat even when the model left p / time / market unknown
+    v3 = signal_assessment({"probability": None, "time_to_effect": "unknown", "in_client_market": "unknown", "subtype_match": "unknown",
+                            "direction": "adverse", "impact_orders_revenue": 5}, "Contract", ["india"], {"india"},
+                           {"match": "same", "kssl": "Bharat 52", "rival": "ATHOS"})
+    assert v3["label"] == "threat" and v3["score"] == 100 and all(t["pass"] for t in v3["tests"]) and v3["summary"].startswith("Threat:")
+    assert [t["basis"] for t in v3["tests"]] == ["stated", "derived", "stated", "derived", "derived", "derived"]
+    w3 = signal_assessment({"probability": 4, "time_to_effect": "unknown", "in_client_market": "unknown", "subtype_match": "same",
+                            "direction": "adverse", "impact_orders_revenue": 5}, None, [], set(), None)
+    assert w3["label"] == "watch" and w3["confidence"] == "low" and "doesn't say when" in w3["summary"] and "lt_1y" not in str(w3["tests"])
+    assert _place_list("Greece; Israel and India (via partner)", {"greece": "greece", "israel": "israel", "india": "india"}) == ["greece", "israel", "india"]
+    tb = tech_basis("competitor_advance", 4, 2)
+    assert tb["label"] == "watch" and [x["pass"] for x in tb["tests"]] == [True, True, False] and "prototype" in tb["summary"]
+    assert all(x["pass"] for x in tech_basis("threat_to_position", 5, 3)["tests"]) and tech_basis("threat_to_position", 5, 3)["label"] == "threat"
+    pb = pursue_basis("strong", 4, 4, "pursue")
+    assert all(x["pass"] for x in pb["tests"]) and pb["summary"].startswith("Pursue")
+    assert partnership_basis("none", None)["tests"][0]["pass"] is False and "Thales" in partnership_basis("same_component", "risk", "Thales", "rockets")["summary"]
     assert award_signal_scores("partial", "unknown")["impact"] == 4 and signal_label(5, 4, "lt_1y", "unknown", "same", "orders_revenue") == "watch"
     # -- option rows: counts, labels, ordering, ids
     rows = option_rows("competitive_filter_option", "classification", [("watch", None, 6), ("threat", None, 1), ("fav", None, 0), (None, None, 4), ("", None, 2)],
@@ -1217,5 +1538,11 @@ if __name__ == "__main__":
         selftest_db()
     elif "--selftest" in sys.argv:
         selftest()
+    elif "--relabel-signals" in sys.argv:          # rule s3 over every stored signal, no model call:  python -m prompts.derive --relabel-signals
+        from prompts.run import connect
+        conn = connect()
+        with conn.cursor() as cur:
+            print(f"{relabel_signals(cur)} signals relabelled (rule {RULE_VERSIONS['signal']})")
+        conn.commit()
     else:
         print(__doc__)

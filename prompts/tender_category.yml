@@ -1,0 +1,108 @@
+id: tender_category
+title: Tender category for notices the tender prompt has not read yet (batched, title + CPV + notice text)
+version: 1
+fills: [market_tender]
+shows_on: Tenders page (category tag and the category filter), Market Intelligence category counts
+cadence: daily
+recurring: false          # a tender is judged once: the verdict (category or "none") is a fact_source row, which takes it out of the subject query
+handler: tender_category  # prompts/tender_category.py writes ONLY market_tender.category_id / category_text of a stub in the batch and one
+                          # fact_source row per tender (column category_id, tier judgement, the notice url, the model's reason)
+# Lane C 2026-10-18: 661 of 1,516 tenders had no category. 387 were read by the `tender` prompt, which left the category empty on purpose
+# (a defence item outside the KSSL categories: body armour, holsters, truck spares, ...; its reason is on record). 274 were stubs the
+# tender prompt had not reached (closed / awarded notices of the 2026-10-16/17 harvest). For a stub, code sets the category from the
+# main CPV code where that is certain (backend/harvest_tenders.py stub_categories, run by `--stage`); this prompt judges the rest.
+# When the `tender` prompt later reads the notice, its own judgement replaces this one (the loader rewrites the row and its fact_source).
+# Runs in the routine after `tender` (only stubs the tender step did not reach) and before `tender_assessment` (which waits for the read).
+#  - subject = one batch of up to 50 stubs; the key carries a fingerprint of the batch's tender ids.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
+
+subject:
+  key: batch_key
+  query: |
+    WITH t AS (
+      SELECT t.tender_id,
+             (row_number() OVER (ORDER BY CASE WHEN t.status IN ('open', 'closing') THEN 0 WHEN t.status = 'awarded' THEN 1 ELSE 2 END,
+                                          t.tender_id) - 1) / 50 AS chunk
+      FROM staging.market_tender t
+      WHERE t.category_id IS NULL AND t.description IS NULL
+        AND NOT EXISTS (SELECT 1 FROM staging.fact_source f WHERE f.table_name = 'market_tender' AND f.column_name = 'category_id'
+                        AND f.row_id = t.tender_id::text)
+    )
+    SELECT chunk || ':' || left(md5(string_agg(tender_id::text, ',' ORDER BY tender_id)), 8) AS batch_key, chunk,
+           count(*) AS tenders, string_agg(tender_id::text, ',' ORDER BY tender_id) AS tender_ids
+    FROM t GROUP BY chunk
+    ORDER BY chunk
+  documents:
+    - from: sql                  # one row per stub: title, buyer, country, CPV codes, the start of the notice's own description
+      cap: 60000
+      query: |
+        SELECT 'TENDER' AS doc, t.tender_id::text AS tender_ref, t.title, t.buyer_name, t.country_name, t.status,
+               coalesce(nullif(array_to_string(r.cpv_codes[1:4], ','), ''),
+                        CASE WHEN jsonb_typeof(r.raw->'items') = 'array'
+                             THEN (SELECT string_agg(DISTINCT i->'classification'->>'id', ',') FROM jsonb_array_elements(r.raw->'items') i) END) AS cpv,
+               left(regexp_replace(coalesce(
+                 CASE WHEN jsonb_typeof(r.raw->'description-lot') = 'object'
+                      THEN coalesce(r.raw->'description-lot'->'eng', (SELECT v FROM jsonb_each(r.raw->'description-lot') e(k, v) LIMIT 1))->>0 END,
+                 nullif(r.raw->'tender'->>'description', ''),
+                 nullif(r.raw->>'description', ''),
+                 CASE WHEN jsonb_typeof(r.raw->'items') = 'array'
+                      THEN (SELECT string_agg(i->>'description', '; ') FROM jsonb_array_elements(r.raw->'items') i) END), '\s+', ' ', 'g'), 400) AS notice_text
+        FROM staging.market_tender t
+        JOIN LATERAL (SELECT * FROM staging.tender_raw x WHERE x.tender_id = t.tender_id
+                      ORDER BY x.published_at DESC NULLS LAST LIMIT 1) r ON true
+        WHERE t.tender_id = ANY(string_to_array({{subject.tender_ids}}, ',')::bigint[])
+        ORDER BY t.tender_id
+
+context: [client_products, categories]
+
+task: |
+  TASK tender_category - give the category of each tender notice below. WEB SEARCH is off. Use only the TENDER rows: title, buyer,
+  country, CPV codes (the EU procurement vocabulary; Ukraine's DK021 uses the same codes) and the start of the notice text. The text
+  may be in any language. Do not judge whether {{client.name}} should bid; that is another task.
+
+  CATEGORY: the one name from CATEGORIES that the procured ITEM belongs to (judge the item, not the buyer):
+   - Artillery: guns, howitzers, mortars, barrels, gun parts.
+   - Ammunition: shells, fuzes, cartridges, rockets, grenades, explosives.
+   - Protected & Armoured Vehicles: armoured and protected vehicles.
+   - Armoured Vehicle MRO: repair, overhaul and spares of armoured vehicles.
+   - Small Arms: rifles, pistols, machine guns and their parts.
+   - UAVs & Drones: unmanned aircraft and loitering munitions.
+   - Missiles & Air Defence: missiles, air-defence systems.
+   - Marine / Naval: warships, submarines, naval boats and their parts and support.
+   - Precision Components & Forgings: forged and machined parts.
+   - Other: only for an item like the CLIENT PRODUCTS listed under Other.
+  A bid for several unrelated items: the category of the first item.
+
+  Two answers for a notice that fits no category:
+   - "No category": a defence item or service that fits none of the categories (body armour, uniforms, holsters, ordinary trucks and
+     their spares, radios, training, buildings, fuel, IT for the forces).
+   - "Not defence": not a procurement for armed forces, security forces or the defence industry, or plainly outside defence hardware
+     and its support (food, clothing, furniture, cleaning, medical supplies, office IT, civil works).
+
+  RULES
+   1. One record for EVERY TENDER row, in row order. Never skip a row.
+   2. Judge only what the row states. When the title and text name no item clearly, answer "No category" and say so.
+   3. A CPV code names a kind of item; use it when the title is only a reference number.
+
+  One record per tender, table tender_category:
+   - tender_ref: the TENDER row's tender_ref, exactly
+   - category: a CATEGORIES name exactly as written, or "No category", or "Not defence"
+   - reason: one plain sentence, max 160 characters, naming the item ("Towed 155 mm howitzers are Artillery.")
+
+  CLIENT PRODUCTS ("name (category)"):
+  {{context.client_products}}
+  CATEGORIES:
+  {{context.categories}}
+
+  TENDERS:
+  {{documents}}
+
+output:
+  tender_category:               # documentary only (handler)
+    card: false
+    key: [prompt_id, subject]
+    columns:
+      tender_ref: {required: true}
+      category: {required: true, enum: [Artillery, Ammunition, Protected & Armoured Vehicles, Armoured Vehicle MRO, Small Arms, Marine / Naval,
+                 Missiles & Air Defence, UAVs & Drones, Precision Components & Forgings, Other, No category, Not defence]}
+      reason: {required: true, max: 160}

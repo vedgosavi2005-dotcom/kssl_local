@@ -25,7 +25,7 @@ FAILED_COOLDOWN = timedelta(hours=12)             # a failed subject is not retr
 CADENCE = {"daily": timedelta(days=1), "weekly": timedelta(days=7), "quarterly": timedelta(days=90)}
 LABELS = ("headline", "title", "name", "display_name")
 # a routine runs prompts in dependency order (what a later prompt reads must exist; signal reads the stories news writes); others follow alphabetically
-ORDER = ["news", "signal", "moment", "partnership", "project", "geo", "matchup", "tender", "tender_assessment", "opportunity",
+ORDER = ["news", "signal", "moment", "partnership", "project", "geo", "matchup", "tender", "tender_category", "tender_assessment", "opportunity",
          "top_opportunity", "global_requirement", "innovation_discovery", "innovation_detail", "tech_article", "patent_classification",
          "synthesis", "field_synthesis", "product_program", "client_product_program", "swot", "stock_listing"]
 EVENT_KEYS = ("article_id", "source_id", "doc_id")   # one run per news article / notice / raw document: never re-run by cadence
@@ -278,6 +278,8 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
                     o.status, o.skip_reason = ("dry_run" if dry_run else "skipped"), valid.skip_reason
                     if not dry_run and ld.uses_previous():
                         ld.delete_previous(prev)           # the re-run says "nothing here": drop the earlier rows
+                    if not dry_run and spec.get("on_skip_sql"):   # e.g. innovation_detail: an active row that now fails the gate goes back to hidden
+                        cur.execute(spec["on_skip_sql"], {"key": str(key)})
                 else:
                     o.status, o.error = "rejected", "no records and no skip_reason" + (f"; {valid.rejected[0]}" if valid.rejected else "")
             else:

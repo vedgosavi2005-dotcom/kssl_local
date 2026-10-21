@@ -50,6 +50,7 @@
   .innov .gappill.behind{color:var(--threat);border-color:var(--threat)}
   .innov .gappill.parity{color:var(--watch);border-color:var(--watch)}
   .innov .gappill.ahead{color:var(--ok);border-color:var(--ok)}
+  .innov .gappill.no_offer{color:var(--d-txt-3);border-color:var(--d-txt-3)}
   .tech-det,.tech-dossier{border-left:1px solid var(--d-line);background:var(--l-bg);color:var(--l-txt);overflow:hidden;flex-direction:column;display:none;height:100%;box-sizing:border-box}
   .tech-body.has-sel .tech-det,.tech-body.has-sel .tech-dossier{display:flex;animation:panelSlideWide .42s cubic-bezier(.22,.61,.36,1)}
   @keyframes panelIn{0%{opacity:0;transform:translateX(60px)}60%{opacity:1}100%{opacity:1;transform:translateX(0)}}
@@ -73,7 +74,7 @@
   .tech-kv .v.na,.tech-d-sec .body.na{color:var(--l-txt-4);font-style:italic}
   .tech-impact{background:var(--l-bg-2);border:1px solid var(--l-line-2);padding:13px 15px;margin:15px 18px;font-size:12.5px;color:var(--l-txt);line-height:1.55}
   .tech-verdict-band{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:11px 18px;color:#fff}
-  .tech-verdict-band.behind{background:#b5341f}.tech-verdict-band.parity{background:#9a6a08}.tech-verdict-band.ahead{background:#1f6e45}
+  .tech-verdict-band.behind{background:#b5341f}.tech-verdict-band.parity{background:#9a6a08}.tech-verdict-band.ahead{background:#1f6e45}.tech-verdict-band.no_offer{background:#5d6470}
   .tech-d-sec.lead{background:var(--l-bg);border-bottom:1px solid var(--l-line)}
   .eyebrow.accent{color:var(--l-txt)!important;font-weight:700;font-size:11px;letter-spacing:.1em}
   .tech-d-sec.lead .lead-body{font-size:14px;line-height:1.6;color:var(--l-txt);font-weight:500;word-break:break-word;overflow-wrap:anywhere}

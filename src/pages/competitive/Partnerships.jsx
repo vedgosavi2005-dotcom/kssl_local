@@ -14,7 +14,7 @@ import { companyCountries, facetOptionsByName } from "../../lib/countryFacet";
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
 import { isVisible } from "../../lib/visibility";
-import { ReviewList } from "../../components/review/Review";
+import { REVIEW, ReviewList } from "../../components/review/Review";
 import { buildCategories } from "../../lib/partnerCategories";
 
 /* `sector` is escaped at write time ("Defence &amp; Aerospace") and is formatted consistently here. */
@@ -501,7 +501,7 @@ export default function Partnerships() {
         </div>
         {/* the list sits OUTSIDE the header, so only the companies scroll (the filters stay put) */}
         <div id="patc-list" style={c && !listOpen ? { display: "none" } : undefined}>
-          {ksslCo.id && data.competitors[ksslCo.id] ? (
+          {REVIEW && ksslCo.id && data.competitors[ksslCo.id] ? (      /* KSSL pinned row: review site only (owner 2026-10-21) */
             <div
               className={`pat-li client-li${isClientSel ? " active" : ""}`}
               onClick={() => (isClientSel ? setCid(null) : selectCompetitor(ksslCo.id))}

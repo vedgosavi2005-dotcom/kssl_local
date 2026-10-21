@@ -1258,7 +1258,8 @@ def _selftest() -> None:
     from prompts import run as R
     sp = {pid: render.load_prompt(pid) for pid in render.prompt_ids()}
     assert sorted(pid for pid, x in sp.items() if not R.recurring(x)) == sorted(
-        pid for pid, x in sp.items() if x["subject"]["key"] in R.EVENT_KEYS or x.get("handler")), "event prompts"
+        pid for pid, x in sp.items() if x["subject"]["key"] in R.EVENT_KEYS or x.get("handler")
+        or x["subject"]["key"] == "run_key" or x.get("recurring") is False), "event prompts"   # run_key = entity + document fingerprint; or an explicit recurring: false (innovation_detail v4)
     assert R.recurring(sp["moment"]) and R.recurring(sp["partnership"]) and not R.recurring(sp["signal"]) and not R.recurring(sp["tender"])
     assert R.recurring(dict(sp["signal"], recurring=True)) and not R.recurring(dict(sp["moment"], recurring=False))
     order = R.ordered_ids()

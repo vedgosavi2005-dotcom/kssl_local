@@ -1,9 +1,17 @@
 id: innovation_detail
 title: Innovation detail (one candidate innovation)
-version: 3
+version: 4
 fills: [technology_innovation, technology_innovation_status, technology_innovation_company, technology_innovation_source, technology_innovation_analysis, technology_innovation_milestone, technology_source, technology_company]
 shows_on: "Innovation Pipeline (list row badges; detail panel with why it matters, what's new, competitive landscape, background, status block, milestones, sources)"
 cadence: quarterly               # STAGE 2 of 2: picks up every technology_innovation row left at status 'candidate' by innovation_discovery
+on_skip_sql: "UPDATE staging.technology_innovation SET status = 'candidate' WHERE innovation_id::text = %(key)s AND status = 'active'"   # a skip deletes the detail rows (status, milestones, sources): the row must not stay active without them
+recurring: false                 # v4: active rows are subjects too, so a new version re-evaluates them; they do not re-run every quarter
+# v4 (2026-10-18, the KSSL position pill): client_position was 'unknown' on 31 of 34 because the model only saw CLIENT PORTFOLIO, which
+# fits 82 products into 10,000 characters with ONE spec each (often calibre or length), and the rule text contradicted itself ("only when
+# a figure ..." vs "behind = ... or no product offers it"). Now: the subject carries client_facts = every stored spec and the description
+# of each KSSL product / venture in the innovation's own category; a position is earned by a figure OR by a stated stage of the same
+# capability; "no offering" is a reason, not a position (stays unknown); the _reason starts with its basis, and
+# derive.innovation_stance turns a position whose reason is not "figure:" / "stage:" back to unknown. Active rows are subjects too.
 # v3 (step 7; docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md A.3.2): the GATE. Only a real, sourced innovation becomes 'active'. The record
 # UPDATES the candidate row (same innovation_id). A candidate the sources show is not an innovation (a product, a routine re-order, no
 # named developer, nothing dated) stays at 'candidate' (hidden) with "records": [] and a skip_reason.
@@ -25,10 +33,18 @@ subject:
              ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 1) AS url_2,
            (SELECT ts.url FROM staging.technology_innovation_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
              WHERE s.innovation_id = i.innovation_id AND ts.url !~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)'
-             ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 2) AS url_3
+             ORDER BY s.is_primary DESC, s.innovation_source_id LIMIT 1 OFFSET 2) AS url_3,
+           -- v4: every stored fact of the client's products in this category (technology_category.category_name = client_product.category)
+           COALESCE((SELECT string_agg('- ' || p.product_name || COALESCE(' [status: ' || NULLIF(trim(p.status), '') || ']', '')
+                                       || COALESCE(': ' || left(regexp_replace(NULLIF(trim(p.description), ''), '\s+', ' ', 'g'), 700), '')
+                                       || COALESCE(' | specs: ' || (SELECT string_agg(sp.spec_name || ' ' || COALESCE(NULLIF(trim(sp.value_text), ''), sp.value_numeric::text, '')
+                                                                                       || COALESCE(' ' || NULLIF(trim(sp.unit), ''), ''), '; ' ORDER BY sp.display_order)
+                                                                    FROM staging.client_product_specification sp WHERE sp.client_product_id = p.client_product_id), ''),
+                                       E'\n' ORDER BY p.product_name)
+                     FROM staging.client_product p WHERE p.category = c.category_name), 'none on record') AS client_facts
     FROM staging.technology_innovation i
     JOIN staging.technology_category c ON c.category_id = i.category_id
-    WHERE i.status = 'candidate'
+    WHERE i.status IN ('candidate', 'active')       -- v4: a detailed (active) row is re-evaluated when the version changes (recurring: false)
       -- 2026-10-18 credible sources only (subject filter, task unchanged, no version bump): a blog / copy-aggregator source is never
       -- fed to the model, and a candidate resting only on one is not a subject (it stays hidden)
       AND EXISTS (SELECT 1 FROM staging.technology_innovation_source s JOIN staging.technology_source ts ON ts.source_id = s.source_id
@@ -47,8 +63,8 @@ context: [client, client_portfolio, client_capabilities, competitors]
 task: |
   TASK innovation_detail - build the full record for one candidate innovation: "{{subject.title}}" (category {{subject.category_name}};
   technology kind {{subject.technology_kind}}; found as: {{subject.list_description}}). Today is {{subject.today}}. Use only the DOCUMENTS
-  (the candidate's sources). Fields marked JUDGEMENT are your assessment: base them only on cited facts and on the CLIENT PORTFOLIO
-  lines, give _reason, and cite in _sources the facts they rest on.
+  (the candidate's sources). Fields marked JUDGEMENT are your assessment: base them only on cited facts and on the CLIENT FACTS and
+  CLIENT PORTFOLIO lines, give _reason, and cite in _sources the facts they rest on.
 
   STEP 1 - THE GATE. It passes only if all hold: (a) the documents report a technology developed, tested, demonstrated, ordered or fielded
   by a NAMED developer; (b) it is a technology, not a product by its own name (a gun, vehicle or drone model) and not a routine repeat order;
@@ -63,11 +79,20 @@ task: |
    - competitive_note: JUDGEMENT. 1-3 plain sentences: which other companies the documents name as offering or developing a comparable
      capability, and how they compare on stated figures; null if none is named
    - why_matters_to_kssl: JUDGEMENT. 2-3 plain sentences: how this bears on {{client.name}}'s products. Name the product and the spec from
-     CLIENT PORTFOLIO that is touched, e.g. it outranges a product or creates demand for one. If no product is touched, write exactly:
+     CLIENT FACTS or CLIENT PORTFOLIO that is touched, e.g. it outranges a product or creates demand for one. If no product is touched, write exactly:
      "No <product> product line is touched; kept because <reason>." No revenue claim. Never write "{{client.name}} should".
-   - client_position: JUDGEMENT. behind | parity | ahead | unknown. Other than unknown ONLY when CLIENT PORTFOLIO gives a figure for the same
-     spec on a {{client.name}} product AND the documents give a comparable figure for the innovation. behind = the innovation's figure is
-     better or no {{client.name}} product offers the capability; parity = comparable; ahead = {{client.name}}'s figure is better. Otherwise unknown.
+   - client_position: JUDGEMENT. behind | parity | ahead | unknown. Compare only with a {{client.name}} product or venture in CLIENT FACTS
+     or CLIENT PORTFOLIO, never with general knowledge. A position is earned in one of two ways:
+     (figure) a {{client.name}} product states a figure for the same spec (same quantity, same basis) and the documents state the innovation's
+     figure for it: behind = the innovation's figure is better; parity = within 10% of each other or the same stated class; ahead =
+     {{client.name}}'s figure is better.
+     (stage) a {{client.name}} product or venture is stated to have the same capability (the same function, not only the same category), and
+     its stage is stated in its facts: in service or delivered = 5; ordered or in production = 4; in trials = 3; shown, unveiled or prototype
+     = 2; in development, planned or MoU = 1. Compare it with maturity_level: behind = the innovation is at a later stage; parity = the same stage; ahead =
+     {{client.name}}'s is at a later stage.
+     Otherwise unknown. No {{client.name}} product with the capability is NOT a position: it stays unknown. The _reason for client_position
+     starts with one of "figure:", "stage:", "no offering:" ({{client.name}} has no product or venture with this capability) or
+     "no comparable fact:", then names the {{client.name}} product and the two figures or stages compared (or what is missing).
    - maturity_level: JUDGEMENT, 1-5. The furthest stage the documents REPORT as done: 1 concept or research, 2 prototype built or shown,
      3 trials with a result, 4 production (a production contract or serial production started), 5 fielded (in service or delivered to a user).
    - maturity: a short phrase, max 100 characters, for that stage as the documents describe it, e.g. "Live-fire trials completed"
@@ -110,6 +135,9 @@ task: |
   {{context.client_portfolio}}
   CLIENT CAPABILITIES (lines, ventures, capabilities and what partners supply):
   {{context.client_capabilities}}
+  CLIENT FACTS (every stored fact of the {{client.name}} products and ventures in category {{subject.category_name}}: "- name [status]:
+  description | specs: spec value unit; ..."):
+  {{subject.client_facts}}
   COMPETITORS:
   {{context.competitors}}
 

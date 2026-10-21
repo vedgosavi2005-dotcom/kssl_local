@@ -301,11 +301,14 @@ export default function Geo() {
       // `pair` is rehydrated from localStorage: a company dropped from a later
       // dataset would otherwise take the whole panel down on mount
       const c = data.geoComps.find((x) => x.id === pair.cid);
-      const ovPanel = c && c.isBf ? geo.geoOwnPanel(pair.country) : "";
-      return (
-        (c && !c.isBf ? geo.geoProductListHtml(pair.cid, cmp && cmp.prod) : "") +
-        ovPanel +
-        prods
+      const own = !!(c && c.isBf);
+      const ovPanel = own ? geo.geoOwnPanel(pair.country) : "";
+      /* KSSL's own market reads like a rival's (owner 2026-10-22: "make the geo footprint page of KSSL like the others'"):
+         its product list first, under the same heading style, then the rivals it meets there */
+      const ownHead = own
+        ? `<div class="geo-pl-h"><span class="geo-pl-t">Products ${escAll(clientName)} sells</span><span class="geo-pl-n">${prods.length} product${prods.length === 1 ? "" : "s"} in this market</span></div>`
+        : "";
+      const prodHtml = prods
           .map((p, i) => {
             return `<div class="geo-rel-item prod${i === prodIndex ? " active" : ""}" data-pi="${i}"><span class="ri-act ${cssWord(p.c)}"></span><div class="ri-main"><div class="ri-nm">${escAll(p.name)} ${
               p.src === "syn"
@@ -315,8 +318,8 @@ export default function Geo() {
               p.val && p.val !== "n/d" ? ` · ${escAll(p.val)}` : ""
             }</span></div><span class="ri-chev">›</span></div>`;
           })
-          .join("")
-      );
+          .join("");
+      return own ? ownHead + prodHtml + ovPanel : geo.geoProductListHtml(pair.cid, cmp && cmp.prod) + prodHtml;
     }
     if (resolved.kind === "countries") {
       const c = data.geoComps.find((x) => x.id === resolved.cid);

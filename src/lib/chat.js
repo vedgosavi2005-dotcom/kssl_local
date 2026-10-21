@@ -90,7 +90,8 @@ export function scopedAnswer(d, ctx, question) {
     const iv = ctx.data;
     if (has("matter", "why", "impact", "important", "so what")) return clean(iv.impact);
     if (has("position", "ahead", "behind", "parity", "stand", "where"))
-      return `${clientName} is <b>${{ behind: "BEHIND", parity: "AT PARITY", ahead: "AHEAD" }[iv.gap]}</b> here. ${clean(iv.compNote)}`;
+      return iv.gap === "no_offer" ? `${clientName} has <b>NO OFFERING</b> here. ${clean(iv.compNote)}`
+        : `${clientName} is <b>${{ behind: "BEHIND", parity: "AT PARITY", ahead: "AHEAD" }[iv.gap]}</b> here. ${clean(iv.compNote)}`;
     if (has("new", "latest", "recent", "update", "happening")) return clean(iv.whatsNew);
     if (has("action", "should", "recommend", "do"))
       return `${clean(iv.whatsNew)} ${clean(iv.body)}`;

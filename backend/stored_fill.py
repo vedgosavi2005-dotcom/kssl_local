@@ -82,7 +82,69 @@ def fill_moment_images(cur) -> int:
     return cur.fetchone()[0]
 
 
+CLIENT_TAG = "client_program:"
+INDIA = ("india", "indian", "drdo", "arde", "hemrl", "ordnance factor", "bdl", "bharat dynamics")   # an Indian buyer by name only
+STAGE_ACTIVITY = {"contract signed": "Sale", "delivering": "Sale", "delivered": "Sale", "in service": "Sale", "trials": "Trials",
+                  "development": "Development"}
+
+
+def client_geo_row(g: dict) -> dict | None:
+    """One KSSL footprint row from a KSSL programme whose buyer is Indian (owner 2026-10-22: KSSL's geo page lists its products like a
+    rival's). None when the buyer is not clearly Indian (no country is guessed)."""
+    owner = str(g.get("owner") or "").strip()
+    if not owner or not any(w in owner.lower() for w in INDIA):
+        return None
+    stage = str(g.get("status") or "").strip()
+    act = STAGE_ACTIVITY.get(stage.lower()) or ("Development" if str(g.get("program_type") or "").lower() == "development" else "Programme")
+    gid = int(uuid.uuid5(NS, f"client-geo|{g['program_id']}").int >> 65)
+    return {"geo_product_id": gid, "product_name": g["product_name"][:120], "product_range": (g.get("category") or "")[:120] or None,
+            "activity_type": act, "customer_name": owner[:120], "record_note": f"{g.get('program_name')} ({stage or 'stage not stated'})"[:2000], "since_date": g.get("start_date")}
+
+
+def fill_client_geo(cur) -> int:
+    """KSSL's India footprint rows from its programmes (client_product_program, sourced): one row per programme with an Indian buyer,
+    under KSSL's India presence; fact_source copied from the programme, tagged document_id 'client_program:<id>' (re-run replaces)."""
+    cur.execute("""SELECT pr.presence_id FROM staging.competitive_geo_company_presence pr JOIN staging.competitive_geo_location l USING (location_id)
+                   WHERE pr.company_role = 'client' AND l.country_name = 'India' LIMIT 1""")
+    r = cur.fetchone()
+    if not r:
+        return 0
+    presence = r[0]
+    cur.execute("SELECT row_id FROM staging.fact_source WHERE table_name = 'competitive_geo_product' AND document_id LIKE %s", (CLIENT_TAG + "%",))
+    old = [x[0] for x in cur.fetchall()]
+    if old:
+        cur.execute("DELETE FROM staging.competitive_geo_product WHERE geo_product_id::text = ANY(%s)", (old,))
+        cur.execute("DELETE FROM staging.fact_source WHERE table_name = 'competitive_geo_product' AND document_id LIKE %s", (CLIENT_TAG + "%",))
+    cur.execute("""SELECT g.program_id, g.program_name, g.owner, g.status, g.program_type, g.start_date, p.product_name, p.category
+                   FROM staging.client_product_program g JOIN staging.client_product p USING (client_product_id)""")
+    cols = [d[0] for d in cur.description]
+    n = 0
+    for g in (dict(zip(cols, x)) for x in cur.fetchall()):
+        row = client_geo_row(g)
+        if row is None:
+            continue
+        cur.execute("""SELECT source_url, source_tier, publisher, quote FROM staging.fact_source
+                       WHERE table_name = 'client_product_program' AND row_id = %s AND source_url ~ '^https?://' LIMIT 3""", (str(g["program_id"]),))
+        srcs = cur.fetchall()
+        if not srcs:
+            continue                                 # a footprint row needs a source
+        cur.execute("""INSERT INTO staging.competitive_geo_product (geo_product_id, presence_id, product_name, product_range, activity_type,
+                              customer_name, record_note, since_date) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (row["geo_product_id"], presence, row["product_name"], row["product_range"], row["activity_type"], row["customer_name"],
+                     row["record_note"], row["since_date"]))
+        for s in srcs:
+            cur.execute("""INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, document_id, retrieved_at)
+                           VALUES ('competitive_geo_product', %s, 'product_name', %s, %s, %s, %s, %s, now())""",
+                        (str(row["geo_product_id"]), s[0], s[1], s[2], s[3], f"{CLIENT_TAG}{g['program_id']}"))
+        n += 1
+    return n
+
+
 def _selftest() -> None:
+    cg = client_geo_row({"program_id": 5, "program_name": "Emergency Procurement of Kalyani M4", "owner": "Indian Ministry of Defence",
+                         "status": "Delivering", "program_type": "Procurement", "start_date": None, "product_name": "Kalyani M4", "category": "Protected"})
+    assert cg["activity_type"] == "Sale" and cg["customer_name"] == "Indian Ministry of Defence" and "(Delivering)" in cg["record_note"]
+    assert client_geo_row({"program_id": 6, "owner": "Armenian MoD", "status": "x", "product_name": "MArG"}) is None
     g = {"geo_product_id": 7, "product_name": "Raven B (small UAS)", "customer_name": " Netherlands MoD ", "activity_type": "Export",
          "quantity": "72 systems", "reported_value": None, "since_date": None, "country_name": "Netherlands", "product_id": "p1"}
     r = program_row(g)
@@ -106,6 +168,7 @@ def main(argv=None) -> int:
     with conn.cursor() as cur:
         print(f"programs from sales rows: {fill_programs(cur)} written")
         print(f"movement images: {fill_moment_images(cur)} movements now have one")
+        print(f"KSSL India footprint rows from its programmes: {fill_client_geo(cur)} written")
     conn.rollback() if a.dry_run else conn.commit()
     print("dry run: rolled back" if a.dry_run else "committed")
     return 0

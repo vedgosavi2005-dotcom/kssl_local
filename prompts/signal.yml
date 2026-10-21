@@ -38,6 +38,8 @@ subject:                         # one run per row; key = what makes a run uniqu
       AND n.category IS NOT NULL AND n.category NOT IN ('Stock & market', 'Non-defence business', 'Other')
       AND NOT EXISTS (SELECT 1 FROM staging.fact_source f WHERE f.table_name = 'competitive_news_article'   -- the news job found the story is not about the company
                        AND f.column_name = 'not_about_company' AND f.row_id = n.article_id::text)
+      AND NOT EXISTS (SELECT 1 FROM staging.prompt_run r WHERE r.prompt_id = 'signal' AND r.subject_key = n.article_id::text   -- paywalled / moved:
+                       AND r.status = 'failed' AND r.error ~ '^DocumentError: .*(http 40[13]|http 30[12]|no readable article text)')  -- no retry (2026-10-21)
     ORDER BY n.published_date DESC NULLS LAST
   documents:
     - from: source_document      # the raw layer's stored text first (no fetch) ...

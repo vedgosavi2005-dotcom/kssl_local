@@ -42,7 +42,7 @@ function Block({ title, note, empty, rows, head, cols, children, className = "" 
   );
 }
 
-export default function MarketOutlook({ data, o }) {
+export default function MarketOutlook({ data, o, onSegment }) {
   const win = o.winners;
   const seg = o.segments;
   const bu = o.buyers;
@@ -61,7 +61,13 @@ export default function MarketOutlook({ data, o }) {
       >
         {seg.map((r) => (
           <tr key={r.segment}>
-            <td className="ovt-t">{r.segment}</td>
+            <td className="ovt-t">
+              {onSegment ? (
+                <button className="od-seg-link" onClick={() => onSegment(r.segment)} title={`Open all ${r.segment} tenders`} type="button">
+                  {r.segment} <span aria-hidden="true">→</span>
+                </button>
+              ) : r.segment}
+            </td>
             <td className="od-act">
               <span className="od-big">{r.recent}</span>
               {r.change != null ? (

@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { srcChips } from "../../lib/html";
+import { ComputedTrace, REVIEW } from "../review/Review";
+import { amountText } from "../../lib/tenderValue";
+
+/* review copy: one line per counted record (tenders: title · country · amount) */
+const traceItems = (rows) =>
+  rows.map((t) => ({ src: t._src, label: [t.title || t.id, t.country, amountText(t.valueAmount, t.valueCurrency)].filter(Boolean).join(" · ") }));
 
 /* Count-up on the numeric value. The original animated by writing into the text node
    directly; here it is state, so React still owns the DOM. Non-numeric values (—, a
@@ -116,7 +122,10 @@ export default function MetricsStrip({ metrics, active, onPick, inert = false })
               "Competitive threats" is not more legible for having a red circle in front
               of it. `m.dot` is still served and still on the metric; nothing else reads
               it, so restoring the dot is restoring this one span. */}
-          <span className="ml">{m.l}</span>
+          <span className="ml">
+            {m.l}
+            {REVIEW && m.rows && <ComputedTrace title={m.l} note={`${m.v}: ${m.how || "counted from these records"}`} items={traceItems(m.rows)} />}
+          </span>
           {/* a long value (several currencies) steps down a size and stops at two lines; the whole text is the tooltip */}
           <span className={`mv${String(m.v || "").length > 14 ? " long" : ""}`} title={String(m.v || "").length > 14 ? String(m.v) : undefined}>
             <CountUp text={m.v} />

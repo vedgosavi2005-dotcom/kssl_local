@@ -22,6 +22,7 @@ subject:
            t.local_presence_requirement, t.registration_requirement, t.status, t.awarded_to, t.award_value_text
     FROM staging.market_tender t
     WHERE t.status IN ('open', 'closing', 'awarded', 'closed') AND t.category_id IS NOT NULL AND t.category_text <> 'Other'
+      AND t.description IS NOT NULL          -- a stub (category by CPV code or tender_category) waits until the tender prompt has read it
       AND NOT (t.status IN ('awarded', 'closed') AND coalesce(t.closing_date, t.award_date, t.published_date, current_date) < current_date - 365)
     ORDER BY
       CASE WHEN t.status IN ('open', 'closing') THEN 0 WHEN t.status = 'awarded' THEN 1 ELSE 2 END,

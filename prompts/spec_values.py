@@ -92,9 +92,30 @@ NOTE_BLOCK = {"max", "maximum", "min", "minimum", "and", "or", "to", "from", "up
               "loaded", "empty", "dry", "laden", "unladen", "combat", "gross", "net", "cruise", "cruising", "standard", "burst",
               "sustained", "initial", "effective", "extended", "range", "with", "without", "plus", "each", "per-"}
 _APPROX = re.compile(r"^(?:~|≈|about|approx\.?|approximately|around|circa|c\.|nearly|almost|roughly|est\.?|estimated|typically)\s*", re.I)
-_MIN = re.compile(r"^(?:over|more than|greater than|above|at least|exceeding|in excess of|>=|>|≥)\s*", re.I)
+_MIN = re.compile(r"^(?:over|more than|greater than|above|beyond|at least|exceeding|in excess of|>=|>|≥)\s*", re.I)
 _MAX = re.compile(r"^(?:up to|upto|under|below|less than|at most|no more than|within|<=|<|≤)\s*", re.I)
-_SUFFIX_MIN = re.compile(r"(?<=\d)\s*\+(?=\s|$)|\s+(?:or more|and above|and over)\b", re.I)
+_SUFFIX_MIN = re.compile(r"(?<=\d)\s*\+(?=\s|$)|(?<=[a-z%°/])\+$|\s+(?:or more|and above|and over)\b", re.I)    # '40+ km', '38 km+'
+_MINUTE_UNIT = re.compile(r"(?<=\d)\s*mins?\b\.?", re.I)          # '3 min' is a unit, not the qualifier 'min'
+_RPM_COND = re.compile(r"\s*(?:@|\bat)\s*[\d,.]+(?:\s*-\s*[\d,.]+)?\s*(?:rpm|r/min)\b\.?", re.I)   # '330 hp @ 2,600 rpm': engine speed
+_N_ROUND = re.compile(r"(\d)\s*-\s*(rounds?|rds?|shots?)\b", re.I)                                # '30-round box' -> '30 rounds box'
+_TRAILING_NOTE = re.compile(r",\s*[^\d,;()]*$")                    # '30 rds, high-strength polymer': a trailing comma clause without figures
+_ANG = r"(?:°|deg(?:rees?)?|mils?)"
+_PLUSMINUS = re.compile(rf"^±\s*(\d+(?:\.\d+)?)\s*({_ANG})?(.*)$", re.I)
+_BOTH_SIDES = re.compile(rf"^(\d+(?:\.\d+)?)\s*({_ANG})\s*(?:right and left|left and right|left/right|right/left|l/r|r/l|each side|either side|"
+                         rf"on each side|on either side)\b(.*)$", re.I)
+_RIGHT_LEFT = re.compile(rf"^(\d+(?:\.\d+)?)\s*({_ANG})?\s*right\s*(?:and|,|/)\s*(\d+(?:\.\d+)?)\s*({_ANG})\s*left\b(.*)$", re.I)
+
+
+def _arc(s: str) -> str:
+    """A traverse stated per side ('±37.5°', '30 deg right and left', '30 deg right and 40 deg left', '400 mils L/R') is the arc
+    '-L to +R <unit>' (left negative), so it compares by its total span like any other arc."""
+    m = _RIGHT_LEFT.match(s)
+    if m:
+        return f"-{m[3]} to +{m[1]} {m[4]}{m[5]}"
+    m = _BOTH_SIDES.match(s) or _PLUSMINUS.match(s)
+    if m and m[2]:
+        return f"-{m[1]} to +{m[1]} {m[2]}{re.sub(r'^[ ,]*from (?:the )?cent(?:er|re) ?line', '', m[3], flags=re.I)}"
+    return s
 _SUFFIX_MAX = re.compile(r"\s+(?:or less|and below|and under)\b", re.I)
 _QUAL_WORDS = re.compile(r"(?:^|\s)(?:max|min|maximum|minimum|approx|approximately|plus|typical|from|to\s*$)\b|~|≈|[<>≥≤]|\+/-|±", re.I)
 
@@ -118,7 +139,7 @@ def _split_qualifier(s: str):
     return qual, s
 
 
-_DIGIT_UNIT = re.compile(r"\d\s*[a-zA-Z%°/]")
+_DIGIT_UNIT = re.compile(r"(?<![A-Za-z\d.,])\d[\d.,]*\s*[a-zA-Z%°/]")      # a figure with a unit; not a name like 'F1 ball' or 'M107 HE'
 _PAREN = re.compile(r"\s*\([^()]*\)")
 
 
@@ -165,7 +186,10 @@ def parse_value(text, unit_hint=None):
     s = s.replace("�", "").strip().strip("'` ").strip()
     if s.startswith('"'):
         s = s.lstrip('"').rstrip('"').strip()               # a trailing " after a figure is the inch sign: kept
-    if not s or len(s) > 80:
+    s = _RPM_COND.sub("", s)
+    s = _N_ROUND.sub(r"\1 \2", s)
+    s = _arc(s)
+    if not s or len(s) > 300 or len(_PAREN.sub("", s)) > 80:    # a long source note in brackets is fine; a long value is not
         return None
     # parentheticals: a note ('(army-technology)', '(CN98)') is dropped; one that holds another figure is ambiguous
     outer = _PAREN.sub("", s).strip()
@@ -178,11 +202,13 @@ def parse_value(text, unit_hint=None):
                     and abs(a.lo * a.factor - b.lo * b.factor) <= D("0.03") * max(abs(a.lo * a.factor), abs(b.lo * b.factor), D("1e-9"))):
                 return None
     s = outer
+    if re.search(r"\d", s.split(",")[0]):
+        s = _TRAILING_NOTE.sub("", s).strip()
     bare = re.sub(r"\s(?:or more|or less|and above|and over|and below|and under)\b", "", s.lower())     # qualifiers read below
     if not s or ";" in s or " or " in bare or " and " in bare or "," in re.sub(r"\d,\d{3}", "", s):
         return None
     qual, s = _split_qualifier(s)
-    if s is None or _QUAL_WORDS.search(s):
+    if s is None or _QUAL_WORDS.search(_MINUTE_UNIT.sub(" minutes", s)):
         return None
     low = re.sub(r"(\d)\s*-\s*(cal)", r"\1 \2", s.lower())        # 52-cal -> 52 cal
     # 'L/52' and '52 cal' / '52-cal' / '52 calibres'
@@ -371,6 +397,16 @@ def _selftest() -> None:
                 "diesel", "", None, "200 m max", "30 t loaded", "5 km at 3 km", "10 gr", "5 ton", "97.5 kg (300 lb)", "5 km (8 km)", "7 widgets", "46 t (40000 kg)", "8 - 4 km", "1 or 2"):
         assert p(bad) is None, bad
     assert p("5", "widgets") is None
+    # minutes are a unit (the qualifier 'min' must not swallow them), and other forms seen in stored specs
+    assert p("2.5 min") == (D("2.5"), D("2.5"), "min", "time") and p("16 rounds in 3 min")[:3] == (D(16) / D(3), D(16) / D(3), "rounds/min")
+    assert p("330 hp @ 2,600 rpm") == (D(330), D(330), "hp", "power") and p("30-round detachable box") == (D(30), D(30), "round", "count")
+    assert p("30 rds, high-strength polymer") == (D(30), D(30), "rds", "count") and p("920 m/s nominal (F1 ball)")[:3] == (D(920), D(920), "m/s")
+    assert p("800 km (Army Recognition: driving range on a single tank; Bharat Forge: combat radius approx.)")[:3] == (D(800), D(800), "km")
+    assert p("30 deg right and left") == (D(-30), D(30), "deg", "angle") and p("±37.5° from centerline")[:2] == (D("-37.5"), D("37.5"))
+    assert p("30 deg right and 40 deg left") == (D(-40), D(30), "deg", "angle") and p("400 mils L/R")[:3] == (D(-400), D(400), "mils")
+    assert parse_value("Beyond 36 km").qual == "min" and parse_value("38 km+").qual == "min" and parse_value("38 km+").hi == 38
+    for bad in ("min 4.5 km", "2 min 30 s", "155 mm, 52 cal", "1 m without preparation"):
+        assert p(bad) is None, bad
     # qualifiers
     q = lambda t, u=None: (lambda r: None if r is None else (r.hi, r.unit, r.qual))(parse_value(t, u))
     assert q("over 40 km") == (D(40), "km", "min") and q("more than 40") == (D(40), "", "min") and q("more than 40", "km") == (D(40), "km", "min")

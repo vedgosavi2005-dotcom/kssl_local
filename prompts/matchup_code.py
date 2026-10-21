@@ -181,14 +181,21 @@ def collect_labels(cur) -> dict:
         if v and len(info["examples"]) < 3 and v not in info["examples"]:
             info["examples"].append(v[:60])
 
+    def add_row(cat, label, side, unit, value):
+        add(cat, label, side, unit, value)
+        segs = split_blob(value)
+        if len(segs) >= 2:                      # a combined spec line: its segment labels are mapped too (resolve_sides reads them)
+            for lab, val in segs:
+                add(cat, lab, side, None, val)
+
     cur.execute("""SELECT lower(trim(p.category)) AS cat, s.spec_name AS l, s.unit, coalesce(s.value_text, s.value_numeric::text) AS v
                    FROM staging.client_product_specification s JOIN staging.client_product p USING (client_product_id)""")
     for r in cur.fetchall():
-        add(r["cat"], r["l"], "client", r["unit"], r["v"])
+        add_row(r["cat"], r["l"], "client", r["unit"], r["v"])
     cur.execute("""SELECT lower(trim(p.category)) AS cat, s.spec_label AS l, s.unit, s.spec_value AS v
                    FROM staging.competitive_product_specification s JOIN staging.competitive_product p USING (product_id)""")
     for r in cur.fetchall():
-        add(r["cat"], r["l"], "comp", r["unit"], r["v"])
+        add_row(r["cat"], r["l"], "comp", r["unit"], r["v"])
     return cats
 
 
@@ -292,13 +299,25 @@ def build_dictionary(conn, cats: dict, only: str | None, dry: bool, budget: Budg
             ids = set(range(1, len(batch) + 1))
             got, problems = {}, []
             prompt = prompt_for(name, batch, info, known_lines(cur, name))
-            env = call(budget, f"{name} batch {bi}/{len(batches)}", SYSTEM, prompt)
+            try:
+                env = call(budget, f"{name} batch {bi}/{len(batches)}", SYSTEM, prompt)
+            except RuntimeError as e:                                 # a refused / failed batch stays unmapped (retried next run);
+                if "budget reached" in str(e):                        # the other categories and the compare still run
+                    raise
+                print(f"  skipped: {e}", flush=True)
+                continue
             got, problems = validate_items(env, ids)
             if len(got) < len(ids):                                   # re-ask once for the gaps
                 missing = sorted(ids - set(got))
                 print(f"  {len(missing)} of {len(ids)} labels missing/invalid ({'; '.join(problems[:3])}); re-asking once", flush=True)
                 sub = [batch[i - 1] for i in missing]
-                env2 = call(budget, f"{name} batch {bi} gap re-ask", SYSTEM, prompt_for(name, sub, info, known_lines(cur, name)))
+                try:
+                    env2 = call(budget, f"{name} batch {bi} gap re-ask", SYSTEM, prompt_for(name, sub, info, known_lines(cur, name)))
+                except RuntimeError as e:
+                    if "budget reached" in str(e):
+                        raise
+                    print(f"  gap re-ask skipped: {e}", flush=True)
+                    env2 = {}
                 got2, _ = validate_items(env2, set(range(1, len(sub) + 1)))
                 for j, i in enumerate(missing, 1):
                     if j in got2:
@@ -563,19 +582,54 @@ def condition_key(base: str, cond: str, keys) -> str | None:
     return best[1] if best else None
 
 
+_SEG_SPLIT = re.compile(r";\s*|,\s+(?=[A-Za-z])")
+_SEG = re.compile(r"^\s*([A-Za-z][A-Za-z .()/'-]{1,60}?)\s*[:=]?\s+((?:[~<>≈≥≤]\s*|(?:about|approx\.?|over|up to|more than|less than|beyond)\s+)?[-+±]?\d.*)$", re.I)
+
+
+_SEG_NOT_LABEL = re.compile(r"^(?:over|up to|about|approx\.?|approximately|around|max|min|maximum|minimum|more than|less than|beyond|"
+                            r"under|below|above|at least|at most|from|to|and|or|with|by|of|at|in|on|for|the|a|an|some|nearly|almost)$", re.I)
+
+
+def split_blob(text) -> list:
+    """[(label, value)] of a combined spec line stored under a descriptive label ('Note': 'Crew 2 + 12; kerb weight 13,000 kg; GVM
+    15,300 kg' -> ('kerb weight', '13,000 kg'), ...). A segment is used only as 'words then a figure'; everything else is ignored."""
+    if not text or len(str(text)) > 1500:
+        return []
+    out = []
+    for seg in _SEG_SPLIT.split(str(text)):
+        m = _SEG.match(seg.strip(" ."))
+        if m and len(m.group(2)) <= 80 and not _SEG_NOT_LABEL.match(m.group(1).strip()):
+            out.append((m.group(1).strip(" :-"), m.group(2).strip()))
+    return out
+
+
 def resolve_sides(raws: list, dic: dict) -> dict:
     """key -> Side. `dic` maps norm label -> KeyInfo. A label the dictionary does not know, or marks descriptive, is dropped.
     Several specs of one side under one key: identical parsed values collapse; differing ones make the side ambiguous.
     Several values in one cell ('30 km (HE), 40 km (ERFB-BB)'): each value whose condition matches a dictionary key of the
     category goes to that key (max_range_he, max_range_erfb_bb); the base key takes the highest value when higher is better
-    (marked), and nothing otherwise."""
+    (marked), and nothing otherwise.
+    A combined spec line under a descriptive label ('Note': 'kerb weight 13,000 kg; payload 2,000 kg') gives a key only through a
+    segment whose own label is a comparable dictionary label, and only when no spec row of the product states that key (marked)."""
     keys = {ki.key for ki in dic.values() if ki.comparable}
     cand = defaultdict(list)
+    blob = defaultdict(list)
     for r in raws:
         ki = dic.get(norm_label(r.label))
-        if ki is None or not ki.comparable or r.text in (None, ""):
+        if r.text in (None, ""):
+            continue
+        if ki is None or not ki.comparable:
+            for lab, val in split_blob(r.text):
+                k2 = dic.get(norm_label(lab))
+                if k2 is not None and k2.comparable:
+                    blob[k2.key].append((Raw(lab, val, None, r.url, r.group, r.order), parse_value(val, None), k2, clean_label(r.label)))
             continue
         cand[ki.key].append((r, parse_value(r.text, r.unit), ki))
+    from_blob = {}
+    for k, items in blob.items():
+        if k not in cand:
+            cand[k] = [(r, p, ki) for r, p, ki, _ in items]
+            from_blob[k] = items[0][3]
     out, extra = {}, {}
     for key, items in cand.items():
         first = items[0][0]
@@ -590,10 +644,11 @@ def resolve_sides(raws: list, dic: dict) -> dict:
                     sub = condition_key(key, cond, keys)
                     if sub and sub not in cand and sub not in extra:
                         extra[sub] = Side(f"{r.label} ({cond})", seg, r.unit, pp, r.url, r.group, r.order, False, [r.url] if r.url else [])
-                if ki.better == "higher":
-                    top = max(pm, key=lambda t: t[1].hi * t[1].factor)
+                if ki.better in ("higher", "lower"):                  # the best stated value, marked (by day vs at night: the day one)
+                    hi = ki.better == "higher"
+                    top = (max if hi else min)(pm, key=lambda t: (t[1].hi if hi else t[1].lo) * t[1].factor)
                     out[key] = Side(r.label, r.text, r.unit, top[1], r.url, r.group, r.order, False, urls,
-                                    note=f"highest of {len(pm)} stated values ({'; '.join(t[2] for t in pm)})")
+                                    note=f"{'highest' if hi else 'lowest'} of {len(pm)} stated values ({'; '.join(t[2] for t in pm)})")
                     continue
         if len(items) == 1 or not parsed:                             # one spec, or none holds a figure: the first
             r, p = (parsed[0] if parsed else (first, None))
@@ -606,6 +661,9 @@ def resolve_sides(raws: list, dic: dict) -> dict:
             out[key] = Side(first.label, "; ".join(texts), None, None, first.url, first.group, first.order, True, urls)
     for k, sd in extra.items():
         out.setdefault(k, sd)
+    for k, src in from_blob.items():
+        if k in out and not out[k].ambiguous:
+            out[k].note = "; ".join(x for x in (out[k].note, f"taken from the stored line '{src}'") if x)
     return out
 
 
@@ -1151,6 +1209,14 @@ def _selftest() -> None:
     by2 = {r.key: r for r in rows2}
     assert by2["max_range"].state == "comparable" and by2["max_range"].side == "equal" and "highest of 2" in by2["max_range"].why
     assert by2["max_range_he"].side == "equal" and by2["max_range_he"].client_url == "https://c/1" and by2["max_range_erfb_bb"].state == "one_sided"
+    assert split_blob("Crew 2 + 12; kerb weight 13,000 kg; GVM 15,300 kg, payload 2,000 kg; automatic") == [
+        ("Crew", "2 + 12"), ("kerb weight", "13,000 kg"), ("GVM", "15,300 kg"), ("payload", "2,000 kg")]
+    nb = resolve_sides([Raw("Note", "Speed 80 km/h; Max range ~38 km; turning circle 16.5 m", None, "https://k/n"), Raw("Role", "x")], dic2)
+    assert nb["speed"].parsed.hi == 80 and "stored line 'Note'" in nb["speed"].note and nb["max_range"].parsed.hi == 38 and set(nb) == {"speed", "max_range"}
+    nb = resolve_sides([Raw("Note", "Max range 38 km"), Raw("Range", "40 km")], dic2)
+    assert nb["max_range"].parsed.hi == 40 and nb["max_range"].note is None           # a spec row of the key wins over a line segment
+    ca = resolve_sides([Raw("Coming into action", "1.5 min by day; 2 min at night")], dic2)["coming_into_action"]
+    assert ca.parsed.lo == D("1.5") and ca.parsed.unit == "min" and ca.note.startswith("lowest of 2")
     kb = resolve_sides([Raw("Range", "over 40 km")], dic2)
     cb = resolve_sides([Raw("Max range", "30", "km")], dic2)
     r5 = compare_key("max_range", ki2["max_range"], cb["max_range"], kb["max_range"])

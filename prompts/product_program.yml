@@ -1,96 +1,243 @@
 id: product_program
-title: Programmes and customers of one competitor's products (which programme each product is in, run by which authority, at what stage)
-version: 1
+title: Programmes and customers of a batch of one competitor's products (which programme each product is in, run by which authority, at what stage)
+version: 2
 fills: [competitive_product_program]
 shows_on: Products page, product drawer, "Programs" list (programme title, authority, status, date, description)
 cadence: quarterly
+recurring: false          # a batch is written once per prompt version and document fingerprint (the key changes when its documents change)
 # v1: documents only, no web search. A PROGRAMME is a named effort by a customer authority (an army, navy, air force, ministry, agency) in which
 # the product is selected, bid, trialled, ordered, built, delivered or in service: a procurement or modernisation programme, a development
 # programme, a competition or trial, a licence-production deal, an export order. A product is linked to a programme only when a source names
-# BOTH (the product, or its family name, and the programme or customer). Evidence, in this order: the stored projects and signals of the
-# competitor, the stored sales rows of the geo prompt (product, country, customer), then the harvested documents that name products of the
-# catalogue (the SQL below picks documents by the catalogue names found in their text). `ref_product` resolves the catalogue name exactly.
+# BOTH (the product, or its family name, and the programme or customer). `ref_product` resolves the catalogue name exactly.
 # The status colour is not set here: the page uses its own neutral chip.
+# v2 (data-fill round, 2026-10-18): v1 ran once per COMPETITOR (top 10 documents, at most 12 rows), so a company with 300 products got at
+#  most 12 programmes. Now the subject is a BATCH: up to 20 (even split) catalogue products of one competitor that its harvested documents NAME
+#  (or that have a stored sale with a buyer, or product news), in product-name order so a family sits together. The documents are the
+#  ones that name the batch's products (match keys below), each cut to a window around the first mention, the two best per product
+#  (deal / sales score first). The rows already stored for the batch are shown so the model adds only new ones.
+#  - match keys of a product: the name without its bracket; its first token when it is a designator (letters and digits, not a calibre
+#    such as 155mm); its first two words (not generic words, not the company's own name); a short code in its bracket (e.g. AN/FSY-3).
+#    A key must stand alone in the text (no letter or digit on either side).
+#  - key = competitor : batch number : fingerprint of the batch's products and the documents that name them, so the routine re-runs a
+#    batch exactly when a document naming one of its products arrives (or the batch changes), never otherwise.
+#  - program_id = uuid of product + programme title (vocab new_id_stable_by_product_and_title): a re-run under a new fingerprint updates
+#    the same row instead of adding a copy; rows of other batches (and the v1 rows) are never touched.
+#  - backend/stored_fill.py still turns sourced geo sales rows into programmes and skips a product + authority a prompt row already has.
+# A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
 subject:
-  key: competitor_id
+  key: run_key
   query: |
-    SELECT c.competitor_id, c.display_name, c.short_name, c.origin_country
-    FROM staging.competitive_competitor c
-    WHERE EXISTS (SELECT 1 FROM staging.competitive_product p WHERE p.competitor_id = c.competitor_id)
-    ORDER BY (c.origin_country = 'India') DESC,
-             (SELECT count(*) FROM staging.source_document d WHERE c.competitor_id = ANY(d.competitor_ids)) DESC, c.display_name
+    WITH b AS (
+      SELECT p.product_id, p.competitor_id, p.product_name, trim(regexp_replace(p.product_name, '\s*\([^)]*\)', '', 'g')) AS base,
+             trim(substring(p.product_name from '\(([^)]*)\)')) AS paren,
+             lower(split_part(coalesce(c.short_name, c.display_name), ' ', 1)) AS co1, lower(split_part(c.display_name, ' ', 1)) AS co2
+      FROM staging.competitive_product p JOIN staging.competitive_competitor c ON c.competitor_id = p.competitor_id
+    ), keys AS (
+      SELECT DISTINCT x.product_id, x.competitor_id, x.k FROM (
+        SELECT product_id, competitor_id, co1, co2, lower(base) AS k FROM b WHERE length(base) >= 4
+        UNION ALL
+        SELECT product_id, competitor_id, co1, co2, lower(substring(base from '^(\S+)')) FROM b
+        WHERE substring(base from '^(\S+)') ~ '[0-9]' AND substring(base from '^(\S+)') ~ '[A-Za-z]' AND length(substring(base from '^(\S+)')) >= 3
+          AND lower(substring(base from '^(\S+)')) !~ '^[0-9.,x/-]+(mm|cm|m|in|kg|t)?$'
+        UNION ALL
+        SELECT product_id, competitor_id, co1, co2, lower(substring(base from '^(\S+\s+\S+)')) FROM b
+        WHERE base ~ '^[A-Z]' AND length(substring(base from '^(\S+\s+\S+)')) >= 7
+          AND lower(substring(base from '^(\S+\s+\S+)')) !~ '\s(and|&|of|for|the|de|du|des|la|le|with|to|in|-)$'
+        UNION ALL
+        SELECT product_id, competitor_id, co1, co2, lower(paren) FROM b
+        WHERE paren ~ '[A-Z]{2}' AND length(paren) BETWEEN 3 AND 30 AND paren !~ '\S+\s+\S+\s+\S+\s'
+      ) x
+      WHERE split_part(x.k, ' ', 1) NOT IN (x.co1, x.co2, 'the', 'new', 'next', 'mission', 'integrated', 'advanced', 'model', 'grenade', 'cartridge',
+              'light', 'heavy', 'medium', 'multi', 'naval', 'air', 'land', 'mobile', 'tactical', 'modular', 'digital', 'remote', 'automatic',
+              'armoured', 'armored', 'main', 'small', 'long', 'short', 'high', 'low', 'counter', 'ground', 'space', 'precision', 'guided',
+              'combat', 'infantry', 'military', 'autonomous', 'unmanned', 'electronic', 'universal', 'common', 'joint', 'general', 'special',
+              'training', 'practice', 'services', 'support', 'maintenance', 'simulation', 'supply', 'command', 'us', 'u.s.', 'royal', 'indian')
+    ), docs AS MATERIALIZED (
+      SELECT d.doc_id, c.cid, lower(d.body_text) AS t,
+             greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0)) AS deal
+      FROM staging.source_document d CROSS JOIN LATERAL unnest(d.competitor_ids) AS c(cid)
+      WHERE length(coalesce(d.body_text, '')) > 400
+        AND NOT (d.source_tier = 'unlisted' AND coalesce(d.triage->>'dc_source_tier', 'C_unknown') ~ '^C_')     -- unknown / reference sites: not credible
+        AND d.url !~* '(/tag/|/tags/|/author/|/category/|/archive|/page/[0-9]|[?&]pageno=|[?&]page=)'
+        AND d.url !~* '(wiki|pedia\.|idrw\.org|ajaishukla|indiandefensenews|vpk\.name|19fortyfive|defenseworld\.net|military\.africa|reddit\.|quora\.|forum|blogspot|medium\.com|substack|wordpress\.com|eurasiantimes|opindia|pgurus|republicworld|defence-ua)'
+    ), hits AS (
+      SELECT k.product_id, d.doc_id, d.deal
+      FROM keys k JOIN docs d ON d.cid = k.competitor_id
+      CROSS JOIN LATERAL (SELECT position(k.k in d.t) AS at) a
+      WHERE a.at > 0 AND substr(d.t, a.at - 1, 1) !~ '[a-z0-9]' AND substr(d.t, a.at + length(k.k), 1) !~ '[a-z0-9]'
+    ), ev AS (
+      SELECT p.product_id, p.competitor_id, p.product_name,
+             (SELECT string_agg(DISTINCT h.doc_id::text, ',' ORDER BY h.doc_id::text) FROM hits h WHERE h.product_id = p.product_id) AS doc_ids,
+             (SELECT count(DISTINCT h.doc_id) FROM hits h WHERE h.product_id = p.product_id AND h.deal >= 0.5) AS deal_docs
+      FROM staging.competitive_product p
+    ), members AS (
+      SELECT z.*, ((z.rn - 1) * ceil(z.cnt / 20.0)::int) / z.cnt AS batch_no      -- even batches of at most 20, no small tail
+      FROM (SELECT e.*, row_number() OVER (PARTITION BY e.competitor_id ORDER BY lower(e.product_name), e.product_id) AS rn,
+                   count(*) OVER (PARTITION BY e.competitor_id) AS cnt
+            FROM ev e
+      WHERE e.doc_ids IS NOT NULL
+         OR EXISTS (SELECT 1 FROM staging.competitive_product_news n WHERE n.product_id = e.product_id)
+         OR EXISTS (SELECT 1 FROM staging.competitive_geo_product gp JOIN staging.competitive_geo_company_presence pr ON pr.presence_id = gp.presence_id
+                    WHERE pr.competitor_id = e.competitor_id AND lower(gp.product_name) = lower(e.product_name) AND coalesce(trim(gp.customer_name), '') <> '')
+           ) z
+    )
+    SELECT m.competitor_id, c.display_name, c.short_name, c.origin_country, m.batch_no, count(*) AS products,
+           min(m.product_name) AS first_product, max(m.product_name) AS last_product,
+           string_agg(m.product_id::text, ',' ORDER BY m.product_id::text) AS product_ids, sum(m.deal_docs) AS deal_documents,
+           count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM staging.competitive_product_program x WHERE x.product_id = m.product_id)) AS without_programme,
+           m.competitor_id::text || ':' || m.batch_no || ':' || left(md5(string_agg(m.product_id::text || '=' || coalesce(m.doc_ids, ''), ';'
+             ORDER BY m.product_id::text)), 10) AS run_key
+    FROM members m JOIN staging.competitive_competitor c ON c.competitor_id = m.competitor_id
+    GROUP BY m.competitor_id, c.display_name, c.short_name, c.origin_country, m.batch_no
+    ORDER BY sum(m.deal_docs) DESC, (c.origin_country = 'India') DESC, c.display_name, m.batch_no
   documents:
-    - from: sql                  # 0. the whole catalogue, names only, exactly as stored (the context block of the same name is cut at 8 KB, so a big catalogue lost its tail)
+    - from: sql                  # 0. the batch: the only products a row may name, exactly as stored
       query: |
-        SELECT 'CATALOGUE' AS doc, count(*) AS products, string_agg(p.product_name, ' | ' ORDER BY p.product_name) AS names
-        FROM staging.competitive_product p WHERE p.competitor_id = '{{subject.competitor_id}}'
-    - from: sql                  # 1. stored projects (a project is already a named programme)
+        SELECT 'BATCH PRODUCT' AS doc, p.product_name, p.category
+        FROM staging.competitive_product p WHERE p.product_id = ANY(string_to_array('{{subject.product_ids}}', ',')::uuid[])
+        ORDER BY lower(p.product_name)
+    - from: sql                  # 1. programme rows already stored for these products (do not repeat them)
       query: |
-        SELECT 'PROJECT' AS doc, p.project_title, p.customer, p.stage, p.region, p.latest_milestone,
-               p.latest_milestone_date, left(p.what_the_project_is, 300) AS what
-        FROM staging.competitive_project p WHERE p.competitor_id = '{{subject.competitor_id}}'
-        ORDER BY p.latest_milestone_date DESC NULLS LAST LIMIT 12
-    - from: sql                  # 2. stored sales rows: product, country, customer, quantity
+        SELECT 'ALREADY STORED' AS doc, p.product_name, x.program_title, x.authority, x.program_date
+        FROM staging.competitive_product_program x JOIN staging.competitive_product p ON p.product_id = x.product_id
+        WHERE x.product_id = ANY(string_to_array('{{subject.product_ids}}', ',')::uuid[])
+        ORDER BY lower(p.product_name), x.program_date DESC NULLS LAST
+    - from: sql                  # 2. stored sales rows of these products: product, country, customer, quantity
       query: |
         SELECT 'SALE' AS doc, g.country_name, gp.product_name, gp.customer_name, gp.local_partner, gp.quantity, gp.since_date, gp.activity_type,
                left(gp.record_note, 220) AS note
         FROM staging.competitive_geo_company_presence pr
         JOIN staging.competitive_geo_product gp ON gp.presence_id = pr.presence_id
         JOIN staging.competitive_geo_location g ON g.location_id = pr.location_id
-        WHERE pr.competitor_id = '{{subject.competitor_id}}' ORDER BY g.country_name, gp.product_name LIMIT 30
-    - from: sql                  # 3. stored signals of the last two years
+        JOIN staging.competitive_product p ON p.competitor_id = pr.competitor_id AND lower(p.product_name) = lower(gp.product_name)
+        WHERE pr.competitor_id = '{{subject.competitor_id}}'::uuid AND p.product_id = ANY(string_to_array('{{subject.product_ids}}', ',')::uuid[])
+        ORDER BY gp.product_name, g.country_name LIMIT 30
+    - from: sql                  # 3. stored product news of these products
       query: |
-        SELECT 'SIGNAL' AS doc, s.event_date, s.title, d.glance_where AS where_, d.glance_third_party AS customer_or_partner, d.source_url
-        FROM staging.competitive_signal s LEFT JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
-        WHERE s.company_id = '{{subject.competitor_id}}' AND s.event_date >= current_date - 730
-        ORDER BY s.event_date DESC LIMIT 15
-    - from: sql                  # 4. harvested documents: the best-scored ones, those that name the head of a catalogue product (its first two words) first
+        SELECT 'PRODUCT NEWS' AS doc, p.product_name, n.published_date, n.headline, n.news_type, n.publisher, n.article_url AS url
+        FROM staging.competitive_product_news n JOIN staging.competitive_product p ON p.product_id = n.product_id
+        WHERE n.product_id = ANY(string_to_array('{{subject.product_ids}}', ',')::uuid[])
+        ORDER BY n.published_date DESC NULLS LAST LIMIT 20
+    - from: sql                  # 4. stored projects and signals of the competitor that name a batch product (match keys as in the subject query)
       query: |
-        WITH heads AS (
-          SELECT DISTINCT lower(substring(split_part(p.product_name, ' (', 1) from '^\S+(?:\s+\S+)?')) AS k FROM staging.competitive_product p
-          WHERE p.competitor_id = '{{subject.competitor_id}}'),
-        keys AS (SELECT k FROM heads WHERE length(k) >= 6 AND k !~ '^[0-9]'),
-        d AS (
-          SELECT x.doc_id, x.published_at, x.title, x.source_name, x.url, x.body_text FROM staging.source_document x
-          WHERE '{{subject.competitor_id}}'::uuid = ANY(x.competitor_ids) AND coalesce(x.body_text, '') <> '' AND length(x.body_text) > 400
-            AND x.url !~* '(/tag/|/tags/|/category/|/archive|/page/[0-9]|[?&]pageno=|[?&]page=)'
-          ORDER BY (CASE WHEN x.triage->'route' ?| array['project','moment','signal','geo','partnership'] THEN 1 ELSE 0 END) DESC,
-                   greatest(coalesce((x.triage->'info'->>'deal')::numeric, 0), coalesce((x.triage->'info'->>'sales_geo')::numeric, 0)) DESC,
-                   x.published_at DESC NULLS LAST LIMIT 150)
-        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url, n.names AS catalogue_names_found, left(d.body_text, 1500) AS text
-        FROM d LEFT JOIN LATERAL (SELECT string_agg(k, ' ; ') AS names, count(*) AS c FROM keys WHERE position(k in lower(d.body_text)) > 0) n ON true
-        ORDER BY coalesce(n.c, 0) DESC, d.published_at DESC NULLS LAST LIMIT 10
+        WITH b AS (
+          SELECT p.product_id, p.product_name, trim(regexp_replace(p.product_name, '\s*\([^)]*\)', '', 'g')) AS base,
+                 trim(substring(p.product_name from '\(([^)]*)\)')) AS paren
+          FROM staging.competitive_product p WHERE p.product_id = ANY(string_to_array('{{subject.product_ids}}', ',')::uuid[])
+        ), keys AS (
+          SELECT DISTINCT product_name, k FROM (
+            SELECT product_name, lower(base) AS k FROM b WHERE length(base) >= 4
+            UNION ALL SELECT product_name, lower(substring(base from '^(\S+)')) FROM b
+            WHERE substring(base from '^(\S+)') ~ '[0-9]' AND substring(base from '^(\S+)') ~ '[A-Za-z]' AND length(substring(base from '^(\S+)')) >= 3
+              AND lower(substring(base from '^(\S+)')) !~ '^[0-9.,x/-]+(mm|cm|m|in|kg|t)?$'
+            UNION ALL SELECT product_name, lower(paren) FROM b
+            WHERE paren ~ '[A-Z]{2}' AND length(paren) BETWEEN 3 AND 30 AND paren !~ '\S+\s+\S+\s+\S+\s'
+          ) x
+        ), rows_ AS (
+          SELECT 'PROJECT' AS doc, p.latest_milestone_date AS date_, p.project_title AS title, p.customer, p.stage,
+                 left(p.what_the_project_is, 300) || ' ' || coalesce(p.latest_milestone, '') AS what, NULL::text AS url
+          FROM staging.competitive_project p WHERE p.competitor_id = '{{subject.competitor_id}}'::uuid
+          UNION ALL
+          SELECT 'SIGNAL', s.event_date, s.title, d.glance_third_party, NULL, NULL, d.source_url
+          FROM staging.competitive_signal s LEFT JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+          WHERE s.company_id = '{{subject.competitor_id}}'::uuid
+        )
+        SELECT r.doc, r.date_, r.title, r.customer, r.stage, r.what, r.url, string_agg(DISTINCT k.product_name, ' ; ') AS batch_products_named
+        FROM rows_ r JOIN keys k ON position(k.k in lower(coalesce(r.title, '') || ' ' || coalesce(r.what, ''))) > 0
+        GROUP BY r.doc, r.date_, r.title, r.customer, r.stage, r.what, r.url
+        ORDER BY r.date_ DESC NULLS LAST LIMIT 15
+    - from: sql                  # 5. harvested documents that name batch products: the two best per product (deal / sales score, then newest),
+      cap: 48000                 #    each cut to a window around the first mention; the triage's deal sentences are quotes from the same page
+      query: |
+        WITH b AS (
+          SELECT p.product_id, p.product_name, trim(regexp_replace(p.product_name, '\s*\([^)]*\)', '', 'g')) AS base,
+                 trim(substring(p.product_name from '\(([^)]*)\)')) AS paren,
+                 (SELECT lower(split_part(coalesce(c.short_name, c.display_name), ' ', 1)) FROM staging.competitive_competitor c WHERE c.competitor_id = p.competitor_id) AS co1,
+                 (SELECT lower(split_part(c.display_name, ' ', 1)) FROM staging.competitive_competitor c WHERE c.competitor_id = p.competitor_id) AS co2
+          FROM staging.competitive_product p WHERE p.product_id = ANY(string_to_array('{{subject.product_ids}}', ',')::uuid[])
+        ), keys AS (
+          SELECT DISTINCT x.product_id, x.product_name, x.k FROM (
+            SELECT product_id, product_name, co1, co2, lower(base) AS k FROM b WHERE length(base) >= 4
+            UNION ALL
+            SELECT product_id, product_name, co1, co2, lower(substring(base from '^(\S+)')) FROM b
+            WHERE substring(base from '^(\S+)') ~ '[0-9]' AND substring(base from '^(\S+)') ~ '[A-Za-z]' AND length(substring(base from '^(\S+)')) >= 3
+              AND lower(substring(base from '^(\S+)')) !~ '^[0-9.,x/-]+(mm|cm|m|in|kg|t)?$'
+            UNION ALL
+            SELECT product_id, product_name, co1, co2, lower(substring(base from '^(\S+\s+\S+)')) FROM b
+            WHERE base ~ '^[A-Z]' AND length(substring(base from '^(\S+\s+\S+)')) >= 7
+              AND lower(substring(base from '^(\S+\s+\S+)')) !~ '\s(and|&|of|for|the|de|du|des|la|le|with|to|in|-)$'
+            UNION ALL
+            SELECT product_id, product_name, co1, co2, lower(paren) FROM b
+            WHERE paren ~ '[A-Z]{2}' AND length(paren) BETWEEN 3 AND 30 AND paren !~ '\S+\s+\S+\s+\S+\s'
+          ) x
+          WHERE split_part(x.k, ' ', 1) NOT IN (x.co1, x.co2, 'the', 'new', 'next', 'mission', 'integrated', 'advanced', 'model', 'grenade', 'cartridge',
+                  'light', 'heavy', 'medium', 'multi', 'naval', 'air', 'land', 'mobile', 'tactical', 'modular', 'digital', 'remote', 'automatic',
+                  'armoured', 'armored', 'main', 'small', 'long', 'short', 'high', 'low', 'counter', 'ground', 'space', 'precision', 'guided',
+                  'combat', 'infantry', 'military', 'autonomous', 'unmanned', 'electronic', 'universal', 'common', 'joint', 'general', 'special',
+                  'training', 'practice', 'services', 'support', 'maintenance', 'simulation', 'supply', 'command', 'us', 'u.s.', 'royal', 'indian')
+        ), d AS MATERIALIZED (
+          SELECT x.doc_id, x.published_at, x.title, x.source_name, x.url, x.body_text, lower(x.body_text) AS t,
+                 greatest(coalesce((x.triage->'info'->>'deal')::numeric, 0), coalesce((x.triage->'info'->>'sales_geo')::numeric, 0)) AS deal,
+                 (SELECT string_agg(h->>'text', ' / ') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(x.triage->'hints') = 'array'
+                    THEN x.triage->'hints' ELSE '[]'::jsonb END) h WHERE h->>'kind' IN ('deal', 'sales_geo')) AS deal_sentences
+          FROM staging.source_document x
+          WHERE '{{subject.competitor_id}}'::uuid = ANY(x.competitor_ids) AND length(coalesce(x.body_text, '')) > 400
+            AND NOT (x.source_tier = 'unlisted' AND coalesce(x.triage->>'dc_source_tier', 'C_unknown') ~ '^C_')
+            AND x.url !~* '(/tag/|/tags/|/author/|/category/|/archive|/page/[0-9]|[?&]pageno=|[?&]page=)'
+            AND x.url !~* '(wiki|pedia\.|idrw\.org|ajaishukla|indiandefensenews|vpk\.name|19fortyfive|defenseworld\.net|military\.africa|reddit\.|quora\.|forum|blogspot|medium\.com|substack|wordpress\.com|eurasiantimes|opindia|pgurus|republicworld|defence-ua)'
+        ), h AS (
+          SELECT d.doc_id, k.product_id, k.product_name, a.at, d.deal, d.published_at
+          FROM d JOIN keys k ON true CROSS JOIN LATERAL (SELECT position(k.k in d.t) AS at) a
+          WHERE a.at > 0 AND substr(d.t, a.at - 1, 1) !~ '[a-z0-9]' AND substr(d.t, a.at + length(k.k), 1) !~ '[a-z0-9]'
+        ), best AS (
+          SELECT doc_id, min(rk) AS rk FROM (
+            SELECT doc_id, row_number() OVER (PARTITION BY product_id ORDER BY deal DESC, published_at DESC NULLS LAST, doc_id) AS rk FROM h) z
+          WHERE rk <= 2 GROUP BY doc_id
+        ), agg AS (
+          SELECT h.doc_id, string_agg(DISTINCT h.product_name, ' ; ') AS names, count(DISTINCT h.product_id) AS n, min(h.at) AS first_at
+          FROM h GROUP BY h.doc_id
+        )
+        SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url, a.names AS batch_products_named, d.deal_sentences,
+               substr(d.body_text, greatest(1, a.first_at - 700), 2300) AS text
+        FROM best JOIN agg a ON a.doc_id = best.doc_id JOIN d ON d.doc_id = best.doc_id
+        ORDER BY best.rk, d.deal DESC, a.n DESC, d.published_at DESC NULLS LAST LIMIT 18
 
-context: [client, client_portfolio]
+context: [client]
 
 task: |
-  TASK product_program — list the programmes that products of {{subject.display_name}} ({{subject.origin_country}}) are part of, and
-  who the customer is. A product page shows each programme as: title, the authority, the status, a date and a short description.
-  Use only the PROJECT, SALE, SIGNAL and DOCUMENT rows below.
+  TASK product_program — list the programmes that the BATCH PRODUCT rows below (products of {{subject.display_name}},
+  {{subject.origin_country}}) are part of, and who the customer is. A product page shows each programme as: title, the authority,
+  the status, a date and a short description. Use only the SALE, PRODUCT NEWS, PROJECT, SIGNAL and DOCUMENT rows below.
 
   A PROGRAMME is a named effort by a customer authority (an army, navy, air force, ministry or agency) in which a product is
   selected, bid, trialled, ordered, built, delivered or in service. Examples of the kind: a national artillery modernisation
-  programme; a trial or competition; an export order from a named ministry; a licence-production deal. Not a programme: a trade fair,
-  a marketing launch, a company-wide strategy, a sale with no named buyer. Write a row only when a source names the product (or its
-  family name) AND the programme or the customer. At most 12 rows, strongest evidence first. None found: "records": [] and a
-  "skip_reason".
+  programme; a trial or competition; an export order from a named ministry; a licence-production deal; a named armed force or
+  ministry that operates the product. Not a programme: a trade fair, a marketing launch, a company-wide strategy, a sale with no
+  named buyer, a list of possible users, a unit, squadron or ship that uses the product (name the force or ministry that buys it),
+  a customer of a different product in the same document. Write a row only when ONE source sentence (or two neighbouring
+  sentences) names the product (or its family name) AND the programme or the customer.
+  VARIANTS. When the source names only the family (for example "Aster 30" while the BATCH has "Aster 30 Block 1" and "Aster 30
+  Block 1NT"), write ONE row, for the BATCH PRODUCT that is the family itself or its basic version. A variant gets a row only when
+  the source names that variant. Never copy one programme onto every variant.
+  Strongest evidence first (a contract, order or delivery before a trial, a trial before an offer), at most 20 rows. Do not repeat an ALREADY STORED row (same product and same
+  programme or customer). None found: "records": [] and a "skip_reason".
 
   Per row, table competitive_product_program:
-   - ref_product: the product's name, copied exactly from the CATALOGUE below. If the source names a product that is not in the
-     CATALOGUE, do not write the row.
-   - program_title: the programme as the source names it, max 250 characters. If the source names none, use "<customer> <product
-     family> purchase" built only from words in the source.
+   - ref_product: the product's name, copied exactly from a BATCH PRODUCT row. A product that is not a BATCH PRODUCT gets no row.
+   - program_title: the programme's own name as the source gives it (for example "SEA 4000 Air Warfare Destroyer programme"), max
+     250 characters. Never a news headline. If the source names none, use "<customer> <product family> purchase" built only from
+     words in the source.
    - authority: the customer or the body that runs the programme, as the source names it (for example a ministry, an army), max 200
      characters
    - program_date: the date of the latest step the source states for this programme (YYYY-MM-DD; month only -> first day and say so
-     in _precision)
+     in _precision; year only -> 1 January and say so). No date in the source: leave it out.
    - status: JUDGEMENT, one of: Concept | Development | Trials | Selected | Contract signed | In production | Delivering | In service |
      Cancelled | Other. The stage the source shows at program_date.
    - description: 1-2 plain sentences saying what the programme buys or builds, with quantity and value if the source gives them
-  Sources. Give "_sources" for program_title, authority and program_date: the verbatim sentence (max 300 characters) from the
-  PROJECT, SALE, SIGNAL or DOCUMENT row and the url shown in it (a PROJECT or SALE row has none: quote the row, url null). "_reason"
-  for status: one sentence naming the fact it rests on.
+  Sources. Give "_sources" for program_title, authority and program_date: the verbatim sentence (max 300 characters) copied from
+  the row's text (a DOCUMENT's text or deal_sentences, a PRODUCT NEWS headline, a SIGNAL or PROJECT row) and the url shown in that row
+  (a PROJECT or SALE row has none: quote the row, url null). "_reason" for status: one sentence naming the fact it rests on.
 
   PLAIN ENGLISH. Managers who are not weapons specialists read this. Sentences of 20 words or fewer, active voice, one idea each.
   A technical term only when it is the name of the thing, explained in a few words the first time. Never use: leverage, synergy,
@@ -98,9 +245,7 @@ task: |
   footprint, poses a threat to, positions itself, unprecedented.
 
   CLIENT: {{context.client}}
-  CLIENT PORTFOLIO (for context only; write nothing about it):
-  {{context.client_portfolio}}
-  ROWS AND DOCUMENTS (the CATALOGUE row first):
+  ROWS AND DOCUMENTS (the BATCH PRODUCT rows first):
   {{documents}}
 
 output:
@@ -115,4 +260,4 @@ output:
       status: {judgement: true, enum: [Concept, Development, Trials, Selected, Contract signed, In production, Delivering, In service, Cancelled, Other]}
       description: {plain: warn}
     loader:
-      program_id: new_id
+      program_id: new_id_stable_by_product_and_title   # same product + title = same row across batches, fingerprints and runs

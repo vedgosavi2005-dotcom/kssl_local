@@ -58,6 +58,7 @@ CLIENT = {
     "FZ275": ["FZ275", "FZ 275"],
     "FZ90": ["FZ90", "FZ 90"],
     "MRO of all armoured": ["MRO", "Maintenance, Repair & Overhaul"],
+    "Garuda 105": ["Garuda 105", "Garuda-105"],
 }
 CLIENT_EXTRA_DOMAINS = {"FZ275": ("thalesgroup.com",), "FZ90": ("thalesgroup.com",), "Simha 4x4": ("paramountgroup.com",)}
 CLIENT_EXTRA_NAMES = {"FZ275": ("Thales",), "FZ90": ("Thales",), "Simha 4x4": ("Paramount",)}   # the partner maker of a KSSL-listed product
@@ -85,6 +86,8 @@ CLIENT_URLS = {
 }
 for _k in ("MArG 155 mm/45", "Bharat 45 155", "Bharat ULH"):       # the same family pages
     CLIENT_URLS[_k] = CLIENT_URLS["MArG 155 mm/39"] if _k.startswith("MArG") else CLIENT_URLS["MAG-ER"] + CLIENT_URLS["Bharat 52 155"]
+# MArG 45 launch figures (KSSL's IDEX 2025 release, as Defense Post reported it; owner 2026-10-20: trace blog figures to their origin)
+CLIENT_URLS["MArG 155 mm/45"] = CLIENT_URLS["MArG 155 mm/45"] + ["https://thedefensepost.com/2025/02/19/indias-kalyani-mounted/"]
 CLIENT_LISTING ="https://www.kssl.in/press-releases.php"    # KSSL's own releases + PDFs, and the press coverage it links (credibility-checked)
 
 RIVAL = {
@@ -131,6 +134,8 @@ MAKER_DOMAINS = {
     "AeroVironment": ("avinc.com",), "PLR Systems (IWI+Adani JV)": ("iwi.net",), "Otokar": ("otokar.com.tr",),
     "Mahindra Defence": ("mahindradefence.com", "mahindra.com"), "Munitions India Ltd (MIL)": ("munitionsindia.in",),
     "Premier Explosives": ("pelgel.com",),
+    "PLR Systems (IWI+Adani)": ("iwi.net",),          # the competitor's stored display name (the "... JV" key above matches none)
+    "KNDS Germany": ("knds.de", "knds.com"), "Patria": ("patria.fi",),
 }
 
 # (KSSL product, rival product): 21 artillery, 9 vehicles, 14 small arms, 3 UAS, 2 rockets, 4 MRO (user plan B + MRO)

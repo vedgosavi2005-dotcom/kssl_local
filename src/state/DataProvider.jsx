@@ -121,7 +121,7 @@ export function DataProvider({ children }) {
         <div className="boot-mark">
           137<span>Parallax</span>
         </div>
-        <div className="boot-msg">Loading competitive intelligence from the API…</div>
+        <div className="boot-msg">137Parallax Loading</div>
       </div>
     );
   }

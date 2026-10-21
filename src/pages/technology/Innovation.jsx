@@ -30,8 +30,9 @@ export default function Innovation() {
     behind: `Why ${clientName} is behind`,
     parity: `Why ${clientName} is at parity`,
     ahead: `Why ${clientName} is ahead`,
+    no_offer: `Why ${clientName} has no offering here`,
   };
-  const GAP_VERB = { behind: `${clientName} is BEHIND`, parity: `${clientName} is AT PARITY`, ahead: `${clientName} is AHEAD` };
+  const GAP_VERB = { behind: `${clientName} is BEHIND`, parity: `${clientName} is AT PARITY`, ahead: `${clientName} is AHEAD`, no_offer: `NO ${clientName} OFFERING` };
 
   const getSavedInnov = () => {
     try {

@@ -34,7 +34,7 @@ export function ReviewProvider({ initial, children }) {
     };
   }).current;
   const [busy, setBusy] = useState(false);
-  const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n} | {kind: "setup"}
+  const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n, cols} | {kind: "setup"} | {kind: "list", title, note, items}
   if (!REVIEW) return children;
   const apply = (body) => {
     setSt(body.review || {});
@@ -76,7 +76,16 @@ export function ReviewProvider({ initial, children }) {
     0,
   );
   return (
-    <Ctx.Provider value={{ st, act, actTable, register, openTrace: (t, id) => setPanel({ kind: "trace", t, id }) }}>
+    <Ctx.Provider
+      value={{
+        st,
+        act,
+        actTable,
+        register,
+        openTrace: (t, id, cols) => setPanel({ kind: "trace", t, id, cols }),
+        openList: (title, note, items) => setPanel({ kind: "list", title, note, items }),
+      }}
+    >
       {children}
       <div className="rv-banner">
         <span>
@@ -93,6 +102,19 @@ export function ReviewProvider({ initial, children }) {
         <TraceDrawer {...panel} onOpen={(t, id) => setPanel({ kind: "trace", t, id })} onClose={() => setPanel(null)} />
       )}
       {panel?.kind === "setup" && <SetupPanel st={st} actTable={actTable} onClose={() => setPanel(null)} />}
+      {panel?.kind === "list" && (
+        <div className="rv-drawer" role="dialog" aria-label={panel.title}>
+          <div className="rv-dh">
+            <b>{panel.title}</b>
+            <button type="button" onClick={() => setPanel(null)} aria-label="Close">
+              ✕
+            </button>
+          </div>
+          {panel.note && <p className="rv-dim">{panel.note}</p>}
+          <ReviewList items={panel.items.slice(0, LIST_MAX)} title={`Counted from ${panel.items.length} record(s)`} />
+          {panel.items.length > LIST_MAX && <p className="rv-dim">First {LIST_MAX} shown.</p>}
+        </div>
+      )}
     </Ctx.Provider>
   );
 }
@@ -127,6 +149,31 @@ export function Review({ src, style }) {
         Trace
       </button>
     </div>
+  );
+}
+
+const LIST_MAX = 300; // ponytail: no paging in the "counted from" list; page it if a tile needs more than 300 rows checked
+
+/* Component-level trace, review copy only. <TraceField src cols /> opens the card's Trace focused on
+   the columns one displayed field comes from; <ComputedTrace title note items /> lists the records an
+   aggregate (a tile, a total) was counted from, each with its own Approve / Unpublish / Trace. */
+export function TraceField({ src, cols }) {
+  const ctx = useContext(Ctx);
+  if (!REVIEW || !ctx || !src || !src.t || src.id === undefined || src.id === null) return null;
+  return (
+    <button type="button" className="rv-tf" title={`Trace: ${cols.join(", ")}`} onClick={(e) => (e.stopPropagation(), ctx.openTrace(src.t, String(src.id), cols))}>
+      trace
+    </button>
+  );
+}
+
+export function ComputedTrace({ title, note, items }) {
+  const ctx = useContext(Ctx);
+  if (!REVIEW || !ctx || !items) return null;
+  return (
+    <button type="button" className="rv-tf" title="The records this number is counted from" onClick={(e) => (e.stopPropagation(), ctx.openList(title, note, items))}>
+      trace · {items.length}
+    </button>
   );
 }
 
@@ -210,7 +257,7 @@ function SetupPanel({ st, actTable, onClose }) {
   );
 }
 
-function TraceDrawer({ t, id, n, onOpen, onClose }) {
+function TraceDrawer({ t, id, n, cols, onOpen, onClose }) {
   const [node, setNode] = useState(null);
   const [err, setErr] = useState("");
   useEffect(() => {
@@ -237,7 +284,7 @@ function TraceDrawer({ t, id, n, onOpen, onClose }) {
       {!node && !err && <p>Loading…</p>}
       {node && (
         <>
-          <TableBlock node={node} />
+          <TableBlock node={node} focus={cols} />
           {node.parents?.length > 0 && (
             <div className="rv-sec">
               <div className="rv-h">Belongs to</div>
@@ -271,12 +318,28 @@ function Children({ node }) {
 
 const show = (v) => (v === null || v === undefined ? "∅" : typeof v === "object" ? JSON.stringify(v) : String(v));
 
-function TableBlock({ node }) {
+/* "excel:<workbook>" = loaded from that workbook by backend/excel_load.py; the URL is the source the workbook cites */
+/* "translated:<lang>" = the cell holds the local model's English; the quote under it is the original wording */
+const srcLabel = (s) =>
+  s.document_id?.startsWith("excel:")
+    ? `Excel: ${s.document_id.slice(6)} · cites ${s.source_url}`
+    : s.document_id?.startsWith("translated:")
+      ? `Original (${s.document_id.slice(11) || "?"}) · translated by the local model`
+      : `${s.source_tier || "source"} · ${s.document_id || s.source_url}`;
+
+function TableBlock({ node, focus }) {
+  const [all, setAll] = useState(false);
+  const only = focus?.length && !all ? new Set(focus) : null;
   return (
     <div className="rv-sec">
       <div className="rv-h">
         {node.table} <span className="rv-dim">→ {node.live_table}</span>
       </div>
+      {focus?.length > 0 && (
+        <label className="rv-dim">
+          <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> show all fields (focused on {focus.join(", ")})
+        </label>
+      )}
       <code className="rv-sql" title="Click to copy" onClick={() => navigator.clipboard?.writeText(node.sql)}>
         {node.sql}
       </code>
@@ -290,7 +353,7 @@ function TableBlock({ node }) {
             {Object.entries(row).map(([col, val]) => {
               const src = sources.filter((s) => s.column_name === col);
               const changed = live && col in live;
-              if (val === null && src.length === 0 && !changed) return null;
+              if (only ? !only.has(col) : val === null && src.length === 0 && !changed) return null;
               return (
                 <tr key={col} className={changed ? "rv-chg-row" : ""}>
                   <th>{col}</th>
@@ -300,7 +363,7 @@ function TableBlock({ node }) {
                     {src.map((s, j) => (
                       <div className="rv-src" key={j}>
                         <a href={s.source_url} target="_blank" rel="noreferrer">
-                          {s.source_tier || "source"} · {s.document_id || s.source_url}
+                          {srcLabel(s)}
                         </a>
                         {s.quote && <q>{s.quote}</q>}
                       </div>

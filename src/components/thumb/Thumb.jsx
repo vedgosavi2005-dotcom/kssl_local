@@ -33,9 +33,9 @@ const FAILED = new Set();
    a `data:` or `javascript:` value is not something this app publishes, and an <img>
    is a place a stray value would otherwise be honoured silently. */
 export function thumbUsable(src, failed = FAILED) {
-  // http(s), or the image folders shipped with the app: /product-images/ (served) and product-images/,
-  // news-images/ (beside the standalone HTML file)
-  return typeof src === "string" && /^(https?:\/\/|\/?product-images\/[\w.-]+$|news-images\/[\w.-]+$)/i.test(src) && !failed.has(src);
+  // http(s), a picture stored in the database (/api/image/<id>, backend/media_images.py), or the image folders shipped with the app:
+  // /product-images/ (served) and product-images/, news-images/ (beside the standalone HTML file)
+  return typeof src === "string" && /^(https?:\/\/|\/api\/image\/[0-9a-f-]{36}$|\/?product-images\/[\w.-]+$|news-images\/[\w.-]+$)/i.test(src) && !failed.has(src);
 }
 
 export function thumbMarkFailed(src, failed = FAILED) {

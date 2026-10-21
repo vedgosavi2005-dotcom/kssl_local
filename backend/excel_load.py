@@ -83,7 +83,7 @@ EXISTING_COMPETITORS = {
     "Adani Defence": "Adani Defence & Aerospace",
     "Hanwha (Aerospace/Group)": "Hanwha Aerospace",
 }
-HEADLINE_MAX = 300                      # competitive_leader_record.headline varchar(300)
+HEADLINE_MAX = 2000                     # competitive_leader_record.headline is text (db/setup/25); a guard only
 SUPPORT_MIN, UNSUPPORTED_MIN, UNSUPPORTED_BEST_MIN = 0.6, 0.6, 0.35   # claim -> bullet token containment
 MAX_FACT_URLS = 3                       # fact_source rows per role / record
 TITLES = {"dr", "mr", "mrs", "ms", "miss", "shri", "smt", "prof", "professor", "gen", "adm", "lt", "col", "maj", "capt", "cdr",
@@ -597,8 +597,8 @@ def apply_plan(conn, plan: Plan, dry_run: bool) -> dict:
         names.setdefault(f["company"], name_variants(f["company"]))
         tier = classify(f["source_url"], company_domains(f["source_url"], names[f["company"]])) or "unlisted"
         tiers[tier] += 1
-        cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, retrieved_at) "
-                    "VALUES (%s, %s, %s, %s, %s, NULL, %s, now())", (f["table_name"], f["row_id"], f["column_name"], f["source_url"], tier, f["quote"]))
+        cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, document_id, retrieved_at) "
+                    "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, now())", (f["table_name"], f["row_id"], f["column_name"], f["source_url"], tier, f["quote"], EXCEL_DOC))
     res.update(leaders=len(plan.leaders), records=len(plan.records), facts=len(plan.facts), tiers=dict(tiers))
     if dry_run:
         conn.rollback()
@@ -891,9 +891,9 @@ def apply_company_plan(conn, plan: dict, dry_run: bool) -> dict:
             tier = classify(f["source_url"], company_domains(f["source_url"], names)) or "unlisted"
             tiers[tier] += 1
             nfacts += 1
-            cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, retrieved_at) "
-                        "VALUES ('competitive_competitor', %s, %s, %s, %s, NULL, %s, now())",
-                        (it["comp"]["id"], f["column_name"], f["source_url"], tier, f["quote"]))
+            cur.execute("INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, document_id, retrieved_at) "
+                        "VALUES ('competitive_competitor', %s, %s, %s, %s, NULL, %s, %s, now())",
+                        (it["comp"]["id"], f["column_name"], f["source_url"], tier, f["quote"], EXCEL_DOC))
     leaders = {}
     cur.execute("SELECT competitor_id::text AS cid, full_name, role_title FROM staging.competitive_leader WHERE competitor_id = ANY(%s::uuid[])", (ids,))
     for r in cur.fetchall():
@@ -1236,8 +1236,8 @@ def apply_products_plan(conn, plan: dict, dry_run: bool) -> dict:
                 t = tier_of(u, g["company"])
                 tiers[t] += 1
                 facts.append(("competitive_product_specification", s["spec_id"], "spec_value", u, t, s["quote"]))
-    execute_values(cur, "INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, retrieved_at) VALUES %s",
-                   facts, template="(%s, %s, %s, %s, %s, NULL, %s, now())", page_size=5000)
+    execute_values(cur, "INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, document_id, retrieved_at) VALUES %s",
+                   facts, template=f"(%s, %s, %s, %s, %s, NULL, %s, '{EXCEL_DOC.replace(chr(39), chr(39) * 2)}', now())", page_size=5000)
     res["descriptions"] = write_descriptions(cur, prods)
     res.update(products=len(prods), specs=len(spec_rows), facts=len(facts), tiers=dict(tiers), facts_product=sum(len(g["urls"]) for g in prods))
     if dry_run:
@@ -1644,8 +1644,8 @@ def apply_client_plan(conn, plan: dict, client: dict, dry_run: bool) -> dict:
             for u in s["source_urls"]:
                 tiers[tier_of(u)] += 1
                 facts.append(("client_product_specification", str(s["specification_id"]), "value_text", u, tier_of(u), s["quote"]))
-    execute_values(cur, "INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, retrieved_at) VALUES %s",
-                   facts, template="(%s, %s, %s, %s, %s, NULL, %s, now())", page_size=5000)
+    execute_values(cur, "INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, document_id, retrieved_at) VALUES %s",
+                   facts, template=f"(%s, %s, %s, %s, %s, NULL, %s, '{EXCEL_DOC.replace(chr(39), chr(39) * 2)}', now())", page_size=5000)
     res["descriptions"] = write_descriptions(cur, prods, client=True)
     res.update(products=len(prods), specs=len(spec_rows), sources=sum(len(g["sources"]) for g in prods), facts=len(facts), tiers=dict(tiers))
     if dry_run:
@@ -1965,6 +1965,11 @@ def _selftest() -> None:
     print("excel_load selftest ok")
 
 
+# every fact_source row this loader writes is tagged with the workbook it came from (owner 2026-10-22: "tell which data is from Excel,
+# or add it to the trace"); set in main() from --file
+EXCEL_DOC = "excel:workbook"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
@@ -1999,6 +2004,9 @@ def main(argv=None) -> int:
     if args.selftest:
         _selftest()
         return 0
+    global EXCEL_DOC
+    if getattr(args, "file", None):
+        EXCEL_DOC = "excel:" + Path(args.file).name[:200]
     if args.cmd == "leadership":
         return cmd_leadership(args)
     if args.cmd == "company":

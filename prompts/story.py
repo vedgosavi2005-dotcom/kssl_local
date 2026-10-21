@@ -8,7 +8,9 @@ compared with the previous step's; when it changed, a `label_change` step is wri
 (contract signed)") and, for an upward change, story.escalated_at is set. All label changes are rebuilt from the steps, so
 a re-run or a late-arriving older article gives the same result.
 
-    story_key / handle_of / pick / story_change                      pure (self-checked: python -m prompts.story --selftest)
+    story_key / handle_of / pick / story_change / card_date          pure (self-checked: python -m prompts.story --selftest)
+    python -m prompts.story --backfill-dates [--write]               undated signal steps take the card's publication date (dry run without --write)
+    python -m prompts.story --prune [--write]                        steps of cards that no longer exist are deleted, their stories rebuilt
     open_stories / snippet / stories_block                           candidates for a prompt (DB, read-only)
     link_card(cur, table, row, transient, run_id)                    called by the derive hook `story_link` (prompts/derive.py)
 
@@ -51,10 +53,12 @@ def slug(s) -> str:
 
 
 def story_key(pillar: str, party, subject, country, family) -> str:
-    """pillar:party:subject:country:family with blank parts left blank: competitive:hanwha:k9:pl:order"""
+    """pillar:party:subject:country:family with blank parts left blank: competitive:hanwha:k9:pl:
+    A competitive story with a product and a buyer country is that programme from selection to contract to delivery, so the event
+    family is left out of its key (owner 2026-10-20: 'Norway selects Chunmoo' and 'Norway signs the Chunmoo contract' are one story)."""
     iso = str(country or "").strip().lower()
     iso = iso if re.fullmatch(r"[a-z]{2}", iso) else ""
-    fam = family if family in FAMILIES else ""
+    fam = family if family in FAMILIES and not (pillar == "competitive" and slug(subject) and iso) else ""
     return ":".join([slug(pillar), slug(party), slug(subject), iso, fam])
 
 
@@ -90,6 +94,22 @@ def pick(ref, key: str, by_handle: dict, by_key: dict) -> tuple[dict | None, str
     if h in by_handle:
         return by_handle[h], "handle", None
     return None, "new", f"story_ref {h} is not an open story of this competitor: a new story is made"
+
+
+GAP_DAYS = 365      # a key match more than this far from the story's steps is another event (BrahMos tests 2010 / 2013 / 2017)
+
+
+def timed_key(key: str, day, by_key: dict) -> str:
+    """The story a card joins by key must be near it in time: `key` or `key:YYYY` whose steps span within GAP_DAYS of the card's
+    date; else a free key (`key`, then `key:YYYY`) so a new story starts (kssl-02 2026-10-20). No date -> `key`."""
+    if not isinstance(day, date):
+        return key
+    near = [k for k, st in by_key.items() if (k == key or re.fullmatch(re.escape(key) + r":\d{4}", k))
+            and (st.get("first_step_at") is None or st["first_step_at"] - timedelta(days=GAP_DAYS) <= day)
+            and (st.get("last_step_at") is None or day <= st["last_step_at"] + timedelta(days=GAP_DAYS))]
+    if near:
+        return min(near, key=lambda k: abs(((by_key[k].get("last_step_at") or day) - day).days))
+    return key if key not in by_key else f"{key}:{day.year}"
 
 
 def step_line(text, limit: int = MAX_LINE) -> str | None:
@@ -276,6 +296,13 @@ def _country_iso(cur, name_or_code) -> str:
     return (r["iso2"] or "").lower() if r else ""
 
 
+def card_date(row):
+    """A signal's step date: the event date the article states; else the article's publication date (signal.yml: "else the
+    published date"). The model leaves event_date empty on some cards; the timeline must not show those as "date not stated"
+    when the harvested record has the publication date. None only when neither exists."""
+    return row.get("event_date") or row.get("published_date")
+
+
 def _signal_parts(cur, row, tr):
     cur.execute("SELECT * FROM staging.competitive_signal_detail WHERE signal_id = %s", (row["signal_id"],))
     det = cur.fetchone() or {}
@@ -294,7 +321,7 @@ def _signal_parts(cur, row, tr):
                 competitor_id=row["company_id"], buyer_name=None,
                 country=_country_iso(cur, tr.get("story_country") or det.get("glance_where")),
                 family=tr.get("story_kind") if tr.get("story_kind") in FAMILIES else MOVE_FAMILY.get(move, "programme"),
-                step_type=MOVE_STEP.get(move, "update"), date=row.get("event_date"), line=row.get("title"), url=det.get("source_url"),
+                step_type=MOVE_STEP.get(move, "update"), date=card_date(row), line=row.get("title"), url=det.get("source_url"),
                 probability=row.get("probability"), impact=row.get("impact"), label=row.get("classification"),
                 impact_dimension=row.get("impact_dimension"), rule_version=row.get("rule_version"), title=row.get("title"))
 
@@ -349,7 +376,13 @@ def link_card(cur, table: str, row: dict, tr: dict | None = None, run_id=None, w
     keycol, parts_fn = CARDS[table]
     p = parts_fn(cur, row, tr)
     key = story_key(p["pillar"], p["party"], p["subject"], p["country"], p["family"])
+    if p["pillar"] == "competitive" and not slug(p["subject"]):
+        # no product named: 'competitive:hanwha:::programme' would join every such event of the competitor (Redback, an 8x8 howitzer and
+        # a USV in one story, owner 2026-10-20). Such a card is its own story unless the model names an open story's handle.
+        key += f":{table}:{row[keycol]}"
     by_handle, by_key = _stories_for_resolution(cur, p["pillar"], p["competitor_id"], p["buyer_name"])
+    if p["pillar"] == "competitive":
+        key = timed_key(key, p["date"], by_key)
     hit, how, warn = pick(tr.get("story_ref"), key, by_handle, by_key)
     if warn and warnings is not None:
         warnings.append(f"story: {warn}")
@@ -379,12 +412,13 @@ def link_card(cur, table: str, row: dict, tr: dict | None = None, run_id=None, w
 
 def _selftest() -> None:
     # keys: blank parts stay blank; the country must be an ISO code; an unknown family is blank
-    assert story_key("competitive", "Hanwha", "K9", "PL", "order") == "competitive:hanwha:k9:pl:order"
+    assert story_key("competitive", "Hanwha", "K9", "PL", "order") == "competitive:hanwha:k9:pl:"           # a programme: no family
+    assert story_key("competitive", "Hanwha", "K9", "", "order") == "competitive:hanwha:k9::order"
     assert story_key("competitive", "Hanwha Aerospace", "", "", "order") == "competitive:hanwha-aerospace:::order"
     assert story_key("competitive", "Nordvik", "NV-155", "Veland", "weird") == "competitive:nordvik:nv-155::"
     assert story_key("market", None, None, "in", "demand") == "market:::in:demand"
     # ids and handles are stable and differ per key
-    k1, k2 = "competitive:a:b:pl:order", "competitive:a:b:pl:delivery"
+    k1, k2 = "competitive:a:b::order", "competitive:a:b::delivery"
     assert story_id_of(k1) == story_id_of(k1) != story_id_of(k2) and 0 <= story_id_of(k1) < 2 ** 63
     h = handle_of(story_id_of(k1))
     assert HANDLE.match(h) and h == handle_of(story_id_of(k1)) != handle_of(story_id_of(k2))
@@ -401,6 +435,13 @@ def _selftest() -> None:
     hit, how, w = pick("T00000000", "competitive:x:::order", by_h, by_k)
     assert hit is None and how == "new" and "not an open story" in w
     assert "not a handle" in pick("banana", "competitive:x:::order", by_h, by_k)[2]
+    # a key match is bounded in time: near steps join, a year-plus gap starts key:YYYY, which later cards of that time then join
+    bk = {"competitive:b:x:in:": {"first_step_at": date(2010, 3, 1), "last_step_at": date(2010, 12, 1)},
+          "competitive:b:x:in::2017": {"first_step_at": date(2017, 5, 1), "last_step_at": date(2017, 5, 1)}}
+    assert timed_key("competitive:b:x:in:", date(2011, 6, 1), bk) == "competitive:b:x:in:"
+    assert timed_key("competitive:b:x:in:", date(2013, 11, 1), bk) == "competitive:b:x:in::2013"
+    assert timed_key("competitive:b:x:in:", date(2017, 9, 1), bk) == "competitive:b:x:in::2017"
+    assert timed_key("competitive:b:x:in:", None, bk) == "competitive:b:x:in:" and timed_key("competitive:c::in:", date(2020, 1, 1), bk) == "competitive:c::in:"
     # step_line
     assert step_line("  a   b ") == "a b" and step_line(None) is None and len(step_line("x" * 300)) == MAX_LINE and step_line("x" * 300).endswith("…")
     # story_change: up, down, same, unknown, text
@@ -436,11 +477,74 @@ def _selftest() -> None:
     assert snippet([]) == NONE_ON_RECORD
     assert snippet([{"handle": "T3f9a12c0", "story_key": k1, "last_line": "Contract signed", "last_step_at": d(10, 8)}]) == f"T3f9a12c0: {k1} - Contract signed (2025-10-08)"
     assert set(MOVE_STEP) == set(MOVE_FAMILY) and set(MOVE_FAMILY.values()) <= set(FAMILIES) and set(NEWS_FAMILY.values()) <= set(FAMILIES)
+    # a signal step date: the event date wins; the publication date fills an empty one; neither -> None
+    assert card_date({"event_date": date(2026, 4, 1), "published_date": date(2026, 4, 2)}) == date(2026, 4, 1)
+    assert card_date({"event_date": None, "published_date": date(2026, 4, 2)}) == date(2026, 4, 2)
+    assert card_date({}) is None and card_date({"event_date": None, "published_date": None}) is None
     print("story self-check ok")
+
+
+def backfill_step_dates(write: bool = False) -> int:
+    """Undated signal steps whose card has a publication date: set step_date from it, then rebuild each touched story (order,
+    step numbers, label changes, current state). Dry run unless write=True. KSSL_STAGING_DSN picks the database."""
+    from prompts.run import connect
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute("""SELECT st.step_id, st.story_id, s.published_date FROM staging.story_step st
+                       JOIN staging.competitive_signal s ON s.signal_id::text = st.source_row_id
+                       WHERE st.source_table = 'competitive_signal' AND st.step_type <> 'label_change'
+                         AND st.step_date IS NULL AND s.published_date IS NOT NULL""")
+        rows = cur.fetchall()
+        stories = sorted({r["story_id"] for r in rows})
+        print(f"{len(rows)} undated signal steps get their publication date; {len(stories)} stories are rebuilt" + ("" if write else "  (dry run: --write to apply)"))
+        if write:
+            for r in rows:
+                cur.execute("UPDATE staging.story_step SET step_date = %s WHERE step_id = %s", (r["published_date"], r["step_id"]))
+            for sid in stories:
+                rebuild_story(cur, sid)
+            conn.commit()
+    conn.close()
+    return len(rows)
+
+
+def prune_orphans(write: bool = False) -> int:
+    """Steps whose card no longer exists (a re-run gave the card a new id, a purge deleted it): deleted, each touched story
+    rebuilt, and a story left with no step and no card deleted. Without this a timeline shows the gone card as a ghost step
+    (an undated duplicate of a live step). Dry run unless write=True."""
+    from prompts.run import connect
+    gone = " OR ".join(f"(t.source_table = '{tb}' AND NOT EXISTS (SELECT 1 FROM staging.{tb} c WHERE c.{col}::text = t.source_row_id))"
+                       for tb, (col, _fn) in CARDS.items())
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT t.step_id, t.story_id FROM staging.story_step t WHERE t.step_type <> 'label_change' AND ({gone})")
+        rows = cur.fetchall()
+        stories = sorted({r["story_id"] for r in rows})
+        print(f"{len(rows)} steps of gone cards; {len(stories)} stories touched" + ("" if write else "  (dry run: --write to apply)"))
+        if write:
+            cur.execute("DELETE FROM staging.story_step WHERE step_id = ANY(%s)", ([r["step_id"] for r in rows],))
+            empty = 0
+            for sid in stories:
+                cur.execute("SELECT count(*) AS n FROM staging.story_step WHERE story_id = %s AND step_type <> 'label_change'", (sid,))
+                if cur.fetchone()["n"]:
+                    rebuild_story(cur, sid)
+                    continue
+                cur.execute(" UNION ALL ".join(f"(SELECT 1 FROM staging.{tb} WHERE story_id = %(s)s LIMIT 1)" for tb in CARDS), {"s": sid})
+                if cur.fetchone() is None:              # no step and no card left: the story itself is gone
+                    cur.execute("DELETE FROM staging.story_step WHERE story_id = %s", (sid,))
+                    cur.execute("DELETE FROM staging.story WHERE story_id = %s", (sid,))
+                    empty += 1
+            print(f"  deleted {len(rows)} steps, {empty} empty stories")
+            conn.commit()
+    conn.close()
+    return len(rows)
 
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         _selftest()
+    elif "--backfill-dates" in sys.argv:
+        backfill_step_dates(write="--write" in sys.argv)
+    elif "--prune" in sys.argv:
+        prune_orphans(write="--write" in sys.argv)
     else:
         print(__doc__)

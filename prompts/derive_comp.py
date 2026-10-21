@@ -394,42 +394,60 @@ def sources_filter(cur, ctx: dict) -> None:
 
 def qualification(client_lines: dict, rival_lines: dict, client_countries: set, rival_countries: set):
     """(qualifies, reason). client_lines / rival_lines: {sub_type: [product names]} (sub_type 'unknown' left out by the caller);
-    countries: lower-case names. None = not testable (the rival has no classed product or no known country)."""
+    countries: lower-case names. None = not testable (the rival has no classed product).
+    The product line is the test; the market is reported, not required (owner 2026-10-21: a rival not in KSSL's markets today is
+    still a competitor to consider, it can enter them)."""
     same = sorted(set(client_lines) & set(rival_lines))
     where = sorted(client_countries & rival_countries)
-    if not rival_lines or not rival_countries:
-        missing = " and ".join(w for w, x in (("no classed product", rival_lines), ("no known country", rival_countries)) if not x)
-        return None, f"Not testable yet: {missing} on record."
+    if not rival_lines:
+        return None, "Not testable yet: no classed product on record."
     n = sum(len(rival_lines[t]) for t in same)
     line = (f"same line: {', '.join(t.replace('_', ' ') for t in same[:4])} ({n} product{'' if n == 1 else 's'})"
             if same else "no product in a client product line")
-    mkt = f"same market: {', '.join(c.title() for c in where[:5])}" if where else "no presence in a client market"
-    return bool(same and where), f"{'Qualifies' if same and where else 'Does not qualify'}: {line}; {mkt}."
+    mkt = (f"same market: {', '.join(c.title() for c in where[:5])}" if where
+           else "no shared market yet" if rival_countries else "no known country")
+    return bool(same), f"{'Qualifies' if same else 'Does not qualify'}: {line}; {mkt}."
 
 
-def qualify_competitors(cur) -> int:
-    """competitive_competitor.qualifies / qualification_reason for every competitor, from product_class (sub-type) and the markets:
-    client = client geo presence + client_partner countries + the client's own country; rival = geo presence + origin country.
-    Every country name goes through staging.country_reference (name, ISO code, aliases), so "US" / "USA" / "United States" are one
-    country (an origin stored as "US" never matched a market stored as "United States": Anduril, AeroVironment)."""
+def country_canon(cur):
+    """name / ISO code / alias -> lower-case canonical country name (staging.country_reference); unknown text is kept as written."""
     cur.execute("SELECT country_name, iso2, aliases FROM staging.country_reference")
     canon: dict = {}
     for r in cur.fetchall():
         for a in (r["country_name"], r["iso2"], *(r["aliases"] or [])):
             if a:
                 canon[str(a).strip().lower()] = r["country_name"].lower()
-    cn = lambda c: canon.get(str(c).strip().lower(), str(c).strip().lower()) if c else None  # noqa: E731
+    return lambda c: canon.get(str(c).strip().lower(), str(c).strip().lower()) if c else None
+
+
+def client_market_countries(cur) -> set:
+    """KSSL's markets (lower-case canonical names): its geo presence, partner countries, own country, the countries of tenders and
+    requirements judged a partial / strong fit, and its opportunities (owner 2026-10-21). One list for qualification and signal risk."""
+    cn = country_canon(cur)
+    cur.execute("""SELECT lower(l.country_name) c FROM staging.competitive_geo_company_presence p
+                   JOIN staging.competitive_geo_location l ON l.location_id = p.location_id WHERE p.company_role = 'client'
+                   UNION SELECT lower(country) FROM staging.client_partner WHERE coalesce(country, '') <> ''
+                   UNION SELECT lower(country) FROM staging.client_account WHERE coalesce(country, '') <> ''
+                   UNION SELECT lower(coalesce(country_name, country_code)) FROM staging.market_tender WHERE kssl_fit IN ('partial', 'strong')
+                   UNION SELECT lower(country_name) FROM staging.market_global_requirement WHERE kssl_fit IN ('partial', 'strong')
+                   UNION SELECT lower(country_code) FROM staging.market_opportunity""")
+    return {cn(r["c"]) for r in cur.fetchall() if r["c"]}
+
+
+def qualify_competitors(cur) -> int:
+    """competitive_competitor.qualifies / qualification_reason for every competitor, from product_class (sub-type) and the markets:
+    client = client geo presence + client_partner countries + the client's own country + the countries of tenders and requirements
+    judged a partial / strong KSSL fit + KSSL's opportunities (owner 2026-10-21: where KSSL bids or could); rival = geo presence + origin.
+    Every country name goes through staging.country_reference (name, ISO code, aliases), so "US" / "USA" / "United States" are one
+    country (an origin stored as "US" never matched a market stored as "United States": Anduril, AeroVironment)."""
+    cn = country_canon(cur)
     cur.execute("""SELECT pc.sub_type, p.product_name FROM staging.product_class pc
                    JOIN staging.client_product p ON pc.product_side = 'client' AND pc.product_id = p.client_product_id::text
                    WHERE pc.sub_type IS NOT NULL AND pc.sub_type <> 'unknown'""")
     client_lines: dict = {}
     for r in cur.fetchall():
         client_lines.setdefault(r["sub_type"], []).append(r["product_name"])
-    cur.execute("""SELECT lower(l.country_name) c FROM staging.competitive_geo_company_presence p
-                   JOIN staging.competitive_geo_location l ON l.location_id = p.location_id WHERE p.company_role = 'client'
-                   UNION SELECT lower(country) FROM staging.client_partner WHERE coalesce(country, '') <> ''
-                   UNION SELECT lower(country) FROM staging.client_account WHERE coalesce(country, '') <> ''""")
-    client_countries = {cn(r["c"]) for r in cur.fetchall() if r["c"]}
+    client_countries = client_market_countries(cur)
     cur.execute("""SELECT c.competitor_id::text id, pc.sub_type, cp.product_name FROM staging.competitive_competitor c
                    JOIN staging.competitive_product cp ON cp.competitor_id = c.competitor_id
                    JOIN staging.product_class pc ON pc.product_side = 'competitor' AND pc.product_id = cp.product_id::text
@@ -476,7 +494,8 @@ def _selftest() -> None:
     q, why = qualification(cl, {"towed_howitzer": ["FH77"], "mlrs": ["X"]}, {"india", "armenia"}, {"armenia", "sweden"})
     assert q is True and why == "Qualifies: same line: towed howitzer (1 product); same market: Armenia.", why
     assert qualification(cl, {"mlrs": ["X"]}, {"india"}, {"india"})[0] is False
-    assert qualification(cl, {"towed_howitzer": ["FH77"]}, {"india"}, {"sweden"}) == (False, "Does not qualify: same line: towed howitzer (1 product); no presence in a client market.")
+    assert qualification(cl, {"towed_howitzer": ["FH77"]}, {"india"}, {"sweden"}) == (True, "Qualifies: same line: towed howitzer (1 product); no shared market yet.")
+    assert qualification(cl, {"towed_howitzer": ["FH77"]}, {"india"}, set()) == (True, "Qualifies: same line: towed howitzer (1 product); no known country.")
     assert qualification(cl, {}, {"india"}, {"india"}) == (None, "Not testable yet: no classed product on record.")
     print("derive_comp self-check ok")
 

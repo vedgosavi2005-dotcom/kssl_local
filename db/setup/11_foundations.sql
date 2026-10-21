@@ -456,6 +456,7 @@ BEGIN
     ('technology_innovation', 'client_position', 'parity', 'Parity', 'parity', NULL, 2, true, NULL, NULL, false),
     ('technology_innovation', 'client_position', 'ahead', 'Ahead', 'ahead', NULL, 3, true, NULL, NULL, false),
     ('technology_innovation', 'client_position', 'unknown', 'Unknown', NULL, NULL, 4, true, NULL, NULL, false),
+    ('technology_innovation', 'client_position', 'no_offer', 'No offering', 'no_offer', 'no client product or venture has this capability (stated, sourced)', 5, true, NULL, NULL, false),
     ('technology_overview_article', 'client_position', 'behind', 'Behind', 'behind', NULL, 1, true, NULL, NULL, false),
     ('technology_overview_article', 'client_position', 'parity', 'Parity', 'parity', NULL, 2, true, NULL, NULL, false),
     ('technology_overview_article', 'client_position', 'ahead', 'Ahead', 'ahead', NULL, 3, true, NULL, NULL, false),

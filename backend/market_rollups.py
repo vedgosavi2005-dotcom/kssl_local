@@ -2,7 +2,8 @@
 
     python -m backend.market_rollups [status] [portals] [awards] [summary] [metrics] [top] [filters] [all]
 
-prune    delete the stub of every notice the tender prompt skipped as not defence hardware (tender_raw.status becomes 'skipped')
+prune    delete the stub of every notice the tender prompt skipped as not defence hardware, or the tender_category prompt judged
+         "Not defence" (tender_raw.status becomes 'skipped')
 status   market_tender.status of open / closing notices from the stored closing_date (open -> closing within 7 days -> closed after it)
 portals  market_tender_portal: one row per tender API that has notices in staging.tender_raw (name and url of the API's public site)
 awards   market_award: one row per awarded notice (tender status 'awarded' with a stated winner or award value)
@@ -64,17 +65,25 @@ def refresh_status(cur) -> int:
 
 def prune(cur) -> int:
     """A notice the tender prompt skipped (its latest run is 'skipped': not defence hardware or its support) is not a tender for the dashboard:
-    its stub market_tender + market_tender_source rows are deleted and the raw notice is marked skipped. Nothing the model extracted is touched."""
+    its stub market_tender + market_tender_source rows are deleted and the raw notice is marked skipped. Same for a stub the tender_category
+    prompt judged "Not defence" (its fact_source reason). Nothing the model extracted is touched."""
     cur.execute("""SELECT s.source_id, s.tender_id FROM staging.market_tender_source s
                    JOIN (SELECT DISTINCT ON (subject_key) subject_key, status FROM staging.prompt_run
                          WHERE prompt_id = 'tender' AND prompt_version = '2' AND status <> 'dry_run' ORDER BY subject_key, started_at DESC) r
                      ON r.subject_key = s.source_id::text AND r.status = 'skipped'
-                   JOIN staging.market_tender t ON t.tender_id = s.tender_id AND t.description IS NULL""")
+                   JOIN staging.market_tender t ON t.tender_id = s.tender_id AND t.description IS NULL
+                   UNION
+                   -- a stub the tender_category prompt judged "Not defence" (prompts/tender_category.py writes that verdict as its reason)
+                   SELECT NULL, t.tender_id FROM staging.market_tender t
+                   JOIN staging.fact_source f ON f.table_name = 'market_tender' AND f.column_name = 'category_id' AND f.row_id = t.tender_id::text
+                    AND f.source_tier = 'judgement' AND f.quote LIKE 'Not defence:%'
+                   WHERE t.description IS NULL AND t.category_id IS NULL""")
     rows = cur.fetchall()
     for r in rows:
         cur.execute("UPDATE staging.tender_raw SET status = 'skipped' WHERE tender_id = %s", (r["tender_id"],))
         cur.execute("DELETE FROM staging.market_tender_source WHERE tender_id = %s", (r["tender_id"],))
         cur.execute("DELETE FROM staging.market_tender WHERE tender_id = %s", (r["tender_id"],))
+        cur.execute("DELETE FROM staging.fact_source WHERE table_name = 'market_tender' AND row_id = %s", (str(r["tender_id"]),))
     return len(rows)
 
 

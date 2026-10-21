@@ -17,6 +17,10 @@ backfill; this script handles the signals whose article record has no date. It r
   7. last: a magazine issue line "Issue 2 - 2019" -> the year only (published_precision = 'year')
 A page with none of these keeps NULL ("date not known"): nothing is guessed. A date in the future or before 2000 is
 ignored. Only NULL values are ever written.
+
+    ... --fix-wrong [--write]    the other direction: a STORED date that the page's own machine date (rules 1, 2 or the URL,
+                                 never the looser markup / header rules) contradicts by more than 3 days is replaced. asdnews.com
+                                 cards carried the crawl date (2026-08-03) while the page's JSON-LD and URL say 2025-06-20.
 """
 import argparse
 import json
@@ -156,11 +160,56 @@ def from_issue(html):
     return parse_date(f"{m.group(1)}-01-01") if m else None
 
 
+MACHINE = ("json-ld", "meta", "url")     # sources reliable enough to overrule a stored date; markup / header guesses are not
+
+
+# --table: signal (default) or news (2026-10-22: 959 undated news rows; asdnews / navalnews news rows carried the crawl date).
+# name -> (rows with a date, rows without one, update one row, label). The issue-year rule is not used for news (no precision column);
+# a corrected news date is copied to source_document.published_at of the same url.
+TABLES = {
+    "signal": ("""SELECT s.signal_id, d.source_url, s.published_date FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d USING (signal_id)
+                  WHERE s.published_date IS NOT NULL AND d.source_url ~ '^https?://'""",
+               """SELECT s.signal_id, d.source_url FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d USING (signal_id)
+                  WHERE s.published_date IS NULL AND d.source_url ~ '^https?://'""",
+               "UPDATE staging.competitive_signal SET published_date = %s, published_precision = NULL WHERE signal_id = %s", "signals"),
+    "news": ("""SELECT article_id, article_url, published_date FROM staging.competitive_news_article
+                WHERE published_date IS NOT NULL AND article_url ~ '^https?://'""",
+             """SELECT article_id, article_url FROM staging.competitive_news_article WHERE published_date IS NULL AND article_url ~ '^https?://'""",
+             "UPDATE staging.competitive_news_article SET published_date = %s WHERE article_id = %s", "news articles"),
+}
+TABLE = "signal"
+
+
+def fix_wrong(con, cur, write):
+    cur.execute(TABLES[TABLE][0])
+    rows = cur.fetchall()
+    if TABLE == "news":      # ~3,800 dated news rows: checked against the date in their own URL only (no page fetch)
+        found = [(r, (from_url(r[1]), "url")) for r in rows]
+    else:
+        with ThreadPoolExecutor(8) as pool:
+            found = list(pool.map(lambda r: (r, find_date(r[1])), rows))
+    wrong =[(sid, url, old, v, how) for (sid, url, old), (v, how) in found if v and how in MACHINE and abs((old - v).days) > 3]
+    for sid, url, old, v, how in wrong:
+        print(f"{old} -> {v} ({how})  {url[:100]}")
+    print(f"\n{len(rows)} dated {TABLES[TABLE][3]} checked; {len(wrong)} contradicted by the page's own date" + ("" if write else "  (dry run: --write to replace)"))
+    if write and wrong:
+        cur.executemany(TABLES[TABLE][2], [(v, sid) for sid, _, _, v, _ in wrong])
+        if TABLE == "news":
+            cur.executemany("UPDATE staging.source_document SET published_at = %s WHERE url = %s", [(v, url) for _, url, _, v, _ in wrong])
+        con.commit()
+        print(f"written: {len(wrong)}")
+    con.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--fix-wrong", action="store_true", help="replace stored dates the page's own machine date contradicts (> 3 days)")
     ap.add_argument("--pages", help="JSON {url: {html}} from scripts/browser_pages.mjs, for sites that block plain requests")
+    ap.add_argument("--table", choices=sorted(TABLES), default="signal")
     args = ap.parse_args()
+    global TABLE
+    TABLE = args.table
     if args.pages:
         PAGES.update({u: v.get("html") for u, v in json.load(open(args.pages, encoding="utf-8")).items() if v.get("status") == 200})
     dsn = os.environ.get("KSSL_STAGING_DSN")
@@ -168,22 +217,26 @@ def main():
         sys.exit("KSSL_STAGING_DSN is not set")
     con = psycopg2.connect(dsn)
     cur = con.cursor()
-    cur.execute("""SELECT s.signal_id, d.source_url FROM staging.competitive_signal s
-                   JOIN staging.competitive_signal_detail d USING (signal_id)
-                   WHERE s.published_date IS NULL AND d.source_url ~ '^https?://'""")
+    if args.fix_wrong:
+        return fix_wrong(con, cur, args.write)
+    cur.execute(TABLES[TABLE][1])
     rows = cur.fetchall()
     with ThreadPoolExecutor(8) as pool:
         found = list(pool.map(lambda r: (r[0], r[1], *find_date(r[1])), rows))
-    hits = [(sid, v, "year" if how == "issue-year" else None) for sid, _, v, how in found if v]
+    hits = [(sid, v, "year" if how == "issue-year" else None) for sid, _, v, how in found if v and not (TABLE == "news" and how == "issue-year")]
     tally = {}
     for _, url, v, how in found:
         tally[how if v else how.split(":")[0]] = tally.get(how if v else how.split(":")[0], 0) + 1
         print(f"{str(v or '-'):<10} {how:<28} {url[:110]}")
-    print(f"\n{len(rows)} signals without a published date; dated now: {len(hits)}; by source: {tally}")
+    print(f"\n{len(rows)} {TABLES[TABLE][3]} without a published date; dated now: {len(hits)}; by source: {tally}")
     if args.write and hits:
-        cur.executemany("UPDATE staging.competitive_signal SET published_date = %s, published_precision = %s "
-                        "WHERE signal_id = %s AND published_date IS NULL", [(v, prec, sid) for sid, v, prec in hits])
-        con.commit()
+        if TABLE == "news":
+            cur.executemany("UPDATE staging.competitive_news_article SET published_date = %s WHERE article_id = %s AND published_date IS NULL",
+                            [(v, sid) for sid, v, _ in hits])
+        else:
+            cur.executemany("UPDATE staging.competitive_signal SET published_date = %s, published_precision = %s "
+                            "WHERE signal_id = %s AND published_date IS NULL", [(v, prec, sid) for sid, v, prec in hits])
+        con.commit()      # both tables (news used to skip it, so its dates were never saved)
         print(f"written: {len(hits)}")
     con.close()
 

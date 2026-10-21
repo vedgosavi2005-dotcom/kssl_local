@@ -47,12 +47,18 @@ def steps() -> list[tuple[str, str, object]]:
         ("tenders_harvest", "cmd", ["-m", "backend.harvest_tenders", "--api", "all", "--from", _d(30)]),
         ("tenders_stage", "cmd", ["-m", "backend.harvest_tenders", "--stage"]),
         ("spec_harvest", "cmd", ["-m", "backend.harvest_specs", "--routine", "30"]),
+        ("spec_store", "cmd", ["-m", "backend.import_spec_store"]),   # owner's spec store: new / changed pages, checked figures only (no model)
         # 2. attribution (code) and triage (Haiku, batched, logged as prompt_run 'triage_route')
         ("attribution", "cmd", ["-m", "backend.attribute_documents"]),
         ("triage", "cmd", ["-m", "backend.triage_routes"]),
         ("news_candidates", "cmd", ["-m", "backend.flood", "candidates"]),
         # 3. competitive pillar
-        ("news", "prompt", "news"), ("signal", "prompt", "signal"), ("moment", "prompt", "moment"),
+        ("news", "prompt", "news"),
+        ("signal_gate", "cmd", ["-m", "backend.signal_gate", "--limit", "600"]),   # cheap pre-check: clearly off-topic articles skip the signal prompt
+        ("signal", "prompt", "signal"),
+        ("published_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--write"]),   # cards the harvest left undated: the page's own date (free)
+        ("story_dates", "cmd", ["-m", "prompts.story", "--backfill-dates", "--write"]),    # ... and their timeline steps take it
+        ("moment", "prompt", "moment"),
         ("partnership", "prompt", "partnership"), ("project", "prompt", "project"), ("product_program", "prompt", "product_program"),
         ("client_product_program", "prompt", "client_product_program"), ("geo", "prompt", "geo"),
         ("geo_code", "cmd", ["-m", "prompts.geo_analysis", "--code"]), ("geo_analysis", "prompt", "geo_analysis"),
@@ -63,11 +69,16 @@ def steps() -> list[tuple[str, str, object]]:
         ("client_subtype", "cmd", ["-m", "prompts.client_subtype"]),
         ("matchup_engine", "cmd", ["-m", "prompts.matchup_code", "--run-budget", "5"]),
         ("spec_enrich", "prompt", "spec_enrich"), ("client_spec_enrich", "prompt", "client_spec_enrich"),
-        ("matchup_compare", "cmd", ["-m", "prompts.matchup_code", "--compare-only"]),
+        # synonym keys that never meet in a compared pair (yes / no per candidate, ~$0.1), then the full engine again: it maps the labels
+        # the two enrich steps just added (with --compare-only their specs stayed invisible until the next run) and compares
+        ("matchup_merge", "cmd", ["-m", "prompts.matchup_code", "--merge-pairs", "--run-budget", "1"]),
+        ("matchup_compare", "cmd", ["-m", "prompts.matchup_code", "--run-budget", "3"]),
         ("matchup", "prompt", "matchup"), ("product_status", "prompt", "product_status"),
         # 5. market pillar
         ("tender", "prompt", "tender"),
         ("market_prune", "cmd", ["-m", "backend.market_rollups", "prune", "merge", "status"]),
+        ("tender_category", "prompt", "tender_category"),    # stubs the tender step did not reach (batched; CPV-coded ones are set at stage)
+        ("translate", "cmd", ["-m", "backend.translate_market", "--all"]),   # local LLM: tender text + buyer / winner names to English (originals kept)
         ("tender_assessment", "prompt", "tender_assessment"), ("opportunity", "prompt", "opportunity"),
         ("global_requirement", "prompt", "global_requirement"), ("segment_assessment", "prompt", "segment_assessment"),
         ("fx_rates", "cmd", ["-m", "scripts.load_fx_rates", "--write"]),          # ECB / NBU reference rates -> staging.fx_rate (rupee figures)
@@ -77,6 +88,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("innovation_discovery", "prompt", "innovation_discovery"), ("innovation_detail", "prompt", "innovation_detail"),
         ("tech_article", "prompt", "tech_article"), ("patent_classification", "prompt", "patent_classification"),
         ("tech_rollups", "cmd", ["-m", "prompts.tech_rollups"]),
+        ("story_prune", "cmd", ["-m", "prompts.story", "--prune", "--write"]),    # timeline steps of cards a re-run or purge removed
         # 7. report
         ("flood_report", "cmd", ["-m", "backend.flood_report"]),
     ]
@@ -208,13 +220,15 @@ def check(conn=None) -> tuple[list[str], list[str]]:
                     problems.append(f"prompt {pid}: staging.{t} is EMPTY (pending subjects: {n})")
             conn.rollback()
     with conn.cursor() as cur:
-        cur.execute("""SELECT prompt_id, prompt_version, count(*) AS n, left(min(coalesce(error, '')), 140) AS e FROM staging.prompt_run
-                       WHERE status = 'failed' AND started_at > now() - interval '7 days' AND coalesce(error, '') NOT ILIKE '%limit%'
+        cur.execute("""SELECT prompt_id, prompt_version, count(*) AS n, left(min(coalesce(error, '')), 140) AS e FROM (
+                         SELECT DISTINCT ON (prompt_id, subject_key) * FROM staging.prompt_run
+                         WHERE started_at > now() - interval '7 days' ORDER BY prompt_id, subject_key, started_at DESC) last
+                       WHERE status = 'failed' AND coalesce(error, '') NOT ILIKE '%limit%'      -- a subject re-run since is not a failure
                        GROUP BY 1, 2 ORDER BY 3 DESC""")
         ids = set(render.prompt_ids())
         for r in cur.fetchall():
             if r["prompt_id"] in ids and str(r["prompt_version"]) == render.load_prompt(r["prompt_id"])["version"]:   # older versions are history
-                notes.append(f"prompt {r['prompt_id']}: {r['n']} failed runs in 7 days at the current version (not the usage limit), e.g. {r['e']}")
+                notes.append(f"prompt {r['prompt_id']}: {r['n']} subjects whose latest run (7 days, current version) failed, not on the usage limit, e.g. {r['e']}")
     conn.rollback()
     if own:
         conn.close()
@@ -275,8 +289,10 @@ def _selftest() -> None:
     assert len(names) == len(set(names)), "step names must be unique"
     order = {n: i for i, n in enumerate(names)}
     for a, b in (("attribution", "triage"), ("triage", "news"), ("news", "signal"), ("matchup_engine", "spec_enrich"),
-                 ("spec_enrich", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"),
-                 ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine")):
+                 ("spec_enrich", "matchup_compare"), ("client_spec_enrich", "matchup_merge"), ("matchup_merge", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"), ("tender", "tender_category"), ("tender_category", "tender_assessment"),
+                 ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine"),
+                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
+                 ("story_prune", "flood_report")):
         assert order[a] < order[b], f"{a} must run before {b}"
     assert all(k in ("cmd", "prompt") for _, k, _ in steps())
     print("routine self-check ok")

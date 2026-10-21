@@ -26,19 +26,35 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 DSN = os.environ.get("KSSL_STAGING_DSN", "host=127.0.0.1 port=55432 dbname=kssl_staging user=kssl password=kssl")
 TZ = "Asia/Kolkata"
+from backend.routine import CAP as ROUTINE_CAP, DEFAULT_CAP as ROUTINE_DEFAULT_CAP  # noqa: E402  (USD cap per prompt step per routine run)
 
 # which flood lane owned each prompt (2026-10-17 flood)
 LANE = {
     "triage_route": "A", "news": "A", "signal": "A", "client_subtype": "A",
-    "tender": "B", "tender_assessment": "B", "opportunity": "B", "global_requirement": "B",
+    "tender": "B", "tender_category": "B", "tender_assessment": "B", "opportunity": "B", "global_requirement": "B",
     "top_opportunity": "B", "segment_assessment": "B",
     "partnership": "C", "project": "C", "geo": "C", "geo_analysis": "C", "matchup": "C", "moment": "C",
     "spec_enrich": "C", "client_partner_research": "C",
     "tech_article": "D", "innovation_discovery": "D", "innovation_detail": "D", "patent_classification": "D",
     "product_program": "E", "client_product_program": "E", "synthesis": "E", "field_synthesis": "E",
     "swot": "E", "stock_listing": "E",
-    "product_status": "C", "client_spec_enrich": "C",
+    "product_status": "C", "client_spec_enrich": "C", "product_category": "C",
 }
+# category of each prompt on the separate catalogue page (the page / pillar its output feeds)
+PILLAR = {
+    "news": "Competitive", "signal": "Competitive", "moment": "Competitive", "project": "Competitive", "synthesis": "Competitive",
+    "field_synthesis": "Competitive", "swot": "Competitive", "stock_listing": "Competitive",
+    "partnership": "Partners & geo", "client_partner_research": "Partners & geo", "geo": "Partners & geo", "geo_analysis": "Partners & geo",
+    "product_category": "Products", "product_status": "Products", "product_program": "Products", "client_product_program": "Products",
+    "spec_enrich": "Products", "client_spec_enrich": "Products", "matchup": "Products",
+    "tender": "Market", "tender_category": "Market", "tender_assessment": "Market", "opportunity": "Market", "global_requirement": "Market",
+    "segment_assessment": "Market", "top_opportunity": "Market",
+    "tech_article": "Technology", "innovation_discovery": "Technology", "innovation_detail": "Technology", "patent_classification": "Technology",
+    "triage_route": "Routing (all pillars)", "client_subtype": "Products",
+}
+# prompts run by code (no prompts/<id>.yml): what they do, for the catalogue page
+CODE_PROMPTS = {"triage_route": ("Routes each harvested document to the prompts that should read it (batched)", "backend/triage_routes.py"),
+                "client_subtype": ("Sub-type for KSSL products the name rules cannot place (model fallback)", "prompts/client_subtype.py")}
 LANE_NAME = {"A": "News & signals", "B": "Market", "C": "Competitive research", "D": "Technology", "E": "Remaining tables"}
 LANE_CAP = {"A": 400, "B": 400, "C": 400, "D": 300, "E": 200}
 HIDDEN = {"competitive_competitor_swot", "competitive_stock_quote", "competitive_stock_series"}
@@ -338,9 +354,9 @@ RED_TEAM_PEER: list = [          # kssl-40's half (frontend / HTTP API): docs/ui
     dict(lane="Frontend / API", sev="med", area="Fabrication", finding="Requirement card date was the future deadline (the 'ago' field)", fix='Stored stage_date (d_market_tech)', status="fixed"),
     dict(lane="Frontend / API", sev="low", area="Wording", finding="'Where demand is heading' only counts collected records; Movement header count differed from the rail badge; '12 Cr' tile animated as '12'", fix="Renamed 'Activity by segment'; counts equal; value kept whole", status="fixed"),
     dict(lane="Frontend / API", sev="med", area="Hardcoded", finding='Client name typed in partners.js and chrome.js', fix='Read from client_account', status="fixed"),
-    dict(lane="Frontend / API", sev="med", area="Data", finding='Local kssl_serving holds only the test seed (invented companies, img.example.com), so local :5178 shows fake data (the VPS serving DB is clean)', fix='Reseed local serving from staging via Approve, or empty it', status="decision"),
-    dict(lane="Frontend / API", sev="low", area="Data", finding="176 tech cards store the stance 'fav' (shown as watch); the competitive spec is threat / watch only", fix='tech_article / tech_direction to write threat / watch, if the spec applies to Technology too', status="decision"),
-    dict(lane="Frontend / API", sev="low", area="Data", finding='723 of 1,626 tenders have no category', fix='tender prompt / category mapping for the uncategorised notices', status="open"),
+    dict(lane="Frontend / API", sev="med", area="Data", finding='Local kssl_serving held only the test seed (invented companies, img.example.com), so local :5178 showed fake data', fix='18 Oct: serving replaced by a full copy of staging (db/mirror_staging_to_serving.py, 175 tables identical); VPS serving the same', status="fixed"),
+    dict(lane="Frontend / API", sev="low", area="Data", finding="176 tech cards stored the stance 'fav' (shown as watch); the competitive spec is threat / watch only", fix='18 Oct: tech rule t2 writes threat / watch only; the 176 relabelled watch (0 fav left)', status="fixed"),
+    dict(lane="Frontend / API", sev="low", area="Data", finding='661 of 1,516 tenders have no category (was 723 of 1,626 before the duplicate merge)', fix='tender prompt / category mapping for the uncategorised notices', status="open"),
 ]
 
 # planned change per prompt (from IMPACT); a prompt not listed keeps its current task
@@ -355,7 +371,9 @@ PLANNED = {
     "geo": "No change; derive.geo_rollup to also list category-only categories.",
     "global_requirement": "No change; key-point bullets split by code.",
 }
-# code steps that write tables the UI reads (not prompts)
+# code steps that write tables the UI reads (not prompts); CODE_FILLS adds them to the per-table "filled by"
+CODE_FILLS = {"competitive_product_program": "stored_fill", "competitive_competitor_moment": "stored_fill (image)",
+              "competitive_product": "excel_load"}
 CODE_STEPS = [
     ("backend/routine.py", "every step below and every prompt, in flow order", "nothing itself; db/flood_logs/routine_<stamp>.log/.json",
      "Ready, NOT scheduled: python -m backend.routine (--plan / --check)"),
@@ -367,8 +385,94 @@ CODE_STEPS = [
     ("prompts/derive.py hooks", "loaded rows", "labels, edge_score, overlap_status, matched_ranges, fit_percent, story links", "Planned: geo_rollup category-only ranges"),
     ("prompts/matchup_code.py", "product specs", "competitive_matchup, competitive_matchup_specification", ""),
     ("prompts/client_subtype.py, matchup_class.py", "products, specs", "product_class", "Planned: copy to serving"),
-    ("planned: revenue tier", "annual_revenue × fx_rate", "competitive_competitor.revenue_tier", "Needs tier bands"),
+    ("backend/stored_fill.py", "geo sales rows with a sourced buyer; signal / news images", "competitive_product_program, competitive_competitor_moment.image_url",
+     "New 18 Oct, in the routine after geo_code, no model"),
+    ("db/mirror_staging_to_serving.py", "every staging / staging_ui table", "every serving / ui table (one transaction, approve guard on)",
+     "Owner decision 18 Oct: publish all of staging; --check compares row counts + checksums"),
+    ("deploy/deploy_vps.sh, db/sync_staging_to_vps.sh", "committed ref; local staging", "VPS code, VPS staging (serving: data-only copy)", "Run 18 Oct on request"),
+    ("backend/import_spec_store.py", "the owner's spec store API (spec_flow extractions, 3,963 pages)", "competitive_product_specification + fact_source (quote, url)",
+     "New 19 Oct, routine step after spec_harvest, no model: subject product + maker match, quote check, figures only, agreement check"),
+    ("backend/company_short.py", "competitor *_text sentences (workbook), fx_rate", "starting_year_short, employee_count_short, revenue_short, industry_short, revenue_usd",
+     "New 22 Oct: local LLM (Gemma), every figure checked against the sentence; revenue filter tiers by code"),
+    ("backend/translate_market.py [--fields | --all]", "tender title / description, buyer / issuer / winner names, requirement lines",
+     "the same columns in English; originals in title_localized / description_localized / text_original",
+     "New 22 Oct: local LLM (Gemma / Qwen), numbers must survive; routine step 'translate' after tender_category"),
+    ("backend/media_images.py", "pages behind news, signal, movement, technology cards", "media.image (bytes), media.page_image; card image -> /api/image/<id>",
+     "New 22 Oct: one request per site every 2 s; site-default pictures (logos) dropped"),
+    ("scripts/backfill_published_dates.py [--table news]", "undated signal / news pages", "published_date (only from the page or its URL)",
+     "In the routine; 22 Oct: news fill now commits (541 dated)"),
+    ("backend/signal_gate.py", "pending signal articles (headline + first 1,200 chars)", "prompt_run skipped rows (clearly off-topic)",
+     "In the routine before signal; dry runs only so far"),
 ]
+
+# How the flood works, stage by stage (owner 22 Oct: "explain the flow more deeply: script names, how the flows work, an end-to-end example")
+FLOW_STAGES = [
+    ("1. Harvest", "no model", "backend/harvest_sites.py (site RSS / sitemaps, robots.txt respected) · backend/news.py (Google News per competitor) · "
+     "backend/import_dc_corpus.py (the DC crawler corpus, already scored by the DC's own rule-based triage: 8,043-term lexicon, no model; only queue P0-P2, company relevance >= 0.6, no duplicates) · backend/harvest_tenders.py --api all, then --stage (tender APIs) · backend/harvest_specs.py, "
+     "backend/import_spec_store.py (spec pages)",
+     "the web, rolling date windows (last 7-30 days)", "source_document (one row per URL: text, kind, publisher, dates) · tender_raw",
+     "A URL is stored once; re-harvesting updates it. Nothing is shown yet."),
+    ("2. Attribution", "no model", "backend/attribute_documents.py",
+     "source_document text + competitor aliases (names, brands, products)", "source_document.competitor_ids, mentions_client, status",
+     "Word-boundary alias match; a document naming no tracked company is parked."),
+    ("3. Triage", "Haiku (claude-haiku-5-5, low effort), 60 documents per call, 6 calls in parallel", "backend/triage_routes.py",
+     "per document: source, date, tracked competitor, headline + the first 400 characters", "source_document.triage (routes: signal, partnership, project, tech_article, ...) · prompt_run 'triage_route'",
+     "Decides which prompts should read a document; a route is a suggestion, every prompt still applies its own tests."),
+    ("4. News candidates", "no model", "python -m backend.flood candidates",
+     "routed documents + Google News hits", "news_candidate (one per article; duplicates pre-grouped)",
+     "Same story from several outlets is grouped before any model reads it."),
+    ("5. News prompt", "Sonnet via claude CLI, one batch per month", "prompts/news.yml run by prompts/run.py",
+     "the month's new candidates + stories already stored within 21 days", "competitive_news_article (new story or merged into a stored one), competitive_product_news",
+     "Each candidate ends as new / merged / dropped (news_candidate.status, story_id)."),
+    ("6. Pre-check", "Haiku, 30 articles per call", "backend/signal_gate.py",
+     "pending articles: headline + first 1,200 characters", "prompt_run 'signal' status skipped for clearly off-topic articles",
+     "When unsure it passes; saves ~$0.20 per useless article. In the routine; so far dry runs only."),
+    ("7. Prompt run", "Sonnet via claude CLI, one run per subject", "prompts/run.py renders prompts/<id>.yml (signal, partnership, tender, matchup, ...)",
+     "the subject row + its stored document text (or a fetch) + context blocks (competitor list, KSSL products, vocab)", "a JSON reply: records + a quote for every fact",
+     "Logged in prompt_run: prompt and version, model, seconds, tokens, cost, full prompt and reply."),
+    ("8. Loader", "no model", "prompts/loader.py (+ prompt-specific handlers)",
+     "the reply", "the prompt's tables + fact_source (one row per field: url, quote, tier)",
+     "Schema and enum checks; every quote must be found in the document or the record is rejected; deterministic ids "
+     "(same subject -> same row, a re-run updates it); one transaction, all or nothing."),
+    ("9. Rules by code", "no model", "prompts/derive.py hooks (signal rule s3: threat / watch / none, risk_score, label_basis; tender fit; partnership overlap) · "
+     "prompts/story.py (story keys, timeline)", "the loaded rows + KSSL products / markets", "labels and scores on the same rows",
+     "Labels are never the model's opinion: the model answers plain tests, code turns the answers into the label."),
+    ("10. Code fills", "no model / local LLM", "scripts/backfill_published_dates.py · backend/media_images.py · backend/translate_market.py · "
+     "backend/company_short.py · backend/stored_fill.py · backend/market_rollups.py · prompts/tech_rollups.py",
+     "staging tables + the article pages", "dates, stored pictures, English text, short company details, roll-ups and filter options",
+     "Only what a page or a stored row states; local models run on this PC (Ollama), at no cloud cost."),
+    ("11. Review", "people", "backend/app.py (review API :8601, staging) · Vite :5180 · backend/review.py",
+     "staging (every table)", "Approve: the card and its child rows copied to serving in one transaction; Reject / Unpublish / Trace",
+     "Trace shows each field's source (URL + quote, or 'Excel: <workbook>', or the original wording of a translation)."),
+    ("12. Live", "", "backend/app.py (live API :8600, serving) · Vite :5178", "serving only", "the client UI",
+     "Review-only panels (KSSL entry, risk / why panels, prompt stats, trace buttons) never reach the live site."),
+]
+
+
+def example(cur) -> dict:
+    """The latest signal card followed back through every stage (live from staging)."""
+    rows = q(cur, """SELECT r.subject_key, r.model, r.seconds, r.tokens_in, r.tokens_out, r.cost_usd, r.rows_loaded, r.rows_by_table,
+                            to_char(r.started_at AT TIME ZONE %s, 'DD Mon YYYY HH24:MI') AS ran, r.prompt_version,
+                            a.headline, a.article_url, a.publisher, a.published_date, a.category, a.image_url,
+                            d.doc_id, d.source_kind, d.source_name, d.feed_url, d.triage, d.mentions_client, d.status AS doc_status,
+                            length(d.body_text) AS chars, to_char(d.fetched_at AT TIME ZONE %s, 'DD Mon YYYY HH24:MI') AS fetched,
+                            (SELECT string_agg(c.display_name, ', ') FROM staging.competitive_competitor c WHERE c.competitor_id = ANY(d.competitor_ids)) AS competitors,
+                            n.candidate_id, n.status AS cand_status, n.match_via, n.story_table,
+                            to_char(n.found_at AT TIME ZONE %s, 'DD Mon YYYY HH24:MI') AS found
+                     FROM staging.prompt_run r JOIN staging.competitive_news_article a ON a.article_id::text = r.subject_key
+                     JOIN staging.source_document d ON d.url = a.article_url JOIN staging.news_candidate n ON n.article_url = a.article_url
+                     WHERE r.prompt_id = 'signal' AND r.status = 'loaded' ORDER BY r.started_at DESC LIMIT 1""", (TZ, TZ, TZ))
+    if not rows:
+        return {}
+    e = rows[0]
+    e["signals"] = q(cur, """SELECT s.signal_id, s.title, s.classification, s.impact, s.risk_score, s.risk_confidence, s.published_date, s.story_id,
+                                    s.label_basis->>'summary' AS why, d.why_it_matters,
+                                    (SELECT count(*) FROM staging.fact_source f WHERE f.table_name LIKE 'competitive_signal%%' AND f.row_id = s.signal_id::text) AS sources
+                             FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d USING (signal_id)
+                             WHERE d.source_url = %s""", (e["article_url"],))
+    e["image"] = (q(cur, "SELECT status, how FROM media.page_image WHERE page_url = %s", (e["article_url"],)) or [{}])[0]
+    e["gate"] = q(cur, "SELECT count(*) AS n FROM staging.prompt_run WHERE prompt_id = 'signal_gate'")[0]["n"]
+    return e
 
 # Model trial (user 18 Oct: "try Haiku 5.5 just for testing ... check the quality difference"). Same subjects, same documents,
 # KSSL_MODEL=claude-haiku-5-5; product_status loaded for real then re-run with Sonnet (the data kept is Sonnet's), matchup and
@@ -438,6 +542,50 @@ ROUND = [
      "counts": "3,019 rows and 6,566 source links removed (opportunities 126 → 70, requirements 151 → 85, tech cards 636 → 540). "
                "Credible-only refill, 32 runs, $6.04: opportunities → 74, requirements → 92, tech cards → 545 (half the documents fail the prompts' own tests)",
      "open": "twz.com, edrmagazine.eu, militaryleak.com, chakranewz.com, saairforce.co.za, angelone.in, iaspoint.com left as they are."},
+    {"area": "Products", "prompt": "spec_enrich v2 (descriptive-only products)", "runs": 76, "cost": 4.35,
+     "fixed": "Products whose specs were all descriptive kept visible (owner decision) and re-read for measured figures from their documents.",
+     "counts": "11 products gained measured figures; 65 runs found none in the documents", "open": ""},
+    {"area": "Products / Movement", "prompt": "backend/stored_fill.py (new code step, no model)", "runs": 0, "cost": 0,
+     "fixed": "Product drawer showed an empty 'Programs' heading on most products; Movement cards had no image (the moment prompt never set one). "
+              "Programmes now also come from geo sales rows that name a sourced buyer; a movement takes its signal's or article's image. Empty Programs heading hidden.",
+     "counts": "programme rows 199 → 346; rival products with a programme 162 → 241 (255 shown incl. KSSL); movements with an image 0 → 28 of 45",
+     "open": "17 movements have no stored image (needs the article image kept at harvest); product_program is per company, at most 12 rows a run."},
+    {"area": "Geo", "prompt": "data fix + builder guard", "runs": 0, "cost": 0,
+     "fixed": "Geo Footprint crashed ('reading c'): the source purge left 8 presences with no product. Rows removed; the builder skips an empty presence.",
+     "counts": "presences 391 → 383 (8 empty ones removed)", "open": ""},
+    {"area": "Publish", "prompt": "mirror · VPS deploy + sync · GitHub", "runs": 0, "cost": 0,
+     "fixed": "Local serving = staging (owner decision); VPS code deployed, VPS staging synced, VPS serving loaded from local serving; the API image "
+              "now ships prompts/ (the VPS answered 503 without it). Pushed to both GitHub repos (code only); repo root tidied (tests/unit, scripts/checks, db/schema).",
+     "counts": "175 serving tables identical locally and on the VPS (233,295 rows); 4,303 products on both live and review", "open": ""},
+    {"area": "Products", "prompt": "matchup engine fixes · spec_enrich · client_spec_enrich · matchup (19 Oct)", "runs": 119, "cost": 16.51,
+     "fixed": "Value parser rejected every minute value ('16 rounds in 3 min') and forms like 'Beyond 36 km', '38 km+', per-side traverse; rival "
+              "figures stored as one combined line ('Crew 2 + 12; kerb weight 13,000 kg') are now read; the compare step ran before new labels were "
+              "mapped (routine order fixed, matchup_merge step added); a refused dictionary batch no longer aborts the engine.",
+     "counts": "matchups with an edge score 11 → 29, with a comparable spec 18 → 40, with verdict words 24 → 39; KSSL spec rows 463 → 484",
+     "open": "211 of 295 pairs can never score (MRO parts paired with services, MRSAM kit vs complete systems, forgings): owner decision on pruning. "
+             "Unknown weight class gates out ~880 more pairs. CAESAR duplicated under KNDS Germany."},
+    {"area": "Technology", "prompt": "innovation_detail v3 → v4 (19 Oct)", "runs": 40, "cost": 8.04,
+     "fixed": "The model saw 1 spec per KSSL product (portfolio block cut to fit) and the rule contradicted itself; now every KSSL spec and "
+              "description of the category is shown, and a position stands only with a stated figure or stage (code-enforced).",
+     "counts": "positions earned: 2 behind (both new); the 2 old ones compared different bases and are now unknown; 20 'no KSSL offering', 12 'no comparable fact'",
+     "open": "Decision: show 'No KSSL offering' as its own pill? The 12 need KSSL figures."},
+    {"area": "Market", "prompt": "tender_category v1 (new) · CPV map (19 Oct)", "runs": 5, "cost": 0.99,
+     "fixed": "274 stubs were never read by the tender prompt (closed notices last in line); 387 were judged out of scope by tender v2. "
+              "CPV codes now give a category at staging (routine); a batched pass judges the rest; 'Not defence' stubs are pruned.",
+     "counts": "tenders without a category 661 → 432 (all judged out of scope, with a reason); 105 by code, 70 by model, 54 pruned",
+     "open": "214 notices wait for the tender prompt (~$0.09 each); no live tender gained a category, so no new fits."},
+    {"area": "Products", "prompt": "product_program v1 → v2 (19 Oct)", "runs": 145, "cost": 38.34,
+     "fixed": "One run per company with at most 12 rows; v2 runs batches of up to 20 products with the documents that name them, best evidence first.",
+     "counts": "programme rows 346 → 1,159; rival products with a programme 241 → 734",
+     "open": "~2,200 products are named in no harvested document. Spot check: 7 of 10 good, 2 weak (speculation, an author index page), status sometimes one stage off."},
+    {"area": "Products", "prompt": "backend/import_spec_store.py (new code step, no model) (19 Oct)", "runs": 0, "cost": 0,
+     "fixed": "Imports the owner's spec store: subject product only, name + maker match (variants and ambiguous names refused), credible source, "
+              "stated as fact, value verbatim in its quote, quote names no other item, figures only, plausible bounds, never overwrites. "
+              "Three dry runs tightened matching (Heron TP / Derby / River-class / airsoft P365 errors removed).",
+     "counts": "952 figures on 129 rival products (after maker aliases for parents / JVs and the unique-name rule for pages with no maker); "
+               "agreement with values from our other sources 83.7% (36 of 43; the 7 differences are source or basis differences); "
+               "matchups with an edge score 29 → 32, with a comparable spec 40 → 44",
+     "open": "The store covers 4 of 82 KSSL products: KSSL pages through spec_flow would help comparisons most."},
 ]
 
 ERR_CLASS = """CASE WHEN status IN ('loaded','skipped','dry_run') THEN NULL
@@ -508,14 +656,14 @@ def collect(conn, with_pending: bool) -> dict:
           count(*) FILTER (WHERE status='loaded') loaded, count(*) FILTER (WHERE status='skipped') skipped,
           count(*) FILTER (WHERE status IN ('failed','rejected')) failed,
           count(*) FILTER (WHERE error ILIKE '%%weekly limit%%') limit_failed,
-          round(avg(seconds) FILTER (WHERE status IN ('loaded','skipped')),0) avg_s,
+          round(avg(seconds) FILTER (WHERE cost_usd > 0),0) avg_s,          -- paid model calls only (a replay of a stored reply costs 0)
           round(percentile_cont(0.5) WITHIN GROUP (ORDER BY seconds)::numeric,0) p50_s,
           round(percentile_cont(0.9) WITHIN GROUP (ORDER BY seconds)::numeric,0) p90_s,
-          round(avg(tokens_in) FILTER (WHERE status IN ('loaded','skipped'))) avg_in,
-          round(avg(tokens_out) FILTER (WHERE status IN ('loaded','skipped'))) avg_out,
+          round(avg(tokens_in) FILTER (WHERE cost_usd > 0)) avg_in,
+          round(avg(tokens_out) FILTER (WHERE cost_usd > 0)) avg_out,
           round(100.0*sum(tokens_cache_read)/nullif(sum(tokens_fresh_in+tokens_cache_read+tokens_cache_write),0),0) cache_pct,
           sum(web_searches) web_searches,
-          round(avg(cost_usd) FILTER (WHERE status IN ('loaded','skipped') AND cost_usd>0),3) avg_cost,
+          round(avg(cost_usd) FILTER (WHERE cost_usd > 0),3) avg_cost,   -- every paid run, whatever its outcome
           round(coalesce(sum(cost_usd),0),2) cost, coalesce(sum(rows_loaded),0) rows,
           round(coalesce(sum(seconds),0)/3600,2) model_hours,
           round(count(*)/nullif(extract(epoch FROM max(started_at)-min(started_at))/3600,0),0) runs_per_hour,
@@ -585,6 +733,8 @@ def collect(conn, with_pending: bool) -> dict:
             continue
         for t in spec.get("fills") or []:
             fills.setdefault(t, []).append(spec.get("id", f.stem))
+    for t, step in CODE_FILLS.items():                     # code steps that also write a prompt's table
+        fills.setdefault(t, []).append(step)
     tables = [r["table_name"] for r in q(cur, """SELECT table_name FROM information_schema.tables
         WHERE table_schema='staging' AND table_type='BASE TABLE' ORDER BY 1""")]
     union = " UNION ALL ".join(f"SELECT '{t}' t, count(*) n FROM staging.\"{t}\"" for t in tables)
@@ -617,6 +767,9 @@ def collect(conn, with_pending: bool) -> dict:
         row["now"] = safe(lambda: list(q(cur, it["measure"])[0].values())[0], None) if it.get("measure") else None
         d["redteam"].append(row)
     d["code_steps"] = [dict(zip(("step", "reads", "writes", "plan"), s)) for s in CODE_STEPS]
+    d["flow"] = [dict(zip(("stage", "model", "scripts", "reads", "writes", "check"), s)) for s in FLOW_STAGES]
+    conn.rollback()
+    d["example"] = safe(lambda: example(cur), {})
     conn.rollback()
     d["trial"] = safe(lambda: q(cur, """WITH h AS (SELECT DISTINCT prompt_id, subject_key FROM staging.prompt_run
             WHERE model = 'claude-haiku-5-5' AND prompt_id = ANY(%s) AND status IN ('loaded','skipped','dry_run')),
@@ -675,6 +828,11 @@ def catalogue(counts: dict, stats: dict) -> list:
                     "fills": spec.get("fills") or [], "outputs": outputs, "derive": spec.get("derive") or [],
                     "handler": spec.get("handler"), "hidden": any(t in HIDDEN for t in spec.get("fills") or []),
                     "runs": st.get("runs", 0), "avg_cost": st.get("avg_cost"), "pending": (st.get("pending") or 0) + st.get("subj_failed", 0),
+                    "pillar": PILLAR.get(spec["id"], "Other"), "routine": spec.get("routine", True) is not False and spec.get("cadence") != "on_demand",
+                    "cap": ROUTINE_CAP.get(spec["id"], ROUTINE_DEFAULT_CAP), "avg_s": st.get("avg_s"), "avg_in": st.get("avg_in"),
+                    "avg_out": st.get("avg_out"), "cost": st.get("cost"), "est_cost": st.get("est_cost"), "model": st.get("model"),
+                    "last_run": st.get("last_run"),
+                    "task": spec.get("task"), "system": spec.get("system"),   # the prompt text itself (system only when the file overrides _shared)
                     "plan": PLANNED.get(spec["id"], "No change.")})
     return out
 
@@ -711,10 +869,11 @@ nav{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}nav a{font-size:12.5px;c
 .pc h4{margin:6px 0 4px;font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}.pc ul{margin:0;padding-left:18px;font-size:12.5px}
 .chip{display:inline-block;font-family:ui-monospace,Consolas,monospace;font-size:11px;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:0 5px;margin:1px}
 .plan{border-left:3px solid var(--acc);padding-left:8px}
+ol.ex{margin:0;padding-left:0;list-style:none;font-size:13px}ol.ex li{margin:0 0 10px}ol.ex li b{display:block}ol.ex .sub code{font-size:11.5px}
 </style></head><body><main>
 <h1>KSSL data flood: analytics</h1>
 <div class="sub">Generated __GEN__ (IST) from <code>staging.prompt_run</code> and the staging tables · local <code>kssl_staging</code> · status: routine ready, not scheduled</div>
-<nav><a href="#routine">Routine</a><a href="#trial">Model trial</a><a href="#round">18 Oct round</a><a href="#age">Data age</a><a href="#lanes-h">Lanes</a><a href="#prompts-h">Per prompt</a><a href="#tables-h">Tables</a><a href="#impact">Frontend → DB impact</a><a href="#cat">Prompt catalogue</a><a href="#code">Code steps</a><a href="#redteam">Red-team audit</a></nav>
+<nav><a href="#stages">How it works</a><a href="#example">End-to-end example</a><a href="#routine">Routine</a><a href="#trial">Model trial</a><a href="#round">18 Oct round</a><a href="#age">Data age</a><a href="#lanes-h">Lanes</a><a href="#prompts-h">Per prompt</a><a href="#tables-h">Tables</a><a href="#impact">Frontend → DB impact</a><a href="#cat">Prompt catalogue</a><a href="prompt_catalogue.html">Catalogue page ↗</a><a href="#code">Code steps</a><a href="#redteam">Red-team audit</a></nav>
 <div id="kpis" class="kpis"></div>
 
 <h2 id="age">Data age by pillar (staging, counted from today)</h2>
@@ -731,7 +890,14 @@ nav{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}nav a{font-size:12.5px;c
 <span>Loader: validate, quotes checked, derive rules (labels by code)</span>→
 <span>Staging tables + <code>fact_source</code></span>→
 <span>Review site :5180 → Approve → serving (live)</span></div>
-<div class="note">Every run is one transaction: it is logged in <code>prompt_run</code> (prompt, subject, model, time, tokens, cost, rows, full prompt and reply) and loads all-or-nothing.</div></div>
+<div class="note">Every run is one transaction: it is logged in <code>prompt_run</code> (prompt, subject, model, time, tokens, cost, rows, full prompt and reply) and loads all-or-nothing.
+<code>python -m backend.routine</code> runs every stage below in order (see Routine).</div></div>
+
+<h3 id="stages" style="font-size:14px;margin:18px 0 8px">Stage by stage: scripts, inputs, outputs, checks</h3>
+<div class="card tbl-wrap" style="max-height:none"><table id="flow-t"></table></div>
+
+<h3 id="example" style="font-size:14px;margin:18px 0 8px">End to end: one real article, followed through every stage</h3>
+<div class="card"><div class="note" style="margin:0 0 8px">The latest signal card, traced live from staging when this report was generated.</div><ol id="ex-l" class="ex"></ol></div>
 
 <h2 id="routine">Routine: the scheduled flow, step by step</h2>
 <div class="card"><div class="note" style="margin:0 0 8px">One command runs the whole flow above in order: <code>python -m backend.routine</code> (budget cap
@@ -769,12 +935,13 @@ when its compared rows or documents change), per-run budgets (the matchup engine
 
 <h2>Failures</h2>
 <div class="grid2"><div class="card"><table id="errors"></table></div><div class="card"><table id="errsamp"></table></div></div>
+<div class="note">Every failed run, all time. 92 of the database load errors ($11.56) are the first product_category load (a handler bug); their stored replies were re-applied at no model cost, so no subject is left failed. The routine check counts only subjects whose latest run failed.</div>
 
 <h2 id="tables-h">Every staging table</h2>
 <div class="card tbl-wrap"><table id="tables"></table></div>
 
 <h2 id="impact">Frontend changes → database, prompt and code impact</h2>
-<div class="card"><div class="note" style="margin:0 0 8px">Source: <code>docs/ui_port/DB_CHANGE_NOTES.md</code>, checked against the commits and today's staging data. <span class="pill n-noted">noted</span> as in the notes · <span class="pill n-corrected">corrected</span> the notes' assumption differs from the DB · <span class="pill n-missed">missed</span> not in the notes. "Now" is measured live. Re-run cost = subjects × the prompt's observed average cost. Nothing here has been applied.</div>
+<div class="card"><div class="note" style="margin:0 0 8px">Source: <code>docs/ui_port/DB_CHANGE_NOTES.md</code>, checked against the commits and today's staging data. <span class="pill n-noted">noted</span> as in the notes · <span class="pill n-corrected">corrected</span> the notes' assumption differs from the DB · <span class="pill n-missed">missed</span> not in the notes. "Now" is measured live. Re-run cost = subjects × the prompt's observed average cost. Many rows are applied since; "Now" shows the live state and "Decision" what is still yours.</div>
 <div id="impact-sum" class="kpis" style="margin:0 0 10px"></div>
 <div class="tbl-wrap" style="max-height:none"><table id="impact-t"></table></div></div>
 
@@ -786,7 +953,7 @@ when its compared rows or documents change), per-run budgets (the matchup engine
 <div class="card"><table id="code-t"></table></div>
 
 <h2 id="redteam">Red-team audit (18 Oct 2026): findings, fixes, what is left</h2>
-<div class="card"><div class="note" style="margin:0 0 8px">The product attacked as a client would use it, at every level, under the standing rule: nothing hardcoded, defaulted or fabricated; data only from the tables, wording only in the UI chrome. Split: <b>kssl-52</b> = database, prompts / loader, data builders, deploy; <b>kssl-40</b> = frontend and HTTP API. <span class="pill filled">fixed</span> done and checked · <span class="pill n-corrected">open</span> needs more work · <span class="pill n-missed">decision</span> needs you. Tests: npm test 128 / 128, all Python self-checks pass. Commits 0bb043e, f139446 (frontend + API, local only); database / prompt fixes uncommitted. "Now" re-counts the problem live (0 = gone). Local only: nothing synced or deployed.</div>
+<div class="card"><div class="note" style="margin:0 0 8px">The product attacked as a client would use it, at every level, under the standing rule: nothing hardcoded, defaulted or fabricated; data only from the tables, wording only in the UI chrome. Split: <b>kssl-52</b> = database, prompts / loader, data builders, deploy; <b>kssl-40</b> = frontend and HTTP API. <span class="pill filled">fixed</span> done and checked · <span class="pill n-corrected">open</span> needs more work · <span class="pill n-missed">decision</span> needs you. Tests at audit time: npm test 128 / 128, all Python self-checks pass. "Now" re-counts the problem live (0 = gone). 18 Oct evening: all fixes committed (132335c, b5e5b39, cf96458), pushed to both GitHub repos, deployed to the VPS; VPS staging and serving synced from local.</div>
 <div id="rt-sum" class="kpis" style="margin:0 0 10px"></div>
 <div class="tbl-wrap" style="max-height:none"><table id="rt-t"></table></div></div>
 </main>
@@ -860,6 +1027,28 @@ $('trial-f').innerHTML = (D.trial_findings || []).map(x => `<li>${esc(x)}</li>`)
 $('round-t').innerHTML = head(['Area', 'Prompt / step', 'Checked and fixed', 'Runs', 'Spend', 'Before → after', 'Open']).replace(/<th>/g, '<th class="w">') +
   (D.round || []).map(x => `<tr><td class="l">${esc(x.area)}</td><td class="l">${esc(x.prompt)}</td><td class="w">${esc(x.fixed)}</td><td>${f(x.runs)}</td><td>${usd(x.cost)}</td><td class="w">${esc(x.counts)}</td><td class="w">${esc(x.open) || '–'}</td></tr>`).join('');
 $('code-t').innerHTML = head(['Step', 'Reads', 'Writes', 'Planned']) + (D.code_steps || []).map(s => `<tr><td class="l">${esc(s.step)}</td><td class="l">${esc(s.reads)}</td><td class="l" style="white-space:normal">${esc(s.writes)}</td><td class="l">${esc(s.plan) || '–'}</td></tr>`).join('');
+$('flow-t').innerHTML = head(['Stage', 'Model', 'Script(s)', 'Reads', 'Writes', 'How it is kept honest']).replace(/<th>/g, '<th class="w">') +
+  (D.flow || []).map(s => `<tr><td class="l"><b>${esc(s.stage)}</b></td><td class="l">${esc(s.model) || '–'}</td><td class="w"><code>${esc(s.scripts)}</code></td><td class="w">${esc(s.reads)}</td><td class="w">${esc(s.writes)}</td><td class="w">${esc(s.check)}</td></tr>`).join('');
+const E = D.example || {};
+if (E.subject_key) {
+  const tri = E.triage && E.triage.route ? `${[].concat(E.triage.route).join(', ')}${E.triage.route_reason ? ' (“' + E.triage.route_reason + '”)' : ''}` : 'no route';
+  const sig = (E.signals || []).map(s => `<i>${esc(s.title)}</i>: <b style="display:inline">${esc(s.classification || 'none')}</b> (risk ${f(s.risk_score)}, confidence ${esc(s.risk_confidence)}), published ${esc(s.published_date) || 'no date'}, ${f(s.sources)} field sources${s.story_id ? ', story ' + esc(String(s.story_id).slice(0, 8)) : ''}.${s.why ? ' Why: ' + esc(s.why) : ''}`).join('<br>');
+  const steps = [
+    ['1. Harvest', `<code>${esc(E.source_kind === 'dc_corpus' ? 'backend/import_dc_corpus.py' : E.source_kind === 'google_news' ? 'backend/news.py' : 'backend/harvest_sites.py')}</code> fetched <a href="${esc(E.article_url)}">${esc(E.headline)}</a> (${esc(E.publisher)}) on ${esc(E.fetched)}${E.feed_url ? ' from the feed ' + esc(E.feed_url) : ''}. Stored as <code>source_document</code> ${esc(String(E.doc_id).slice(0, 8))}…, kind <code>${esc(E.source_kind)}</code>, ${f(E.chars)} characters of text.`],
+    ['2. Attribution', `<code>attribute_documents.py</code> matched the aliases of <b style="display:inline">${esc(E.competitors || 'no competitor')}</b>${E.mentions_client ? '; it also mentions KSSL' : ''}. Document status: <code>${esc(E.doc_status)}</code>.`],
+    ['3. Triage', `<code>triage_routes.py</code> (Haiku) routed it to: ${esc(tri)}.`],
+    ['4. News candidate', `<code>flood candidates</code> added it on ${esc(E.found)} (found via <code>${esc(E.match_via)}</code>).`],
+    ['5. News prompt', `The news batch run decided <code>${esc(E.cand_status)}</code>: it became news article ${esc(String(E.subject_key).slice(0, 8))}…, category “${esc(E.category)}”, dated ${esc(E.published_date) || 'no date'}.`],
+    ['6. Pre-check', E.gate ? 'signal_gate passed it.' : 'Not applied: the pre-check (signal_gate) has only had dry runs so far; it is in the routine before the signal prompt.'],
+    ['7. Prompt run', `<code>prompts/signal.yml</code> v${esc(E.prompt_version)} on ${esc(E.ran)}: ${esc(E.model)}, ${f(E.seconds)} s, ${f(E.tokens_in)} tokens in / ${f(E.tokens_out)} out, ${usd(E.cost_usd)}.`],
+    ['8. Loader', `${f(E.rows_loaded)} rows in one transaction: ${esc(Object.entries(E.rows_by_table || {}).map(([t, n]) => `${t} ${n}`).join(', '))}. Every quote was found in the article text.`],
+    ['9. Rules by code', sig || 'no signal row'],
+    ['10. Code fills', `Picture: ${E.image && E.image.status ? `<code>${esc(E.image.status)}</code>${E.image.how ? ' (' + esc(E.image.how) + ')' : ''} → stored in <code>media.image</code>` : 'not checked yet'}. Date: from the article.`],
+    ['11. Review', 'The card shows on the review site (:5180) with Approve / Reject / Trace; Trace lists the field sources above.'],
+    ['12. Live', 'After Approve it is copied to serving and appears on :5178.'],
+  ];
+  $('ex-l').innerHTML = steps.map(([h, t]) => `<li><b>${esc(h)}</b><span>${t}</span></li>`).join('');
+} else { $('ex-l').innerHTML = '<li>No loaded signal with a stored raw document yet.</li>'; }
 
 // charts
 Chart.defaults.color = css('--mute'); Chart.defaults.borderColor = css('--line'); Chart.defaults.font.size = 11;
@@ -878,9 +1067,102 @@ new Chart($('cLabels'), {type: 'bar', data: {labels: lab.map(x => x[0]), dataset
 </script></body></html>"""
 
 
+CATALOGUE_TEMPLATE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KSSL Prompt Catalogue</title>
+__STYLE__<style>main{max-width:1680px}pre.pt{white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;max-height:560px;overflow:auto;margin:6px 0 0}.pc .full{grid-column:1/-1}</style></head><body><main>
+<h1>KSSL prompt catalogue</h1>
+<div class="sub">Generated __GEN__ (IST) from <code>prompts/*.yml</code> and <code>staging.prompt_run</code> · <a href="flood_report.html">flood report ↗</a></div>
+<div id="kpis" class="kpis"></div>
+<h2>Every prompt: category, frequency, cost</h2>
+<div class="note" style="margin:0 0 8px"><b>Frequency</b> is the prompt's cadence: how often one subject is re-run when the routine runs (daily / weekly / quarterly);
+new subjects are picked up on every run. <b>On demand</b> = never run by the routine. <b>Not in routine</b> = a hidden section (<code>routine: false</code>).
+The routine itself is ready but not scheduled. <b>Avg cost / run</b> = what the claude CLI reported per run, all runs at any version.
+<b>Cap / routine run</b> = the most one routine run may spend on that prompt (a backlog drains over several runs). <b>Backlog</b> = subjects due now and their estimated cost at the average.</div>
+<div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0" id="filters"></div>
+<div class="card tbl-wrap" style="max-height:none"><table id="cat-t"></table></div>
+<h2>Shared system prompt (sent with every prompt)</h2>
+<div class="note">Every run sends this system text plus the prompt's own task text below (a prompt file may override it). Placeholders such as
+<code>{{subject.display_name}}</code>, <code>{{context.client}}</code> and <code>{{documents}}</code> are filled at run time; the exact text sent
+for each run is stored in <code>staging.prompt_run.prompt_text</code>.</div>
+<details class="pc"><summary><b>system</b><span class="sub" id="sys-model"></span></summary><div class="body"><pre class="pt full" id="sys"></pre></div></details>
+<h2>Detail: prompt text, input → output → tables</h2>
+<div class="note">Click a prompt. Input = one run per subject row + its documents + context blocks. Output = the tables the model writes, what the loader fills by code, child tables, then the derive rules. Row counts are staging today.</div>
+<div id="cat-l" style="margin-top:8px"></div>
+</main>
+<script>
+const D = __DATA__;
+const $ = id => document.getElementById(id), f = n => n == null || n === '' ? '–' : Number(n).toLocaleString('en-IN');
+const usd = n => n == null || n === '' ? '–' : '$' + Number(n).toLocaleString('en-IN', {maximumFractionDigits: 3});
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const chips = a => (a || []).map(x => `<span class="chip">${esc(x)}</span>`).join(' ');
+const ORDER = ['Competitive', 'Partners & geo', 'Products', 'Market', 'Technology', 'Routing (all pillars)', 'Other'];
+const FREQ = {'every routine run': -1, daily: 0, weekly: 1, quarterly: 2, on_demand: 3};
+const rows = [...D.rows].sort((a, b) => (ORDER.indexOf(a.pillar) - ORDER.indexOf(b.pillar)) || ((FREQ[a.cadence] ?? 9) - (FREQ[b.cadence] ?? 9)) || a.id.localeCompare(b.id));
+const freq = p => p.cadence === 'on_demand' ? 'on demand' : esc(p.cadence);
+const rt = p => p.hidden || !p.routine ? `<span class="pill hidden">${p.cadence === 'on_demand' ? 'on demand' : 'not in routine'}</span>` : '<span class="pill filled">in routine</span>';
+const sum = (list, k) => list.reduce((t, p) => t + (+p[k] || 0), 0);
+const n = c => rows.filter(p => p.cadence === c).length;
+$('kpis').innerHTML = [[rows.length, 'prompts'], [rows.filter(p => p.routine && !p.hidden).length, 'run by the routine'],
+  [n('daily') + ' / ' + n('weekly') + ' / ' + n('quarterly'), 'daily / weekly / quarterly'],
+  [f(sum(rows, 'runs')), 'runs so far'], [usd(sum(rows, 'cost')), 'spent so far'], [usd(sum(rows, 'runs') ? sum(rows, 'cost') / sum(rows, 'runs') : null), 'average per run'],
+  [usd(sum(rows, 'est_cost')), "to clear today's backlog"]].map(([b, s]) => `<div class="k"><b>${b}</b><span>${s}</span></div>`).join('');
+let pick = 'All';
+const draw = () => {
+  const show = rows.filter(p => pick === 'All' || p.pillar === pick);
+  $('cat-t').innerHTML = '<tr>' + ['Prompt', 'Category', 'Frequency', 'Routine', 'Shows on', 'Runs', 'Avg cost / run', 'Avg time', 'Avg tokens in / out', 'Spent', 'Cap / routine run', 'Backlog (est. cost)', 'Last run']
+      .map(c => `<th>${c}</th>`).join('') + '</tr>' +
+    show.map(p => `<tr><td class="l"><a href="#p-${esc(p.id)}"><b>${esc(p.id)}</b></a> <span class="sub">v${esc(p.version)}</span>${p.web ? ' <span class="pill">web search</span>' : ''}</td>
+      <td class="l">${esc(p.pillar)}</td><td class="l">${freq(p)}</td><td class="l">${rt(p)}</td><td class="l" title="${esc(p.shows_on)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(String(p.shows_on || '–').split(/[(,;]/)[0].trim())}</td>
+      <td>${f(p.runs)}</td><td><b>${usd(p.avg_cost)}</b></td><td>${p.avg_s ? f(p.avg_s) + ' s' : '–'}</td><td>${f(p.avg_in)} / ${f(p.avg_out)}</td>
+      <td>${usd(p.cost)}</td><td>${p.cap == null ? '–' : usd(p.cap)}</td><td>${f(p.pending)} (${usd(p.est_cost)})</td><td class="l">${esc(p.last_run) || '–'}</td></tr>`).join('') +
+    `<tr><td class="l"><b>Total (${show.length})</b></td><td></td><td></td><td></td><td></td><td><b>${f(sum(show, 'runs'))}</b></td>
+      <td><b>${usd(sum(show, 'runs') ? sum(show, 'cost') / sum(show, 'runs') : null)}</b></td><td></td><td></td><td><b>${usd(sum(show, 'cost'))}</b></td>
+      <td>${usd(sum(show.filter(p => p.routine && !p.hidden), 'cap'))}</td><td><b>${f(sum(show, 'pending'))} (${usd(sum(show, 'est_cost'))})</b></td><td></td></tr>`;
+  $('filters').innerHTML = ['All', ...ORDER.filter(o => rows.some(p => p.pillar === o))].map(o => `<button class="pill${o === pick ? ' filled' : ''}" style="cursor:pointer;background:var(--card);color:inherit;font:inherit;font-size:12px" data-p="${esc(o)}">${esc(o)} (${o === 'All' ? rows.length : rows.filter(p => p.pillar === o).length})</button>`).join('');
+  document.querySelectorAll('#filters button').forEach(b => b.onclick = () => { pick = b.dataset.p; draw(); });
+};
+draw();
+$('cat-l').innerHTML = rows.map(p => `<details class="pc" id="p-${esc(p.id)}"><summary><b>${esc(p.id)}</b><span class="pill">v${esc(p.version)}</span><span class="pill">${esc(p.pillar)}</span><span class="pill">${freq(p)}</span>${rt(p)}${p.web ? '<span class="pill">web search</span>' : ''}<span class="sub">${esc(p.title)}</span><span class="sub" style="margin-left:auto">${f(p.runs)} runs · avg ${usd(p.avg_cost)} · ${f(p.pending)} due</span></summary>
+<div class="body">
+ <div><h4>Input</h4><ul><li>One run per <b>${esc(p.subject_key)}</b> from ${chips(p.subject_from)}</li>${p.documents.map(x => `<li>Documents: ${esc(x)}</li>`).join('')}<li>Context: ${p.context.map(c => `<span class="chip" title="${esc(c.desc)}">${esc(c.name)}</span>`).join(' ') || '–'}</li><li>Model: ${esc(p.model) || '–'}</li></ul></div>
+ <div><h4>Output → tables</h4><ul>${p.outputs.map(o => `<li><b>${esc(o.table)}</b> (${f(o.rows)} rows)<br>model: ${chips(o.model) || '–'}${o.loader.length ? '<br>loader: ' + chips(o.loader) : ''}${o.children.map(k => `<br>↳ <b>${esc(k.table)}</b> (${f(k.rows)}) ${chips(k.cols)}`).join('')}</li>`).join('') || '<li>–</li>'}</ul></div>
+ <div><h4>Rules after load</h4><ul><li>Derive: ${chips(p.derive) || '–'}</li><li>Handler: ${esc(p.handler) || 'generic loader'}</li><li>Shows on: ${esc(p.shows_on) || '–'}</li></ul>
+ <h4>Planned change</h4><div class="plan">${esc(p.plan)}</div></div>
+ <div class="full"><h4>Prompt text${p.task ? ` (template, ${f(p.task.length)} characters)` : ''}</h4>${p.system ? `<div class="note">This prompt has its own system text:</div><pre class="pt">${esc(p.system)}</pre>` : ''}${p.task ? `<pre class="pt">${esc(p.task)}</pre>` : `<div class="note">No prompt file: run by code (${esc(p.handler)}); its text is built there and stored per run in prompt_run.prompt_text.</div>`}</div>
+</div></details>`).join('');
+$('sys').textContent = D.system || '';
+$('sys-model').textContent = (D.model ? 'default model ' + D.model + ' · ' : '') + f((D.system || '').length) + ' characters';
+const openHash = h => { const el = document.getElementById(h); if (el) el.open = true; };
+if (location.hash) openHash(location.hash.slice(1));
+document.querySelectorAll('a[href^="#p-"]').forEach(a => a.addEventListener('click', () => openHash(a.getAttribute('href').slice(1))));
+</script></body></html>"""
+
+
 def render(d: dict) -> str:
     data = json.dumps(d, default=str).replace("</", "<\\/")
     return TEMPLATE.replace("__GEN__", html.escape(d["generated"])).replace("__DATA__", data)
+
+
+def render_catalogue(d: dict) -> str:
+    """The separate prompt catalogue page: one row per prompt (category, frequency, routine, cost), then the input -> output detail."""
+    rows = list(d["catalogue"])
+    known = {r["id"] for r in rows}
+    for p in d["prompts"]:                      # prompts run by code with no prompts/<id>.yml (triage_route)
+        if p["prompt_id"] not in known:
+            title, handler = CODE_PROMPTS.get(p["prompt_id"], ("Run by code", None))
+            rows.append({"id": p["prompt_id"], "title": title,
+                         "version": p.get("version"), "set": "-", "cadence": "every routine run", "web": False, "shows_on": "nothing directly",
+                         "subject_key": "document batch" if p["prompt_id"] == "triage_route" else "product",
+                         "subject_from": ["source_document" if p["prompt_id"] == "triage_route" else "client_product"], "documents": [], "context": [], "fills": [],
+                         "outputs": [], "derive": [], "handler": handler, "hidden": False, "plan": "No change.",
+                         "runs": p["runs"], "avg_cost": p["avg_cost"], "pending": p.get("pending"), "pillar": PILLAR.get(p["prompt_id"], "Other"),
+                         "routine": True, "cap": None, "avg_s": p.get("avg_s"), "avg_in": p.get("avg_in"), "avg_out": p.get("avg_out"),
+                         "cost": p.get("cost"), "est_cost": p.get("est_cost"), "model": p.get("model"), "last_run": p.get("last_run")})
+    style = TEMPLATE[TEMPLATE.index("<style>"):TEMPLATE.index("</style>") + len("</style>")]
+    shared = yaml.safe_load((ROOT / "prompts" / "_shared.yml").read_text(encoding="utf-8")) or {}
+    data = json.dumps({"generated": d["generated"], "rows": rows, "system": shared.get("system"), "model": shared.get("model")}, default=str).replace("</", "<\\/")
+    return CATALOGUE_TEMPLATE.replace("__STYLE__", style).replace("__GEN__", html.escape(d["generated"])).replace("__DATA__", data)
 
 
 def main(argv=None) -> int:
@@ -892,7 +1174,10 @@ def main(argv=None) -> int:
         d = collect(conn, not a.no_pending)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(render(d), encoding="utf-8")
+    cat_out = Path(a.out).with_name("prompt_catalogue.html")
+    cat_out.write_text(render_catalogue(d), encoding="utf-8")
     print(f"wrote {a.out}  ({d['kpi']['runs']} runs, {len(d['tables'])} tables)")
+    print(f"wrote {cat_out}  ({len(d['catalogue'])} prompts)")
     return 0
 
 

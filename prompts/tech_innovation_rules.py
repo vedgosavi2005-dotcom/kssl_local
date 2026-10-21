@@ -2,6 +2,7 @@
 
     product_gate   a candidate whose title carries a KSSL or competitor product name is "a product, not a technology" and is deleted (A.3.2)
     stance_for     the model proposes watch / partner / license / develop / ignore; the rule allows only what the facts support
+    position_check behind / parity / ahead only with a reason that starts "figure:" or "stage:" (innovation_detail v4), else unknown
 
     python -m prompts.tech_innovation_rules --selftest
 """
@@ -96,6 +97,25 @@ def stance_for(stance, client_position, relevance, developer_is_competitor) -> t
     return s, ""
 
 
+POSITIONS = ("behind", "parity", "ahead")
+EARNED = ("figure:", "stage:")
+NO_OFFER = "no_offer"            # owner 2026-10-19: "no offering: ..." is shown as its own pill (code fits client_position varchar(10))
+
+
+def position_check(client_position, reason) -> tuple:
+    """(position, note). behind / parity / ahead stand only when the model's client_position reason states its basis as a compared
+    figure ("figure: ...") or a compared stage of the same capability ("stage: ..."); "no offering: ..." or no basis -> unknown."""
+    p = str(client_position or "").strip().lower()
+    r = str(reason or "").strip().lower()
+    if r.startswith("no offering:") and p in (*POSITIONS, "unknown", NO_OFFER):   # a stated, sourced absence of any KSSL offering
+        return NO_OFFER, ""
+    if p not in POSITIONS:
+        return "unknown", ""
+    if r.startswith(EARNED):
+        return p, ""
+    return "unknown", f"client_position {p} needs a reason starting 'figure:' or 'stage:' (a compared figure or stage of a named product): unknown"
+
+
 def delete_innovation(cur, iid) -> None:
     cur.execute("DELETE FROM staging.fact_source WHERE table_name = 'technology_innovation' AND row_id = %s", (str(iid),))
     for t in ("technology_innovation_source", "technology_innovation_company", "technology_innovation_status",
@@ -123,6 +143,14 @@ def innovation_gate_hook(cur, ctx: dict) -> None:
             ctx["rows"] = [x for x in ctx.get("rows", []) if not (x[0] == "technology_innovation" and str(x[1]) == str(iid))]
 
 
+def no_offer_labels(cur, iid) -> None:
+    """The status words of the no-offering pill (the loader's position_label map is keyed by the model's value, which stays unknown)."""
+    cur.execute("SELECT coalesce(nullif(brand_name, ''), client_name) AS n FROM staging.client_account ORDER BY client_id LIMIT 1")
+    name = (cur.fetchone() or {}).get("n") or "client"
+    cur.execute("UPDATE staging.technology_innovation_status SET position_label = %s, assessment_badge = 'NO OFFERING' WHERE innovation_id = %s",
+                (f"No {name} offering", iid))
+
+
 @hook("innovation_stance")
 def innovation_stance_hook(cur, ctx: dict) -> None:
     """technology_innovation.stance = stance_for(model stance, client_position, transient relevance, developer type). A change made by the
@@ -138,7 +166,20 @@ def innovation_stance_hook(cur, ctx: dict) -> None:
                     (r["innovation_id"],))
         comp = bool((cur.fetchone() or {}).get("comp"))
         rel = (tr.get(("technology_innovation", str(iid))) or {}).get("relevance")
-        pos = r.get("client_position") or "unknown"
+        cur.execute("""SELECT quote FROM staging.fact_source WHERE table_name = 'technology_innovation' AND row_id = %s
+                       AND column_name = 'client_position' AND source_tier = 'judgement' AND quote NOT LIKE 'Rule: %%'
+                       ORDER BY retrieved_at DESC LIMIT 1""", (str(r["innovation_id"]),))
+        why = (cur.fetchone() or {}).get("quote")
+        pos, pnote = position_check(r.get("client_position"), why)
+        if pos == NO_OFFER:
+            no_offer_labels(cur, r["innovation_id"])
+        if pnote:                                     # the pill is earned or it is not shown: clear the status labels keyed by the position
+            cur.execute("UPDATE staging.technology_innovation_status SET position_label = NULL, assessment_badge = NULL WHERE innovation_id = %s",
+                        (r["innovation_id"],))
+            cur.execute("""INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, publisher, quote, retrieved_at)
+                           VALUES ('technology_innovation', %s, 'client_position', 'judgement', 'judgement', NULL, %s, now())""",
+                        (str(r["innovation_id"]), "Rule: " + pnote))
+            ctx["notes"].append(f"innovation_stance: {iid}: {pnote}")
         st, note = stance_for(r.get("stance"), pos, rel, comp)
         cur.execute("UPDATE staging.technology_innovation SET stance = %s, client_position = %s WHERE innovation_id = %s", (st, pos, r["innovation_id"]))
         if note:
@@ -161,6 +202,12 @@ def selftest() -> None:
     assert stance_for("ignore", "ahead", 2, False) == ("ignore", "") and stance_for("ignore", "ahead", 4, False)[0] == "watch"
     assert stance_for(None, "behind", 5, False)[0] == "watch" and stance_for("develop", "behind", None, False)[0] == "watch"
     assert stance_for("Partner", "unknown", "3", False) == ("partner", "")
+    assert position_check("behind", "figure: ATAGS 48 km vs 70 km.") == ("behind", "")
+    assert position_check("Parity", " Stage: MArG 155/52 shown (2) and the innovation is a prototype (2).") == ("parity", "")
+    assert position_check("behind", "no offering: no KSSL product has this.") == (NO_OFFER, "")
+    assert position_check("unknown", " No offering: none listed.") == (NO_OFFER, "") and position_check("unknown", "no comparable fact: x") == ("unknown", "")
+    assert position_check("ahead", None)[0] == "unknown" and position_check("unknown", "figure: x") == ("unknown", "")
+    assert position_check(None, None) == ("unknown", "") and position_check("maybe", "figure: x") == ("unknown", "")
     print("tech_innovation_rules self-check ok")
 
 

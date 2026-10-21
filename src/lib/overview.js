@@ -23,6 +23,13 @@ export const SEQ_OPTIONS = [
   ["priority", "Priority (threats first)"],
   ["recency", "Most recent"],
 ];
+/* The same two modes, worded for each pillar (owner 2026-10-22: market and technology showed the competitive
+   "threats first", a filter that means nothing there). */
+export const SEQ_OPTIONS_BY_PILLAR = {
+  competitive: SEQ_OPTIONS,
+  market: [["priority", "Priority (best KSSL fit first)"], ["recency", "Most recent"]],
+  technology: [["priority", "Priority (rival advances first)"], ["recency", "Most recent"]],
+};
 
 const MONTHS = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,

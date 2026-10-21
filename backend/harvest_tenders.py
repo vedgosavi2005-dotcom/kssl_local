@@ -231,6 +231,62 @@ def make_tags(text: str, cpvs: list[str] | None, buyer: str | None, scoped: bool
     return tags
 
 
+# Tender category by code, for a STUB (a notice the `tender` prompt has not read yet; the prompt's own judgement replaces it).
+# Only the MAIN CPV code (the first one listed) and only CPV groups that name one category without doubt. Checked 2026-10-18
+# against the tender prompt's judgement on the 855 notices it read: 265 agree, 2 differ, 5 left empty by the model (97 %).
+# Groups that split between categories (3530 weapons, 35320/35322 firearms and artillery, 3540-3542 military vehicles and their
+# parts, 357 military electronics) are left to the model (prompts/tender_category.yml). 35332 = mines (naval or land): left out.
+CPV_CATEGORY = (("35332", None), ("3533", "Ammunition"), ("35321", "Small Arms"), ("35341", "Small Arms"),
+                ("355", "Marine / Naval"), ("35613", "UAVs & Drones"))
+
+
+def main_cpv(api: str, raw: dict | None, cpvs: list[str] | None) -> str | None:
+    """The notice's first CPV code. Prozorro lists the same codes under scheme 'ДК021' (Ukraine's CPV), which cpv_codes leaves out."""
+    codes = [c for c in (cpvs or []) if c]
+    if not codes and api == "prozorro_ua":
+        codes = [((i or {}).get("classification") or {}).get("id") for i in ((raw or {}).get("items") or []) if isinstance(i, dict)]
+        codes = [c for c in codes if c]
+    return codes[0].split("-")[0] if codes else None
+
+
+def cpv_category(code: str | None) -> str | None:
+    for prefix, cat in CPV_CATEGORY:
+        if code and code.startswith(prefix):
+            return cat
+    return None
+
+
+def stub_categories(cur, dry_run: bool = False) -> dict:
+    """category_id / category_text of every stub without one (market_tender with no description = not read by the tender prompt),
+    from its main CPV code (cpv_category). One fact_source row each (tier stored, the notice url, the CPV code as the quote).
+    Never touches a tender the prompt has read."""
+    cur.execute("SELECT category_id, category_name FROM staging.technology_category")
+    ids = {r[1]: r[0] for r in cur.fetchall()}
+    cur.execute("""SELECT t.tender_id, coalesce(t.source_url, s.source_url) AS url, r.source_api, r.cpv_codes, r.raw
+                   FROM staging.market_tender t
+                   JOIN LATERAL (SELECT * FROM staging.tender_raw x WHERE x.tender_id = t.tender_id
+                                 ORDER BY x.published_at DESC NULLS LAST LIMIT 1) r ON true
+                   LEFT JOIN staging.market_tender_source s ON s.tender_id = t.tender_id AND s.is_primary
+                   WHERE t.category_id IS NULL AND t.description IS NULL""")
+    out = {"stubs": 0, "set": 0}
+    for tid, url, api, cpvs, raw in cur.fetchall():
+        out["stubs"] += 1
+        code = main_cpv(api, raw, cpvs)
+        cat = cpv_category(code)
+        if not cat or cat not in ids or not url:
+            continue
+        out["set"] += 1
+        out[cat] = out.get(cat, 0) + 1
+        if dry_run:
+            continue
+        cur.execute("UPDATE staging.market_tender SET category_id = %s, category_text = %s WHERE tender_id = %s", (ids[cat], cat, tid))
+        cur.execute("DELETE FROM staging.fact_source WHERE table_name = 'market_tender' AND row_id = %s AND column_name = 'category_id'", (str(tid),))
+        cur.execute("""INSERT INTO staging.fact_source (table_name, row_id, column_name, source_url, source_tier, quote)
+                       VALUES ('market_tender', %s, 'category_id', %s, 'stored', %s)""",
+                    (str(tid), url, f"Main CPV code {code} -> {cat} (code rule harvest_tenders.CPV_CATEGORY)"))
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # small helpers
 # ---------------------------------------------------------------------------------------------------------------
@@ -1252,6 +1308,7 @@ def stage(args) -> dict:
         cur.execute("UPDATE staging.tender_raw SET tender_id = %s, status = 'staged' WHERE raw_id = %s::uuid", (tid, rid))
         if out["staged"] % 200 == 0:
             conn.commit()
+    out["cpv_category"] = stub_categories(cur, args.dry_run)       # new and older stubs alike
     if args.dry_run:
         conn.rollback()
     else:
@@ -1496,6 +1553,12 @@ def selftest():
     assert notice_key("uk_fts", {"ocid": "ocds-1"}, "T", "B", None, True) == ("ocid", "ocds-1") and notice_key("uk_fts", {}, "T", "B", dl, True) is None
     assert notice_key("ted_eu", None, " Parts  for warships ", "Marinha", dl, True) == ("text", "ted_eu", "parts for warships", "marinha", date(2026, 11, 3))
     assert notice_key("ted_eu", None, "T", "B", None, True) is None and notice_key("ted_eu", None, "T", "B", None, False) == ("text", "ted_eu", "t", "b", None)
+    # stub category from the main CPV code
+    assert cpv_category(main_cpv("ted_eu", {}, ["35330000", "35613000"])) == "Ammunition"
+    assert cpv_category(main_cpv("ted_eu", {}, ["35400000", "35330000"])) is None          # only the main code counts
+    assert cpv_category("35332000") is None and cpv_category("35321100") == "Small Arms" and cpv_category("35521000") == "Marine / Naval"
+    assert main_cpv("prozorro_ua", {"items": [{"classification": {"scheme": "ДК021", "id": "35613000-4"}}]}, []) == "35613000"
+    assert main_cpv("uk_fts", {}, []) is None and cpv_category(None) is None
     print("selftest ok")
 
 
@@ -1544,6 +1607,7 @@ def main(argv=None):
         print(f"stage{' (dry-run)' if args.dry_run else ''}: candidates={o['candidates']} staged={o['staged']} linked_to_existing={o['linked_existing']} "
               f"merged_republications={o.get('merged_republication', 0)} by_api={o['by_api']}")
         print(f"  not staged: {o['not_staged']}")
+        print(f"  stub category from the main CPV code: {o['cpv_category']}")
         for e in o["examples"]:
             print("  e.g.", e)
         return

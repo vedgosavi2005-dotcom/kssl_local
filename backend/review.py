@@ -448,7 +448,14 @@ def _sources(st, table: str, row: dict[str, Any]) -> list[dict[str, Any]]:
     ids = list(_row_ids([(table, row)]).get(table, set()))
     st.execute("""SELECT column_name, source_url, source_tier, publisher, quote, document_id FROM staging.fact_source
                   WHERE table_name = %s AND row_id = ANY(%s) ORDER BY column_name""", (table, ids))
-    return [dict(r) for r in st.fetchall()]
+    out = [dict(r) for r in st.fetchall()]
+    # a cell translated by backend/translate_market.py: its original wording (db/setup/29_text_translation.sql)
+    st.execute("SELECT to_regclass('staging.text_original') AS t")
+    if st.fetchone()["t"]:
+        st.execute("""SELECT column_name, original, lang FROM staging.text_original WHERE table_name = %s AND row_id = ANY(%s)""", (table, ids))
+        out += [{"column_name": r["column_name"], "source_url": None, "source_tier": "original", "publisher": None, "quote": r["original"],
+                 "document_id": f"translated:{r['lang'] or ''}"} for r in st.fetchall()]
+    return out
 
 
 def _diff(row: dict, live: dict | None) -> dict[str, Any] | None:

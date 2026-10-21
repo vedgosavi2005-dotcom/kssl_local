@@ -104,6 +104,11 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
                         {key: json_value(value) for key, value in dict(row).items()}
                         for row in cur.fetchall()
                     ]
+            if REVIEW:          # the review drawer's per-signal prompt cost (db/setup/24_signal_prompt_stats.sql), never the live site
+                cur.execute("SELECT to_regclass('staging.signal_prompt_stats') AS v")
+                if cur.fetchone()["v"]:
+                    cur.execute("SELECT * FROM staging.signal_prompt_stats")
+                    database["serving"]["signal_prompt_stats"] = [{k: json_value(v) for k, v in dict(r).items()} for r in cur.fetchall()]
     return database
 
 
@@ -159,6 +164,27 @@ def dataset():
         return payload
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={"error": f"PostgreSQL dataset unavailable: {exc}"})
+
+
+@app.get("/api/image/{image_id}")
+def image(image_id: str):
+    """A stored article image (media.image, backend/media_images.py). Both the live and the review API read it from the STAGING
+    database: images are an asset cache, not reviewed content. Cached by the browser for a week (the id is a hash of its source)."""
+    import uuid as _uuid
+    from fastapi.responses import Response
+    try:
+        _uuid.UUID(image_id)
+    except ValueError:
+        raise HTTPException(status_code=404)
+    dsn = review.staging_dsn()
+    if not dsn:
+        raise HTTPException(status_code=404)
+    with psycopg2.connect(dsn, connect_timeout=5) as conn, conn.cursor() as cur:
+        cur.execute("SELECT content_type, bytes FROM media.image WHERE image_id = %s", (image_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404)
+    return Response(content=bytes(row[1]), media_type=row[0], headers={"Cache-Control": "public, max-age=604800, immutable"})
 
 
 @app.get("/api/manifest")

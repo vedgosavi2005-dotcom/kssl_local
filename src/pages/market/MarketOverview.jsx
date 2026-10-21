@@ -462,7 +462,15 @@ export default function MarketOverview() {
           selects, a separate green "clear" chip -- so the two tabs of one pillar
           filtered in two designs. The <select> is kept because it is the correct
           control for keyboard and screen readers; only its chrome is shared. */}
-      {section === "outlook" ? <MarketOutlook data={data} o={ol} /> : null}
+      {section === "outlook" ? (
+        <MarketOutlook
+          data={data}
+          o={ol}
+          /* a segment opens the Tender Pipeline on that category (owner 2026-10-22: "when I click on ammunition it
+             should open all the ammunition tenders"); a segment that is no tender category opens it unfiltered */
+          onSegment={(seg) => jumpTo("market", "tender", { cat: (data.tenders || []).some((t) => t.cat === seg) ? seg : null, country: null })}
+        />
+      ) : null}
       {section === "outlook" ? null : (<>
       <div className="tp-fbar">
         <span className="eyebrow">Filter</span>

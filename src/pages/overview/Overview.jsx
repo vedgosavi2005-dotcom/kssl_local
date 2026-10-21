@@ -19,6 +19,7 @@ import {
   tilePredicate,
   writeFeedPage,
   SEQ_LABEL,
+  SEQ_OPTIONS_BY_PILLAR,
   TILE_LABELS,
 } from "../../lib/overview";
 
@@ -350,6 +351,7 @@ export default function Overview({
           onFilter={onFilter}
           onSeq={onSeq}
           seqMode={seqMode}
+          seqOptions={SEQ_OPTIONS_BY_PILLAR[pillarKey] || undefined}
           searchQuery={feedSearchQuery}
           onSearch={setFeedSearchQuery}
           counts={filterCounts}

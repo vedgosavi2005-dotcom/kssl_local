@@ -25,7 +25,7 @@ import { competitorFullName } from "../../lib/companyNames";
    later, on a dashboard whose job is "what is new". Same key/value shape, held in
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
-import { Review } from "../../components/review/Review.jsx";
+import { REVIEW, Review, TraceField } from "../../components/review/Review.jsx";
 
 // Helper function to extract clean company short name without full form or legal suffixes
 const cleanCompanyName = (rawName) => {
@@ -311,8 +311,8 @@ export default function Profile() {
   const [country, setCountry] = useState("all");
   const [revenue, setRevenue] = useState("all");
   const roster = useMemo(() => rosterOf(data), [data]);
-  // KSSL's own profile, pinned above the rivals (rosterOf lists rivals only)
-  const clientCid = data.client && data.competitors && data.competitors[data.client.id] ? data.client.id : "";
+  // KSSL's own profile, pinned above the rivals (rosterOf lists rivals only); the team's own view: review site only (owner 2026-10-21)
+  const clientCid = REVIEW && data.client && data.competitors && data.competitors[data.client.id] ? data.client.id : "";
   /* Finding T 3: no country-level filter on the competitor list.
 
      2026-09-06: this filters on ORIGIN -- the country a company is FROM -- and not
@@ -794,35 +794,35 @@ export default function Profile() {
                     <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
                       Starting Year
                     </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.founded}</span>
+                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.founded}<TraceField src={p._src} cols={["starting_year_short", "starting_year_text", "starting_year"]} /></span>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
                     <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
                       Headquarters
                     </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.hq}</span>
+                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.hq}<TraceField src={p._src} cols={["headquarters", "origin_country"]} /></span>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
                     <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
                       Company Size
                     </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.size}</span>
+                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.size}<TraceField src={p._src} cols={["employee_count_short", "employee_count_text", "employee_count"]} /></span>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", borderBottom: "1px solid var(--d-line)", fontSize: "13px", alignItems: "center" }}>
                     <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
                       Annual Revenue / Sales
                     </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.revenue}</span>
+                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{companyMeta.revenue}<TraceField src={p._src} cols={["revenue_short", "revenue_text", "annual_revenue", "revenue_currency", "financial_year", "revenue_usd"]} /></span>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "12px", padding: "14px 18px", fontSize: "13px", alignItems: "center" }}>
                     <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600", textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>
                       Industry / Sector
                     </span>
-                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{formatSectorName(companyMeta.sector)}</span>
+                    <span style={{ color: "var(--d-txt)", fontWeight: "600" }}>{formatSectorName(companyMeta.sector)}<TraceField src={p._src} cols={["industry_short", "industry_sector"]} /></span>
                   </div>
                 </div>
               )}

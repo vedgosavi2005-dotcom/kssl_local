@@ -25,7 +25,7 @@ export const MAT_LAB = {
 /* the client's position against a record: the stored code (`gap`) names the colour, this names the words */
 export const gapLab = (gap) => {
   const c = clientShort();
-  return { behind: `${c} behind`, parity: `${c} at parity`, ahead: `${c} ahead` }[gap] || "";
+  return { behind: `${c} behind`, parity: `${c} at parity`, ahead: `${c} ahead`, no_offer: `No ${c} offering` }[gap] || "";
 };
 
 /* The maturity and position WORDS are stored (serving.technology_innovation_status.maturity_label / position_label,
@@ -47,7 +47,7 @@ export function maturityLabel(iv) {
 
 /* The header pill is a VERDICT. No assessed position, no pill -- and a value outside
    the vocabulary is not a verdict either. */
-const PILL = { behind: "GAP", parity: "WATCH", ahead: "AHEAD" };
+const PILL = { behind: "GAP", parity: "WATCH", ahead: "AHEAD", no_offer: "NO OFFERING" };
 export function positionPill(gap) {
   if (!has(gap)) return null;
   const k = String(gap).trim();

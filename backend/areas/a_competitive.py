@@ -20,10 +20,12 @@ Enumerations the UI expects (stored values, compared case-insensitively; anythin
   competitive_competitor_swot.swot_type      : strength | weakness (opportunity / threat rows are not read)
 """
 
+import os
 import re
 from collections import defaultdict
 from typing import Any
 
+from prompts.derive import tech_basis
 from backend.common import first_nonempty, table, text
 
 
@@ -107,7 +109,10 @@ def build_swot(database):
 
 
 def _sales(row):
-    """{text, fy}: the verbatim revenue text, else the stored amount joined with its currency."""
+    """{text, fy}: the short revenue (backend/company_short.py: "€9.94B (FY2025)", year included), else the verbatim revenue text,
+    else the stored amount joined with its currency."""
+    if row.get("revenue_short") not in (None, ""):
+        return {"text": row.get("revenue_short"), "fy": None}
     fy = row.get("financial_year")
     if row.get("revenue_text") not in (None, ""):
         return {"text": row.get("revenue_text"), "fy": fy}
@@ -133,7 +138,7 @@ def build_competitors(database):
             "cid": cid,
             "name": row.get("display_name"),
             "legal": row.get("legal_name"),
-            "sector": row.get("industry_sector"),
+            "sector": first_nonempty(row, "industry_short", "industry_sector"),
             "hq": row.get("headquarters"),
             "country": row.get("origin_country"),
             "threat": row.get("threat_level"),
@@ -141,9 +146,14 @@ def build_competitors(database):
             "strategic_positioning": row.get("strategic_positioning"),
             "strengths": swot[cid]["strengths"] if cid in swot else [],
             "weaknesses": swot[cid]["weaknesses"] if cid in swot else [],
-            "starting_year": first_nonempty(row, "starting_year_text", "starting_year"),
-            "company_size": first_nonempty(row, "employee_count_text", "employee_count"),
+            # short forms (backend/company_short.py, local LLM, figures checked against the sentence); the workbook sentence is in
+            # detailsFull for the Trace / tooltip (owner 2026-10-22: "make them a single word or short")
+            "starting_year": first_nonempty(row, "starting_year_short", "starting_year_text", "starting_year"),
+            "company_size": first_nonempty(row, "employee_count_short", "employee_count_text", "employee_count"),
             "sales": _sales(row),
+            "detailsFull": {"starting_year": row.get("starting_year_text"), "company_size": row.get("employee_count_text"),
+                            "sales": row.get("revenue_text"), "financial_year": row.get("financial_year"), "sector": row.get("industry_sector"),
+                            "revenueUsd": float(row["revenue_usd"]) if row.get("revenue_usd") is not None else None},
             "revenue_filter": row.get("revenue_tier"),
             # spec test by code (prompts/derive_comp.py qualify_competitors): same product line AND same market
             "qualifies": row.get("qualifies"),
@@ -212,6 +222,14 @@ def build_news(database, competitors):
                        for a in ordered(lenses.get(mid, []), "display_order")],
             "_src": src("competitive_competitor_moment", "moment_id", mid),
         })
+    # KSSL's own news (stored under its fixed uuid, backend: build) is the client entry's "Company latest news"
+    import uuid
+    for acc in table(database, "serving", "client_account")[:1]:
+        ckey = str(uuid.uuid5(uuid.NAMESPACE_URL, f"kssl-client:{text(acc.get('client_id'))}"))
+        if ckey in news:
+            rows = news.pop(ckey)
+            if _review():                       # KSSL's own entry is for the team only: review site (owner 2026-10-21)
+                news[text(acc.get("client_id"))] = rows
     for rows in news.values():
         rows.sort(key=_date_key, reverse=True)
     return dict(news)
@@ -317,28 +335,35 @@ def client_of(database) -> str | None:
     return rows[0].get("client_name") if rows else None
 
 
+def signal_story(row, det, labels, steps_by, stories):
+    """The story (event) timeline of a signal, for every signal that has a story (a v1 row with no scores too)."""
+    lab = lambda col, code: labels.get(("story_step", col, text(code))) or code  # noqa: E731
+    story_id = text(row.get("story_id"))
+    story = stories.get(story_id) or {}
+    return {
+            "id": story_id,
+            "title": story.get("title"),
+            "label": lab("label_after", story.get("current_label")),
+            "steps": [{"date": s.get("step_date"), "type": lab("step_type", s.get("step_type")),
+                       "line": s.get("one_line"), "changed": s.get("changed"), "url": s.get("source_url"),
+                       "label": lab("label_after", s.get("label_after")) if s.get("label_after") else None,
+                       "current": bool(det) and s.get("source_url") == det.get("source_url")}
+                      for s in ordered(steps_by.get(story_id, []), "step_no")],
+    } if story else None
+
+
 def signal_v2(database, row, det, labels, steps_by, stories, news_by, products):
-    """v2 drawer parts (glance, risk, story timeline, product news); {} for a v1 row with no scores."""
+    """v2 drawer parts (glance, risk, product news); {} for a v1 row with no scores."""
     if row.get("probability") is None:
         return {}
     lab = lambda col, code, t="competitive_signal": labels.get((t, col, text(code))) or code  # noqa: E731
     client = client_of(database)
     story_id = text(row.get("story_id"))
-    story = stories.get(story_id) or {}
     return {
         "v2": True,
         # the client is named from client_account, never typed (no client row: the label carries no name)
         "glance": [[name.format(client=client) if client else name.replace(" on {client}", ""), det.get(col)]
                    for col, name in GLANCE if det and det.get(col)],
-        "story": {
-            "title": story.get("title"),
-            "label": lab("label_after", story.get("current_label"), "story_step"),
-            "steps": [{"date": s.get("step_date"), "type": lab("step_type", s.get("step_type"), "story_step"),
-                       "line": s.get("one_line"), "changed": s.get("changed"), "url": s.get("source_url"),
-                       "label": lab("label_after", s.get("label_after"), "story_step") if s.get("label_after") else None,
-                       "current": bool(det) and s.get("source_url") == det.get("source_url")}
-                      for s in ordered(steps_by.get(story_id, []), "step_no")],
-        } if story else None,
         "productNews": [{"product": (products.get(text(n.get("product_id"))) or {}).get("product_name"),
                          "productId": text(n.get("product_id")) or None,
                          "type": lab("news_type", n.get("news_type"), "competitive_product_news"),
@@ -346,6 +371,54 @@ def signal_v2(database, row, det, labels, steps_by, stories, news_by, products):
                          "variant": n.get("product_variant"), "relevance": n.get("kssl_relevance")}
                         for n in news_by.get(story_id, [])],
     }
+
+
+def _review() -> bool:
+    """The review site (KSSL_VIEW=review): the team's own views (risk panels, KSSL's own entry) ship only here (owner 2026-10-21)."""
+    return os.environ.get("KSSL_VIEW", "").strip().lower() == "review"
+
+
+def label_basis(row):
+    """Review site only (owner 2026-10-21): the scores behind threat / watch -- the probability x impact point for the risk grid,
+    the impact score per dimension, and each threat test with what it needs, what the signal got and pass / fail
+    (prompts/derive.signal_label_tests: the same rule as the label). The live site never ships this (decision 2026-10-17)."""
+    if os.environ.get("KSSL_VIEW", "").strip().lower() != "review":
+        return {}
+    from prompts.derive import DIMENSION_WORD, IMPACT_DIMENSIONS
+    b = row.get("label_basis") or {}
+    if isinstance(b, str):
+        import json
+        b = json.loads(b)
+    p, i = b.get("probability"), b.get("impact")
+    return {"labelBasis": {
+        "label": lower(row.get("classification")),
+        "summary": b.get("summary"),                          # one plain sentence: why this label
+        "score": row.get("risk_score"),                       # 0-100 (rule s3), the threat sort key
+        "confidence": row.get("risk_confidence"),             # high / medium / low
+        "probability": p,                                      # resolved (stated or derived), the grid's y
+        "impact": i,                                           # the grid's x
+        "risk": p * i if p is not None and i is not None else None,
+        "dimensions": [{"key": d, "label": DIMENSION_WORD.get(d, d), "score": row.get(f"impact_{d}")} for d in IMPACT_DIMENSIONS],
+        "mainDimension": row.get("impact_dimension"),
+        # per test: key, question, answer, need, pass, basis (stated = from the article, derived = worked out by code, unknown);
+        # test / got repeat question / answer for the first panel version
+        "tests": [{**t, "test": t.get("question"), "got": t.get("answer")} for t in b.get("tests") or []],
+        "ruleVersion": row.get("rule_version"),
+    }}
+
+
+def prompt_stats(rows: list) -> dict:
+    """Review site only: what the model spent on one signal (staging.signal_prompt_stats rows of that signal), per prompt and total."""
+    if not rows:
+        return {}
+    num = lambda r, k: float(r.get(k) or 0)  # noqa: E731
+    by = [{"prompt": r.get("prompt_id"), "runs": r.get("runs"), "failures": r.get("failures"), "reruns": r.get("reruns"),
+           "tokensIn": round(num(r, "tokens_in")), "tokensOut": round(num(r, "tokens_out")), "costUsd": round(num(r, "cost_usd"), 4),
+           "seconds": round(num(r, "seconds"), 1), "models": r.get("models"), "lastRunAt": r.get("last_run_at")}
+          for r in sorted(rows, key=lambda r: -num(r, "cost_usd"))]
+    total = {k: sum(x[k] or 0 for x in by) for k in ("runs", "failures", "reruns", "tokensIn", "tokensOut", "costUsd", "seconds")}
+    total["costUsd"], total["seconds"] = round(total["costUsd"], 4), round(total["seconds"], 1)
+    return {"promptStats": {"total": total, "byPrompt": by}}
 
 
 def published_text(row):
@@ -366,6 +439,7 @@ def build_signals(database, competitors, details):
     steps_by = by_key(table(database, "serving", "story_step"), "story_id")
     news_by = by_key(table(database, "serving", "competitive_product_news"), "story_id")
     products = {text(r.get("product_id")): r for r in table(database, "serving", "competitive_product")}
+    stats_by = by_key(table(database, "serving", "signal_prompt_stats"), "signal_id")    # review only (backend/app.py)
     cards = []
     for row in ordered(table(database, "serving", "competitive_signal"), "sequence_no"):
         sid = text(row.get("signal_id"))
@@ -396,14 +470,17 @@ def build_signals(database, competitors, details):
             "sowhat": row.get("summary"),
             "url": url,
             "image": row.get("thumbnail_url"),
-            # ponytail: risk = probability x impact (1-25), the threat sort key
+            # ponytail: risk = probability x impact (1-25), the old sort key; riskScore (0-100, rule s3) supersedes it
             "risk": row["probability"] * row["impact"] if row.get("probability") is not None and row.get("impact") is not None else None,
+            **({"riskScore": row.get("risk_score")} if _review() else {}),      # rule s3 sort key: review site only (owner 2026-10-21)
             # the threat tie-breaks after risk: sooner effect, then in a client market (the matrix itself is backend-only)
             "timeToEffect": row.get("time_to_effect"),
             "inClientMarket": row.get("in_client_market"),
             "ksslImpact": det.get("why_it_matters") if det else None,
             "ksslImpactKind": lower(classification),
             "sec": [],
+            # the story (event) this signal is a step of: the overview shows one card per story, the latest signal on top
+            "storyId": text(row.get("story_id")) or None,
             "_src": src("competitive_signal", "signal_id", sid),
         }
         cards.append(card)
@@ -427,6 +504,9 @@ def build_signals(database, competitors, details):
             "eyebrow": det.get("impact_eyebrow"),
             "suggest": [det.get("ask_box_query")] if det.get("ask_box_query") else [],
             "_src": src("competitive_signal", "signal_id", sid),
+            "story": signal_story(row, det, labels, steps_by, stories),
+            **label_basis(row),
+            **prompt_stats(stats_by.get(sid, [])),
             **signal_v2(database, row, det, labels, steps_by, stories, news_by, products),
         }
     return cards
@@ -490,6 +570,9 @@ def build_tech_articles(database, competitors, details):
         cards.append(card)
         details[aid] = {
             "id": aid,
+            **({"labelBasis": tech_basis(
+                row.get("classification"), row.get("relevance"), row.get("maturity"))}
+               if os.environ.get("KSSL_VIEW", "").strip().lower() == "review" else {}),
             "dir": lower(row.get("direction")),
             "title": row.get("title"),
             "facts": [[f.get("ui_label"), f.get("fact_value"), f.get("proof_text")]
@@ -521,12 +604,29 @@ def build(database, d):
     comp_order = sorted(competitors, key=lambda c: (competitors[c]["name"] or "").lower())
     client = {"id": client_id or None, "name": client_name, "short": client_short,
               "_src": src("client_account", "client_id", client_id) if account else None}
-    if client_id and client_id not in competitors:
+    if client_id and client_id not in competitors and not _review():      # live site: the client entry as it was before 2026-10-21
         competitors[client_id] = {
             "id": client_id, "cid": client_id, "name": client_name, "dir": "client",
             "sector": account.get("industry_sector"), "hq": account.get("headquarters"),
-            "country": account.get("country"), "strategic_positioning": account.get("strategic_positioning"),
+            "country": account.get("country"), "strategic_positioning": None,
             "leadership": [], "global_locations": [], "partners": [], "products": [],
+            "_src": src("client_account", "client_id", client_id),
+        }
+    if client_id and client_id not in competitors:
+        # review site only (owner 2026-10-21): KSSL's own leaders and plants sit in the competitor-keyed tables under a fixed uuid (it is not a competitor: no
+        # qualification, no threat); loaded from kssl.in with sources (2026-10-21)
+        import uuid
+        ckey = str(uuid.uuid5(uuid.NAMESPACE_URL, f"kssl-client:{client_id}"))
+        competitors[client_id] = {
+            "id": client_id, "cid": client_id, "name": client_name, "dir": "client", "isClient": True,
+            "legal": account.get("legal_name"),
+            "sector": account.get("industry_sector"), "hq": account.get("headquarters"),
+            "country": account.get("country"), "strategic_positioning": account.get("strategic_positioning"),
+            "starting_year": None, "company_size": None, "sales": None,      # no source states them yet: left empty, never guessed
+            "leadership": build_leaders(database).get(ckey, []),
+            "global_locations": [l.get("location_name") for l in table(database, "serving", "competitive_competitor_location")
+                                 if text(l.get("competitor_id")) == ckey and l.get("location_name")],
+            "partners": [], "products": [],
             "_src": src("client_account", "client_id", client_id),
         }
     details = d["details"]

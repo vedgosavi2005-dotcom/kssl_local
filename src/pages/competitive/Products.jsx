@@ -37,7 +37,7 @@ function writePulse(k, v) {
    later, on a dashboard whose job is "what is new". Same key/value shape, held in
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
-import { Review } from "../../components/review/Review.jsx";
+import { REVIEW, Review } from "../../components/review/Review.jsx";
 
 /* Catalogue category order (user 2026-10-18): alphabetical, the catch-all "Other" (and "—" = no category) last. */
 const LAST_CATS = ["Other", "—"];
@@ -865,8 +865,8 @@ export default function Products() {
         </div>
 
         <div id="patc-list">
-          {/* KSSL's own range, pinned above the rivals (the client view is the isClient branch below) */}
-          {clientCid && data.competitors && data.competitors[clientCid] ? (
+          {/* KSSL's own range, pinned above the rivals (the client view is the isClient branch below); review site only (owner 2026-10-21) */}
+          {REVIEW && clientCid && data.competitors && data.competitors[clientCid] ? (
             <div
               className={`pat-li client-li${selectedCid === clientCid ? " active" : ""}`}
               onClick={() => { setSelectedCid(clientCid); setSelectedProduct(null); setProductSearch(""); setCategoryFilter("all"); }}

@@ -7,7 +7,14 @@ patent fields). Every key below is a column of the table named in its `_src`; no
 
 from collections import defaultdict
 
+from prompts.derive import partnership_basis
 from backend.common import first_nonempty, slug, table, text
+
+
+def _review() -> bool:
+    """The review site (KSSL_VIEW=review) ships the plain-English "why this label" panels; the live site never does (2026-10-21)."""
+    import os
+    return os.environ.get("KSSL_VIEW", "").strip().lower() == "review"
 
 
 def src(tbl: str, key: str, row: dict) -> dict:
@@ -82,6 +89,9 @@ def build_partners(database, competitors):
                         if row.get("overlap_kind") or kp else None),
             "steps": steps,
             "src": first_url,
+            **({"labelBasis": partnership_basis(
+                row.get("overlap_kind"), row.get("overlap_effect"), kp.get("partner_name") if kp else None, row.get("overlap_component"))}
+               if _review() else {}),
             "_src": src("competitive_partnership", "relationship_id", row),
         })
     return per_comp

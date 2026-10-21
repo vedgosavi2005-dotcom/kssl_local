@@ -74,6 +74,7 @@ INDEPENDENT = [
     "asianmilitaryreview.com", "defenceweb.co.za",
     # added after the 2026-10-16 news audit (vetted from drop counts; each carried relevant stories)
     "israeldefense.co.il",                      # user 2026-10-18: credible trade press
+    "flir.com", "globalsecurity.org", "edrmagazine.eu", "airandspaceforces.com", "defenceturkey.com",   # user 2026-10-19: allowed (spec store sources)
     # Korea business / defence / electronics press
     "mk.co.kr", "businesskorea.co.kr", "en.sedaily.com", "asiae.co.kr", "thelec.net",   # mk.co.kr covers pulse.mk.co.kr
     "mbiz.heraldcorp.com", "mt.co.kr", "ajupress.com", "donga.com", "fntimes.com",

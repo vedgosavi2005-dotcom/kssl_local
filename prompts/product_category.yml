@@ -21,7 +21,7 @@ subject:
       SELECT p.competitor_id::text AS company_key, c.display_name AS company, p.product_id::text AS pid,
              (row_number() OVER (PARTITION BY p.competitor_id ORDER BY p.product_id) - 1) / 60 AS chunk
       FROM staging.competitive_product p JOIN staging.competitive_competitor c USING (competitor_id)
-      WHERE c.qualifies IS TRUE
+      WHERE c.qualifies IS NOT FALSE   -- untested (NULL) too: qualification needs classed products, so they must be classed first (2026-10-21)
     )
     SELECT company_key || ':' || chunk || ':' || left(md5(string_agg(pid, ',' ORDER BY pid)), 8) AS batch_key,
            company_key, company, chunk, count(*) AS products

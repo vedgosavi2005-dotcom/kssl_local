@@ -58,7 +58,8 @@ def value_in_quote(value, quote) -> bool:
 
 def quote_in_doc(quote, body) -> bool:
     parts = [p for p in re.split(r"\.\.\.|…", str(quote or "")) if len(p.strip()) > 8]
-    dehyph = lambda t: re.sub(r"(?<=\w)- (?=\w)", "-", t)          # a PDF line break inside a hyphenated word (up- / gunning)
+    dehyph = lambda t: re.sub(r" (?=[,.;:)])", "", re.sub(r"(?<=\w)- (?=\w)", "-", t))   # a PDF line break inside a hyphenated word
+                                                                   # (up- / gunning); a PDF space before punctuation ('23.5 tons ,')
     b = dehyph(norm_text(body))
     return bool(parts) and all(dehyph(norm_text(p)) in b for p in parts)
 
@@ -177,6 +178,7 @@ def _selftest() -> None:
     assert quote_in_doc("range of 30 km", "The  Range of 30 km is reached.") and not quote_in_doc("range of 40 km", "The range of 30 km")
     assert quote_in_doc("first part of the sentence ... last part of it", "The first part of the sentence and then the last part of it.")
     assert quote_in_doc("by up-gunning the existing gun", "by up-\ngunning the existing gun") and not quote_in_doc("by upgunning the gun", "by up-\ngunning the gun")
+    assert quote_in_doc("Weighing 23.5 tons, it carries 18 rounds", "Weighing  23.5  tons ,  it  carries  18  rounds") and not quote_in_doc("weighing 23.5 tons", "weighing 2 3.5 tons")
     assert spec_id("p1", "Range") == spec_id("p1", " range ") != spec_id("p2", "Range")
     env = {"records": [{"table": "competitive_product_specification", "values": {"spec_label": "Range", "spec_value": "30 km", "unit": "km",
                                                                                  "source_url": "https://x.test/a", "quote": "Range 30 km"}},

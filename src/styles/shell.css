@@ -246,6 +246,11 @@
     background: rgba(154, 106, 8, 0.08);
     border: 1px solid rgba(154, 106, 8, 0.35);
   }
+  .dirpill.no_offer {
+    color: var(--d-txt-2, #5d6470);
+    background: rgba(93, 100, 112, 0.08);
+    border: 1px solid rgba(93, 100, 112, 0.35);
+  }
   .dirpill.dir-adopt, .dirpill.ahead, .dirpill.normal {
     color: var(--ok, #1f6e45);
     background: rgba(31, 110, 69, 0.08);
