@@ -1,3 +1,5 @@
+import { srcChips } from "../../lib/html.js";
+import { showCuratedSources } from "../../lib/sources.js";
 import { clientShort, clientName as clientFullName, isPresenceLabel } from "../../lib/client.js";
 import { Fragment, useState, useMemo, useEffect } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
@@ -1083,6 +1085,23 @@ export default function Products() {
                   </ul>
                 </div>
               ) : null}
+
+              {/* 2c. SOURCES: a product record is curated, so its sources show on the review site only (lib/sources.js) */}
+              {showCuratedSources && selectedProduct ? (() => {
+                const urls = [...new Set([...(selectedProduct.specSources || []), selectedProduct.sourceUrl].filter((u) => typeof u === "string" && /^https?:\/\//i.test(u)))];
+                return (
+                  <div>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: "12px", letterSpacing: ".1em", textTransform: "uppercase", color: "var(--d-txt)", fontWeight: "700", marginBottom: "10px", paddingBottom: "8px", borderBottom: "1px solid var(--d-line)" }}>
+                      Sources
+                    </div>
+                    {urls.length ? (
+                      <span dangerouslySetInnerHTML={{ __html: srcChips(urls.map((u) => ({ label: "", url: u }))) }} />
+                    ) : (
+                      <span style={{ fontSize: "12.5px", color: "var(--d-txt-3)" }}>No source URL on record; see Trace.</span>
+                    )}
+                  </div>
+                );
+              })() : null}
 
               {/* 3. PROGRAMS: only when the product has one */}
               {selectedProduct && selectedProduct.programs && selectedProduct.programs.length > 0 && (

@@ -1,3 +1,5 @@
+import { srcChips } from "../../lib/html.js";
+import { showCuratedSources } from "../../lib/sources.js";
 import { clientShort } from "../../lib/client.js";
 import { useEffect, useRef, useState } from "react";
 import HtmlBlock from "../htmlBlock/HtmlBlock";
@@ -206,6 +208,29 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
             <HtmlBlock html={specPanelHtml(m)} />
           </div>
         </div>
+        {/* both products' sources: curated records, so review site only (lib/sources.js) */}
+        {showCuratedSources ? (() => {
+          const prodOf = (pid) => {
+            for (const c of Object.values((data && data.competitors) || {})) {
+              const hit = (c.products || []).find((x) => x && typeof x === "object" && String(x.id) === String(pid));
+              if (hit) return hit;
+            }
+            return null;
+          };
+          const urls = (pr) => (pr ? [...new Set([...(pr.sources || []), pr.source_url].filter((u) => typeof u === "string" && /^https?:\/\//i.test(u)))] : []);
+          const rows = [[m.comp, urls(prodOf(m.compProductId))], [m.bf, urls(prodOf(m.clientProductId))]];
+          return (
+            <div className="mu-sec">
+              <span className="eyebrow" style={{ display: "block", marginBottom: "8px" }}>Sources</span>
+              {rows.map(([name, us]) => (
+                <div key={name || "?"} style={{ fontSize: "12.5px", margin: "6px 0" }}>
+                  <b>{name}</b>{" "}
+                  {us.length ? <span dangerouslySetInnerHTML={{ __html: srcChips(us.map((u) => ({ label: "", url: u }))) }} /> : <span className="rv-dim">no source URL on record; see Trace</span>}
+                </div>
+              ))}
+            </div>
+          );
+        })() : null}
       </div>
     </div>
   );

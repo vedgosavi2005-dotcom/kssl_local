@@ -1,6 +1,7 @@
 /* Paired-bar spec renderer for the Positioning dossier, plus the gap block that sits
    under the verdict. Kept as string builders because they are dense read-only markup
    with no interaction beyond the container — the same trade the original made. */
+import { showCuratedSources } from "./sources.js";
 import { clientShort, stripClientPrefix } from "./client.js";
 import { computeSpecEdge, edgeBasis, edgeVerdict, isNumericVal } from "./edge.js";
 import { escAll } from "./html.js";
@@ -140,7 +141,8 @@ export function productSpecs(specs, side, labelOf) {
   return out;
 }
 
-export const SHOW_POSITIONING_SOURCES = false;
+// curated provenance: review site only (lib/sources.js); the live site shows no spec / positioning sources
+export const SHOW_POSITIONING_SOURCES = showCuratedSources;
 
 /* One spec field is one stored label. Labels are compared as stored (trimmed, case-folded): two distinct
    labels are two rows, because merging them would invent a comparability the data does not state. */

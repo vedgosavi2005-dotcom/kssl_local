@@ -1,3 +1,4 @@
+import { showCuratedSources } from "../../lib/sources.js";
 import { useEffect, useRef, useState } from "react";
 import { srcChips } from "../../lib/html";
 import { ComputedTrace, REVIEW } from "../review/Review";
@@ -144,7 +145,7 @@ export default function MetricsStrip({ metrics, active, onPick, inert = false })
             {m.warn ? m.sub : null}{" "}
             <span
               dangerouslySetInnerHTML={{
-                __html: srcChips(m.src ? [{ label: "source", url: m.src }] : null, "nofilter"),
+                __html: showCuratedSources ? srcChips(m.src ? [{ label: "source", url: m.src }] : null, "nofilter") : "",   // KPI tiles are curated: review site only
               }}
             />
           </span>

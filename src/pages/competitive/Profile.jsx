@@ -1,3 +1,4 @@
+import { showCuratedSources } from "../../lib/sources.js";
 import { clientShort } from "../../lib/client.js";
 import { proxied, thumbUsable } from "../../components/thumb/Thumb.jsx";
 import { revenueOptions } from "../../lib/revenueFacet";
@@ -180,7 +181,8 @@ function LeaderPage({ leader, companyName, companyArticles, onBack }) {
 
 
 
-      {leader.source || leader.bioSource || leader.photoSource ? (
+      {/* leader records are curated: their source links show on the review site only */}
+      {showCuratedSources && (leader.source || leader.bioSource || leader.photoSource) ? (
         <div className="cp-person-src" style={{ marginTop: "24px" }}>
           {[["Role", leader.source], ["Career & education", leader.bioSource], ["Photo", leader.photoSource]]
             .filter(([, u], i, arr) => u && arr.findIndex(([, v]) => v === u) === i)

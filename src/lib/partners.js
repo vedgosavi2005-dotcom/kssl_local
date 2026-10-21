@@ -1817,7 +1817,9 @@ const PG_IMG_ONERROR =
       const verdict = verdictOf(r);
       const impact = impactText(r);
       const note = real(r.note) || pgThinNote(r, c.name);
-      const srcs = (r.srcs || []).filter((x) => x && x.url);
+      // the served tie carries one source url in `src` (379 of 381 rows); `srcs` is the older list shape
+      const listed = (r.srcs || []).filter((x) => x && x.url);
+      const srcs = listed.length ? listed : /^https?:\/\//i.test(String(r.src || "")) ? [{ label: "Source", url: r.src }] : [];
       const facts = [
         ["Relationship", typeLabel],
         ["Territory", real(r.country)],

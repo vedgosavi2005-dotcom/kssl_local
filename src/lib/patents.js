@@ -21,6 +21,7 @@
           total, source
         }>
    =================================================================== */
+import { showCuratedSources } from "./sources.js";
 import { clientShort } from "./client.js";
 import { attr, escAll, srcChips } from "./html.js";
 import { COUNTRY_ISO2_ALIAS } from "./countryFlags.js";
@@ -235,11 +236,11 @@ export function patRecCard(r, showAssignee, meta) {
         ? `<div class="pat-abs pat-abs-ipc" title="The classification the office placed this filing in, in the classification's own words. It describes the FIELD, not this invention -- no abstract was captured for this record.">` +
           `<span class="pat-abs-k">Classified under ${esc(String(r.ipc[0]).trim())}</span> ${esc(r.ipcText)}</div>`
         : "") +
-    (r.url
+    (r.url && showCuratedSources      // patent records are curated: their links show on the review site only
       ? `<a class="pat-view-link" href="${attr(r.url)}" target="_blank" rel="noopener noreferrer">${r.urlIsSearch ? "Search for this filing ↗" : "View patent ↗"}</a>`
       : "") +
     // any source beyond the primary patent page (deduped against it)
-    srcChips((r.srcs || []).filter((s) => s && s.url && s.url !== r.url)) +
+    (showCuratedSources ? srcChips((r.srcs || []).filter((s) => s && s.url && s.url !== r.url)) : "") +
     "</div>"
   );
 }
