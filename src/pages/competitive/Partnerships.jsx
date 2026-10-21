@@ -142,8 +142,6 @@ export default function Partnerships() {
     } catch (e) {}
   }, [cid, tie, mode]);
 
-  const selCo = cid ? data.competitors[cid] : null;
-  const c = selCo ? { ...selCo, id: cid } : null;
   /* In Regions mode, display partners grouped by sovereign country flag.
      If a competitor is chosen, map that competitor by country; otherwise map KSSL's own alliance network. */
   const byRegion = groupMode === "region";
@@ -156,6 +154,13 @@ export default function Partnerships() {
       partners: raw,
     };
   }, [data, clientName]);
+  // KSSL is selectable too (pinned row): its record carries no partners, its network is KSSL_PARTNERS
+  const isClientSel = !!cid && cid === (data.client && data.client.id);
+  const selCo = useMemo(
+    () => (cid ? (isClientSel ? { ...(data.competitors[cid] || {}), ...ksslCo } : data.competitors[cid]) : null),
+    [cid, isClientSel, data, ksslCo],
+  );
+  const c = selCo ? { ...selCo, id: cid } : null;
   const gc = c;
   const gcid = gc ? gc.id : null;
   // what the drawer / layout treat as "something is selected"
@@ -274,7 +279,7 @@ export default function Partnerships() {
   const [listOpen, setListOpen] = useState(true);
 
   const selectCompetitor = (nextCid) => {
-    const co = data.competitors[nextCid];
+    const co = nextCid === (data.client && data.client.id) ? { ...(data.competitors[nextCid] || {}), ...ksslCo } : data.competitors[nextCid];
     if (!co) return;
     setCid(nextCid);
     setTie(null);
@@ -495,6 +500,20 @@ export default function Partnerships() {
         </div>
         {/* the list sits OUTSIDE the header, so only the companies scroll (the filters stay put) */}
         <div id="patc-list" style={c && !listOpen ? { display: "none" } : undefined}>
+          {ksslCo.id && data.competitors[ksslCo.id] ? (
+            <div
+              className={`pat-li client-li${isClientSel ? " active" : ""}`}
+              onClick={() => (isClientSel ? setCid(null) : selectCompetitor(ksslCo.id))}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); isClientSel ? setCid(null) : selectCompetitor(ksslCo.id); } }}
+              role="button"
+              tabIndex={0}
+            >
+              <span className="pli-n" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {clientName}<span className="client-tag">Our company</span>
+              </span>
+              <span className="pli-c">{partners.pgDistinct(ksslCo)}</span>
+            </div>
+          ) : null}
           {list.map((k) => {
             const co = data.competitors[k];
             const nPartners = partners.pgDistinct(co);

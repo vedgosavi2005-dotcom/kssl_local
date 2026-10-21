@@ -1,3 +1,4 @@
+import { clientShort } from "../../lib/client.js";
 import { proxied, thumbUsable } from "../../components/thumb/Thumb.jsx";
 import { revenueOptions } from "../../lib/revenueFacet";
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -310,6 +311,8 @@ export default function Profile() {
   const [country, setCountry] = useState("all");
   const [revenue, setRevenue] = useState("all");
   const roster = useMemo(() => rosterOf(data), [data]);
+  // KSSL's own profile, pinned above the rivals (rosterOf lists rivals only)
+  const clientCid = data.client && data.competitors && data.competitors[data.client.id] ? data.client.id : "";
   /* Finding T 3: no country-level filter on the competitor list.
 
      2026-09-06: this filters on ORIGIN -- the country a company is FROM -- and not
@@ -334,7 +337,7 @@ export default function Profile() {
   const [cid, setCidState] = useState(() => {
     try {
       const saved = viewState.getItem(PROFILE_KEY);
-      if (saved && roster.some((r) => r.cid === saved)) return saved;
+      if (saved && (saved === clientCid || roster.some((r) => r.cid === saved))) return saved;
     } catch (e) {}
     return roster[0] ? roster[0].cid : "";
   });
@@ -692,6 +695,19 @@ export default function Profile() {
           </select>
         </div>
         <div id="patc-list">
+          {clientCid ? (
+            <div
+              className={`pat-li client-li${cid === clientCid ? " active" : ""}`}
+              onClick={() => setCid(clientCid)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCid(clientCid); } }}
+              role="button"
+              tabIndex={0}
+            >
+              <span className="pli-n" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {clientShort()}<span className="client-tag">Our company</span>
+              </span>
+            </div>
+          ) : null}
           {list.map((r) => (
             <div
               className={`pat-li${cid === r.cid ? " active" : ""}`}

@@ -865,6 +865,20 @@ export default function Products() {
         </div>
 
         <div id="patc-list">
+          {/* KSSL's own range, pinned above the rivals (the client view is the isClient branch below) */}
+          {clientCid && data.competitors && data.competitors[clientCid] ? (
+            <div
+              className={`pat-li client-li${selectedCid === clientCid ? " active" : ""}`}
+              onClick={() => { setSelectedCid(clientCid); setSelectedProduct(null); setProductSearch(""); setCategoryFilter("all"); }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedCid(clientCid); setSelectedProduct(null); } }}
+            >
+              <span className="pli-n" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {clientName}<span className="client-tag">Our company</span>
+              </span>
+            </div>
+          ) : null}
           {filteredCompanyRoster.map((r) => (
             <div
               key={r.cid}
