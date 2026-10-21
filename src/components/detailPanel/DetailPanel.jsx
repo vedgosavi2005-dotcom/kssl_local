@@ -283,7 +283,7 @@ export default function DetailPanel({ detail, onClose, badge }) {
         ) : null}
 
         {/* review API only: the scores and tests behind watch / threat (the live API ships no labelBasis) */}
-        <RiskBasis basis={detail.labelBasis} stats={detail.promptStats} />
+        <RiskBasis basis={detail.labelBasis || (tenderRec && tenderRec.labelBasis)} stats={detail.promptStats} />
 
         {/* the story timeline, drawn like the Projects timeline: dated steps on a rail, the event, what changed in grey,
             its source chip; a label change (a stance moving) is not an event of the story and is not listed */}

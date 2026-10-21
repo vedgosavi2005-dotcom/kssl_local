@@ -15,9 +15,12 @@ export default function RiskBasis({ basis, stats }) {
   const { probability: p, impact: i, dimensions = [], tests = [], mainDimension, label, summary, score, confidence } = basis || {};
   const failed = tests.filter((t) => !t.pass).length;
   const dot = p && i;
+  // signal rule only: tech / tender / partnership bases carry no probability x impact, so no grid and the summary moves down
+  const grid = !!basis && ("probability" in basis || "impact" in basis);
+  const allPass = label === "threat" || label === "watch";   // the threat/watch rules: threat = every check passes
   return (
     <>
-      {basis ? (
+      {grid ? (
         <div className="ctx-sec">
           <span className="eyebrow">Risk assessment</span>
           {summary ? <p className="rk-summary">{summary}</p> : null}
@@ -60,15 +63,16 @@ export default function RiskBasis({ basis, stats }) {
 
       {tests.length ? (
         <div className="ctx-sec">
-          <span className="eyebrow">Why {label || "this label"}</span>
-          <span className="rk-sum">{failed ? `A threat must pass all ${tests.length} checks. This one misses ${failed}.` : `Passes all ${tests.length} threat checks.`}</span>
+          <span className="eyebrow">Why {label ? label.replace(/_/g, " ") : "this label"}</span>
+          {!grid && summary ? <p className="rk-summary">{summary}</p> : null}
+          {allPass ? <span className="rk-sum">{failed ? `A threat must pass all ${tests.length} checks. This one misses ${failed}.` : `Passes all ${tests.length} threat checks.`}</span> : null}
           {tests.map((t) => (
             <div className={`rk-test${t.pass ? "" : " fail"}`} key={t.key || t.test}>
               <span className="rk-ic" aria-label={t.pass ? "pass" : "fail"}>{t.pass ? "✓" : "✗"}</span>
               <span className="rk-tn">{t.question || t.test}</span>
               <span className="rk-tg">{shown(t.answer ?? t.got)}</span>
               <span className="rk-tneed">
-                Threat needs: {t.need}
+                {t.need ? `${allPass ? "Threat needs" : "Needs"}: ${t.need}` : null}
                 {t.basis && BASIS[t.basis] ? <span className={`rk-basis ${t.basis}`}>{BASIS[t.basis]}</span> : null}
               </span>
             </div>

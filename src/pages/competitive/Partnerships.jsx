@@ -1,5 +1,6 @@
 import { clientShort } from "../../lib/client.js";
 import { useEffect, useMemo, useRef, useState } from "react";
+import RiskBasis from "../../components/detailPanel/RiskBasis";
 import HtmlBlock from "../../components/htmlBlock/HtmlBlock";
 import ScopeChat from "../../components/scopeChat/ScopeChat";
 import { useAppState, useHeaderReport } from "../../state/AppState";
@@ -851,6 +852,8 @@ export default function Partnerships() {
               html={drawerBody()}
               id="pg-r-body"
             />
+            {/* review API only: why this tie is (or is not) a KSSL overlap, in plain English */}
+            {gc && tie && mode !== "field" ? <RiskBasis basis={((gc.partners || []).find((x) => x.id === tie) || {}).labelBasis} /> : null}
             {/* REMOVED ON REQUEST: the "What an overlapping <kind> partner costs KSSL"
                 explainer that used to sit under the drawer. It was generic interpretation
                 keyed off the overlap kind -- the same two paragraphs for every rival that

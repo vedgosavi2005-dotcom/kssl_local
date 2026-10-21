@@ -10,6 +10,7 @@ import { productOwner } from "../../lib/productLink";
 import { srcChips, cssWord } from "../../lib/html";
 import { formatLabel, smartTitleCase } from "../../lib/profile";
 import { facetOptions } from "../../lib/countryFacet";
+import RiskBasis from "../../components/detailPanel/RiskBasis";
 import { NOT_ON_RECORD, reqLabel, resolveTenderRow, tenderCardCells, tenderFactRows, tenderFitBar, compareTenders } from "../../lib/tenderRow";
 import { Review } from "../../components/review/Review";
 
@@ -489,6 +490,9 @@ export default function Tenders({ mode = "tender" }) {
                   </div>
                 );
               })()}
+
+              {/* review API only: the plain-English checks behind pursue / position / monitor / pass */}
+              <RiskBasis basis={t.labelBasis} />
 
               <div className="tp-asmt-sec">
                 <span className="eyebrow">Tender details</span>
