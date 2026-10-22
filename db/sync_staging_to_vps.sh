@@ -29,12 +29,24 @@ dump() {
   # the pipeline-log triggers (db/setup/33) stay local: the pipeline runs here, and the copy must not need the ops schema there
 }
 
+# The copy as the target runs it, in its one transaction: the pipeline-log history view (ops.step_history, db/setup/34) reads
+# staging tables the copy drops and recreates, so it is dropped first and rebuilt from 34 at the end -- only where the target
+# has the ops schema (a kssl_test_* dry-run DB may not).
+payload() {
+  echo "DROP VIEW IF EXISTS ops.step_history;"
+  dump
+  echo "SELECT to_regnamespace('ops') IS NOT NULL AS has_ops \\gset"
+  echo "\\if :has_ops"
+  cat db/setup/34_pipeline_history.sql
+  echo "\\endif"
+}
+
 TARGET="${KSSL_SYNC_TARGET:-vps}"
 echo "== $(date '+%F %T') local kssl_staging -> $TARGET"
 if [[ "$TARGET" == local:* ]]; then
   db="${TARGET#local:}"
   case "$db" in kssl_test_*) ;; *) echo "refusing: local dry-run target must be kssl_test_*"; exit 1;; esac
-  dump | docker exec -i kssl-pg psql -v ON_ERROR_STOP=1 -q -1 -U kssl -d "$db" >/dev/null
+  payload | docker exec -i kssl-pg psql -v ON_ERROR_STOP=1 -q -1 -U kssl -d "$db" >/dev/null
   docker exec kssl-pg psql -U kssl -d "$db" -Atc "select 'tables: ' || count(*) from pg_tables where schemaname in ('staging','staging_ui','media')"
 else
   [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] || { echo "set KSSL_VPS_HOST and KSSL_VPS_SSH_USER in .env"; exit 1; }
@@ -44,7 +56,7 @@ else
   here=$(docker exec kssl-pg psql -U kssl -d kssl_staging -Atc "$IMGQ")
   there=$("${SSH[@]}" "docker exec kssl2-db psql -U kssl_admin -d kssl_staging -Atc \"$IMGQ\"" 2>/dev/null || echo missing)
   if [ "$here" = "$there" ]; then MEDIA=; echo "   media: same image set on both sides, not sent"; else echo "   media: image set differs, sending it"; fi
-  dump | gzip | "${SSH[@]}" 'gunzip | docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -1 -U kssl_admin -d kssl_staging >/dev/null'
+  payload | gzip | "${SSH[@]}" 'gunzip | docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -1 -U kssl_admin -d kssl_staging >/dev/null'
   echo "$GRANTS" | "${SSH[@]}" 'docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -U kssl_admin -d kssl_staging'
   "${SSH[@]}" "docker exec kssl2-db psql -U kssl_admin -d kssl_staging -Atc \"select 'VPS staging tables: ' || count(*) from pg_tables where schemaname in ('staging','staging_ui','media')\""
 fi
