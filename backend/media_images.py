@@ -1,7 +1,7 @@
 """Article images into the database (media.image) and onto the cards (owner 2026-10-22).
 
     python -m backend.media_images --selftest
-    python -m backend.media_images [--limit N] [--workers 8] [--report | --point]
+    python -m backend.media_images [--limit N] [--workers 8] [--report | --point | --refind-defaults]
 
 For every page a card points at (news articles, product news, signals, competitor moves, technology articles): the card's own image
 link if it has one, else the page's own preview image (og:image, twitter:image, link rel=image_src, else the first large <img> of the
@@ -99,6 +99,85 @@ def find_image(page_html: str, base: str):
     return (first, "article_img") if first else (None, None)
 
 
+_JUNK = re.compile(r"logo|icon|sprite|avatar|pixel|blank|banner|/ads?/|\.svg|\.gif|data:|mode=img|piwik|ansprechpartner|contact", re.I)
+
+
+def body_images(page_html: str, base: str) -> list[str]:
+    """The article's own <img> links, in page order, wide ones (declared >= 400 px) first: inside <article> when the page has one,
+    else from the first <h1> on (menus and hero banners above the headline are not the story's)."""
+    m = re.search(r"<article\b.*?</article>", page_html, re.I | re.S) or re.search(r"<h1\b.*", page_html, re.I | re.S)
+    wide, rest = [], []
+    for t in re.finditer(r"<img\b[^>]*>", m.group(0) if m else page_html, re.I):
+        src = re.search(r'\ssrc=["\']([^"\']+)["\']', t.group(0), re.I)
+        if not src or _JUNK.search(src.group(1)):
+            continue
+        w = re.search(r'\swidth=["\']?(\d+)', t.group(0), re.I)
+        if w and int(w.group(1)) < MIN_W:
+            continue
+        url = urljoin(base, htmlmod.unescape(src.group(1).strip()))
+        (wide if w and int(w.group(1)) >= 400 else rest).append(url)
+    return list(dict.fromkeys(wide + rest))
+
+
+def unique_images(per_page: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Per page of ONE site: its images that no other of these pages carries. A template picture (the newsroom's share image,
+    a hero banner) is on every page; the story's own photo is on one."""
+    from collections import Counter
+    n = Counter(u for imgs in per_page.values() for u in set(imgs))
+    return {p: [u for u in imgs if n[u] == 1] for p, imgs in per_page.items()}
+
+
+def refind_defaults(workers=8) -> dict:
+    """Pages whose preview picture turned out to be the site's default (status 'site_default', e.g. all 84 Lockheed Martin
+    newsroom pages share ryan169.jpg): fetch every such page of a site again and take the first article image that is unique to
+    that page. A page with none keeps 'site_default'. Then re-point the cards."""
+    import psycopg2.extras
+    from urllib.parse import urlsplit
+    from prompts.run import connect
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT page_url FROM media.page_image WHERE status = 'site_default'")
+    by_host: dict[str, list[str]] = {}
+    for r in cur.fetchall():
+        by_host.setdefault(urlsplit(r["page_url"]).netloc, []).append(r["page_url"])
+    html: dict[str, list[str]] = {}
+
+    def get(page):
+        try:
+            raw, _ct, final = fetch(page, 2_000_000, "text/html,*/*")
+            return page, body_images(raw.decode("utf-8", "replace"), final)
+        except Exception:  # noqa: BLE001
+            return page, []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for page, imgs in ex.map(get, [p for ps in by_host.values() for p in ps]):
+            html[page] = imgs
+    stats: dict[str, int] = {}
+    for host, pages in by_host.items():
+        uniq = unique_images({p: html.get(p, []) for p in pages})
+        for page in pages:
+            got = None
+            for img_url in uniq[page][:4]:
+                try:
+                    data, _ct, _ = fetch(img_url, MAX_BYTES, "image/*,*/*")
+                    ct, w, h = check_image(data)
+                    data, ct, w, h = shrink(data, ct, w, h)
+                    got = (str(uuid.uuid5(uuid.NAMESPACE_URL, img_url)), img_url, ct, data, len(data), w, h, hashlib.sha256(data).hexdigest())
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            if got:
+                cur.execute("""INSERT INTO media.image (image_id, source_url, content_type, bytes, byte_len, width, height, sha256)
+                               VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (image_id) DO NOTHING""",
+                            (got[0], got[1], got[2], psycopg2.Binary(got[3]), got[4], got[5], got[6], got[7]))
+                cur.execute("""UPDATE media.page_image SET image_id = %s, how = 'article_unique', status = 'ok', error = NULL,
+                               checked_at = now() WHERE page_url = %s""", (got[0], page))
+            stats[host] = stats.get(host, 0) + bool(got)
+        conn.commit()
+        print(f"  {host}: {stats[host]} of {len(pages)} pages now have their own picture", flush=True)
+    point_cards(conn)
+    return stats
+
+
 def check_image(data: bytes):
     """(content_type, width, height) if the bytes decode as a large enough picture, else raise ValueError(reason)."""
     from PIL import Image
@@ -144,6 +223,10 @@ def _selftest() -> None:
     ar = ('<img src="//cdnhst.xyz/code?mode=img&amp;code=4b"><img src="/images/banners/2026/a.jpg" width="728">'
           '<img src="/x/anim.gif" width="300"><img src="/s/flag.png" width="20"><img class="el-image" src="/stories/k9.jpg" width="1920">')
     assert find_image(ar, "https://ar.com/n/1") == ("https://ar.com/stories/k9.jpg", "article_img")
+    lm = '<nav><img src="/hero.jpg"></nav><h1>Spike NLOS</h1><img src="/t/ryan169.jpg" width="1200"><img src="/file.php/1/Spike.jpg">'
+    assert body_images(lm, "https://n.lm.com/a") == ["https://n.lm.com/t/ryan169.jpg", "https://n.lm.com/file.php/1/Spike.jpg"]
+    u = unique_images({"a": ["T", "A1"], "b": ["T", "B1", "B2"], "c": ["T"]})
+    assert u == {"a": ["A1"], "b": ["B1", "B2"], "c": []}, u
     from PIL import Image
     b = io.BytesIO()
     Image.new("RGB", (640, 360)).save(b, "JPEG")
@@ -262,6 +345,7 @@ def main(argv=None) -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--point", action="store_true", help="only re-point the cards at the stored pictures (no fetching)")
+    ap.add_argument("--refind-defaults", action="store_true", help="pages that only had the site's default picture: take the article's own")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--workers", type=int, default=8)
     a = ap.parse_args(argv)
@@ -269,6 +353,8 @@ def main(argv=None) -> int:
         _selftest()
     elif a.report:
         report()
+    elif a.refind_defaults:
+        refind_defaults(a.workers)
     elif a.point:
         from prompts.run import connect
         point_cards(connect())
