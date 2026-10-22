@@ -10,6 +10,7 @@ import { REVIEW_SITE } from "./sources.js";
 
 const FLUSH_MS = 4000;
 const CHECKOUT_MS = 10 * 60 * 1000;   // a fresh full snapshot every 10 minutes: a lost upload costs at most that much
+const NO_SESSION_MAX = 20000;         // events held while the usage log has no session id yet; past this it never will: stop
 
 function start() {
   let visitor = null;
@@ -46,7 +47,7 @@ function start() {
     send(events, sid, leaving).catch(() => {});
   };
 
-  record({
+  const stop = record({
     emit(e) {
       if (window.__ksslReplay) return;
       const s = window.__ksslSession || null;    // read on every event: login, logout and 30 min idle start a new session
@@ -58,6 +59,10 @@ function start() {
       }
       if (s) sid = s;                            // the first session id: what was recorded before it (the page load) is its
       buf.push(e);
+      if (!sid && buf.length > NO_SESSION_MAX) {  // the usage log is not running (blocked storage...): do not hold memory
+        buf = [];
+        setTimeout(() => stop && stop(), 0);
+      }
     },
     checkoutEveryNms: CHECKOUT_MS,
     maskInputOptions: { password: true, email: true, tel: true },

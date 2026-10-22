@@ -360,39 +360,60 @@ def track(request: Request, events: list[dict[str, Any]] = Body(...)) -> dict[st
 # ---- page recordings (db/setup/37_activity_recording.sql): src/lib/record.js uploads a few seconds of rrweb events at a time ----
 REC_MAX_GZIP = 8 * 1024 * 1024       # bytes per upload as sent (a full snapshot of a big page is a few MB before gzip)
 REC_MAX_JSON = 64 * 1024 * 1024      # ... and once unzipped (a zip bomb stops here)
+# The endpoint is open (anyone who can reach the live site can post): stored bytes are capped so a flood cannot fill the disk.
+# An hour of real use stores a few MB.
+REC_SESSION_DAY_MAX = 100 * 1024 * 1024   # stored per visit per day
+REC_DAY_MAX = 1024 * 1024 * 1024          # stored in all per day (then uploads are refused until the oldest of the day ages out)
+REC_PLAY_MAX = 300 * 1024 * 1024         # unzipped JSON the player's read returns for one visit
 
 
 @app.post("/api/track/rec")
 async def track_rec(request: Request, session: str, visitor: str, user: str | None = None) -> dict[str, Any]:
     """One chunk of a page recording: the body is a JSON array of rrweb events, gzip-compressed or plain. Stored gzipped."""
-    import datetime as _dt
-    import gzip
-    import zlib
+    from starlette.concurrency import run_in_threadpool
     sid, vid = _uuid_or_none(session), _uuid_or_none(visitor)
     if not sid or not vid:
         raise HTTPException(status_code=400, detail="session and visitor (uuid) are required")
-    body = await request.body()
-    if len(body) > REC_MAX_GZIP:
-        raise HTTPException(status_code=413, detail="recording chunk too large")
-    raw = body
-    if body[:2] == b"\x1f\x8b":
-        d = zlib.decompressobj(wbits=31)
-        raw = d.decompress(body, REC_MAX_JSON)
-        if d.unconsumed_tail:
+    body = bytearray()
+    async for part in request.stream():               # read up to the cap, never the whole of an oversized body
+        body += part
+        if len(body) > REC_MAX_GZIP:
             raise HTTPException(status_code=413, detail="recording chunk too large")
+    return await run_in_threadpool(_store_recording, bytes(body), sid, vid, (user or "")[:60] or None)   # parsing + DB off the event loop
+
+
+def _store_recording(body: bytes, sid: str, vid: str, user: str | None) -> dict[str, Any]:
+    import datetime as _dt
+    import gzip
+    import zlib
+    raw = body
     try:
+        if body[:2] == bytes([0x1F, 0x8B]):            # gzip
+            d = zlib.decompressobj(wbits=31)
+            raw = d.decompress(body, REC_MAX_JSON)
+            if d.unconsumed_tail:
+                raise HTTPException(status_code=413, detail="recording chunk too large")
         events = json.loads(raw)
         ts = [e["timestamp"] for e in events if isinstance(e, dict) and isinstance(e.get("timestamp"), (int, float))]
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, zlib.error):
         raise HTTPException(status_code=400, detail="body must be a JSON array of rrweb events") from None
     if not isinstance(events, list) or not events or len(ts) != len(events):
         raise HTTPException(status_code=400, detail="body must be a JSON array of rrweb events")
     stamp = lambda ms: _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc)  # noqa: E731
+    try:
+        first, last = stamp(min(ts)), stamp(max(ts))
+    except (ValueError, OverflowError, OSError):
+        raise HTTPException(status_code=400, detail="event timestamps out of range") from None
+    data = body if raw is not body else gzip.compress(raw)
     with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT coalesce(sum(length(data)) FILTER (WHERE session_id = %s::uuid), 0), coalesce(sum(length(data)), 0)
+                       FROM activity.recording WHERE received_at > now() - interval '1 day'""", (sid,))
+        in_session, in_day = cur.fetchone()
+        if in_session + len(data) > REC_SESSION_DAY_MAX or in_day + len(data) > REC_DAY_MAX:
+            raise HTTPException(status_code=429, detail="recording quota reached")
         cur.execute("""INSERT INTO activity.recording (site, visitor_id, session_id, user_id, first_ts, last_ts, n_events, bytes, data)
                        VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)""",
-                    ("review" if REVIEW else "live", vid, sid, (user or "")[:60] or None, stamp(min(ts)), stamp(max(ts)),
-                     len(events), len(raw), psycopg2.Binary(body if raw is not body else gzip.compress(raw))))
+                    ("review" if REVIEW else "live", vid, sid, user, first, last, len(events), len(raw), psycopg2.Binary(data)))
     return {"stored": len(events)}
 
 
@@ -409,7 +430,10 @@ def activity_recording(site: str = "live", session: str = "") -> dict[str, Any]:
         cur.execute("SELECT to_regclass('activity.recording') IS NOT NULL AS ok")
         if not cur.fetchone()["ok"]:                     # a DB without 37
             return {"site": site, "session": sid, "events": []}
-        cur.execute("SELECT data FROM activity.recording WHERE session_id = %s::uuid ORDER BY rec_id", (sid,))
+        # chunks in upload order up to REC_PLAY_MAX unzipped (a forged or runaway visit cannot exhaust the review API's memory)
+        cur.execute("""SELECT data FROM (SELECT rec_id, data, sum(bytes) OVER (ORDER BY rec_id) AS upto
+                                         FROM activity.recording WHERE session_id = %s::uuid) t
+                       WHERE upto <= %s ORDER BY rec_id""", (sid, REC_PLAY_MAX))
         events = [e for r in cur.fetchall() for e in json.loads(gzip.decompress(bytes(r["data"])))]
     finally:
         conn.close()
