@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import "../../styles/review.css";
 
 /* The review copy. Same app in Vite mode "review" (`npm run dev:review`, 127.0.0.1:5180) against
@@ -21,18 +21,16 @@ async function post(path, params) {
   return body;
 }
 
+/* the "t|id" of every review bar a person can see right now: rendered, not hidden by CSS (display / visibility /
+   opacity), and not inside a review drawer. Scrolled out of view still counts -- it is on the page. */
+export function onScreenKeys(root = document) {
+  return [...root.querySelectorAll(".rv-bar[data-rv-key]")]
+    .filter((e) => !e.closest(".rv-drawer") && (e.checkVisibility ? e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : e.offsetParent !== null))
+    .map((e) => e.dataset.rvKey);
+}
+
 export function ReviewProvider({ initial, children }) {
   const [st, setSt] = useState(initial || {});
-  /* every card bar mounted right now ("t|id" -> mount count): what "Approve all on this page" acts on */
-  const onPage = useRef(new Map());
-  const register = useRef((key) => {
-    onPage.current.set(key, (onPage.current.get(key) || 0) + 1);
-    return () => {
-      const n = (onPage.current.get(key) || 1) - 1;
-      if (n > 0) onPage.current.set(key, n);
-      else onPage.current.delete(key);
-    };
-  }).current;
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n, cols} | {kind: "setup"} | {kind: "list", title, note, items}
   if (!REVIEW) return children;
@@ -44,10 +42,12 @@ export function ReviewProvider({ initial, children }) {
     post("/api/review", { table: t, key: id, action }).then(apply, (e) => alert(`Could not ${action}: ${e.message}`));
   const actTable = (schema, table, action) =>
     post("/api/review/table", { schema, table, action }).then(apply, (e) => alert(`Could not ${action}: ${e.message}`));
-  /* bulk approve: every new / changed card on the current page, in one request (backend retries a child
-     whose parent is approved in the same batch) */
+  /* bulk approve: every new / changed card DISPLAYED on the current page, in one request (backend retries a child
+     whose parent is approved in the same batch). Read from the screen at click time, not from what is mounted: a list
+     collapsed with display:none keeps its bars mounted, and the Trace / list drawers carry other records' bars --
+     neither is "this page" (owner 22 Oct: "it should work that way only"). */
   const approvePage = async () => {
-    const want = [...onPage.current.keys()]
+    const want = [...new Set(onScreenKeys())]
       .map((k) => { const i = k.indexOf("|"); return { table: k.slice(0, i), key: k.slice(i + 1) }; })
       .filter(({ table, key }) => { const s = (st.cards?.[table]?.[key] || { s: "new" }).s; return s === "new" || s === "changed"; });
     if (!want.length) return alert("Nothing new or changed on this page.");
@@ -81,7 +81,6 @@ export function ReviewProvider({ initial, children }) {
         st,
         act,
         actTable,
-        register,
         openTrace: (t, id, cols) => setPanel({ kind: "trace", t, id, cols }),
         openList: (title, note, items) => setPanel({ kind: "list", title, note, items }),
       }}
@@ -123,8 +122,6 @@ export function ReviewProvider({ initial, children }) {
 export function Review({ src, style }) {
   const ctx = useContext(Ctx);
   const regKey = src && src.t && src.id !== undefined && src.id !== null && src.id !== "" ? `${src.t}|${src.id}` : null;
-  const reg = ctx && ctx.register;
-  useEffect(() => (REVIEW && reg && regKey ? reg(regKey) : undefined), [reg, regKey]);
   if (!REVIEW || !ctx || !src || !src.t || src.id === undefined || src.id === null || src.id === "") return null;
   const { t } = src;
   const id = String(src.id);
@@ -136,7 +133,7 @@ export function Review({ src, style }) {
     </button>
   );
   return (
-    <div className="rv-bar" style={style} onClick={stop} onKeyDown={stop} role="group" aria-label="Review">
+    <div className="rv-bar" data-rv-key={regKey} style={style} onClick={stop} onKeyDown={stop} role="group" aria-label="Review">
       <span className={`rv-status rv-${c.s}`} title={c.s === "rejected" && c.live ? "an older version is still live" : ""}>
         {LABEL[c.s] || c.s}
         {c.s === "rejected" && c.live ? " · old live" : ""}
