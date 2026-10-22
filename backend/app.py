@@ -6,12 +6,14 @@ and adapts the domain tables into the contract consumed by the existing React UI
 An empty database therefore produces empty arrays and maps throughout the UI.
 """
 
+import json
 import os
+import uuid as _uuid
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -265,6 +267,51 @@ def review_table(schema: str, table: str, action: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="schema must be ui|serving, action approve|unpublish")
     return {"schema": schema, "table": table, "action": action,
             "review": _run(review.TABLE_ACTIONS[action], schema, table)}
+
+
+# ---- usage log (db/setup/31_user_activity.sql, docs/ui_port/ACTIVITY_LOG.md): written by src/lib/track.js ----
+
+TRACK_TYPES = {"page_view", "leave", "click", "search", "hover"}
+TRACK_MAX = 100          # events per batch (the client flushes every few seconds)
+
+
+def _uuid_or_none(v: Any) -> str | None:
+    try:
+        return str(_uuid.UUID(str(v)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+@app.post("/api/track")
+def track(request: Request, events: list[dict[str, Any]] = Body(...)) -> dict[str, Any]:
+    """A batch of usage events -> activity.event in this API's own DB (live -> serving DB, review -> staging DB). Anonymous:
+    random browser / visit ids, no IP. The site is decided here, not by the client. Bad rows are dropped, not stored."""
+    # ponytail: no rate limit beyond the batch cap and field caps; add one (per visitor per minute) if the log is abused
+    if len(events) > TRACK_MAX:
+        raise HTTPException(status_code=400, detail=f"at most {TRACK_MAX} events per batch")
+    site = "review" if REVIEW else "live"
+    ua = (request.headers.get("user-agent") or "")[:300] or None
+    cut = lambda v, n: (str(v)[:n] or None) if v not in (None, "") else None  # noqa: E731
+    rows = []
+    for e in events:
+        if not isinstance(e, dict) or e.get("type") not in TRACK_TYPES:
+            continue
+        vid, sid = _uuid_or_none(e.get("visitor")), _uuid_or_none(e.get("session"))
+        if not vid or not sid:
+            continue
+        dur = e.get("ms")
+        dur = int(dur) if isinstance(dur, (int, float)) and 0 <= dur < 86_400_000 else None
+        props = e.get("props") if isinstance(e.get("props"), dict) else None
+        if props is not None and len(json.dumps(props)) > 1000:
+            props = None
+        rows.append((cut(e.get("ts"), 40), site, vid, sid, e["type"], cut(e.get("pillar"), 40), cut(e.get("view"), 60),
+                     cut(e.get("target"), 160), cut(e.get("value"), 300), dur, json.dumps(props) if props else None, ua))
+    if rows:
+        with connect() as conn, conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, """INSERT INTO activity.event (client_ts, site, visitor_id, session_id, event_type, pillar,
+                view, target, value, duration_ms, props, user_agent) VALUES %s""", rows,
+                template="(%s::timestamptz, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)")
+    return {"stored": len(rows), "dropped": len(events) - len(rows)}
 
 
 @app.get("/api/review/trace")
