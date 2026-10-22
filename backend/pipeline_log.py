@@ -177,9 +177,21 @@ def journey(st, sv, table: str, rec_id: str) -> dict:
         ev.append({"at": e["at"], "stage": "log", "what": e["action"], "detail": {**(e["detail"] or {}), "step_id": e["step_id"]}})
     st.execute("""SELECT at, script, kind, outcome, message, subject FROM ops.note
                   WHERE (tbl IN (%s, %s) AND rec_id = %s) OR subject = ANY(%s) ORDER BY at""", (f"staging.{table}", table, rec_id, urls))
+    noted = set()
     for x in st.fetchall():
+        noted.add((x["kind"], x["subject"]))
         ev.append({"at": x["at"], "stage": "note", "what": x["message"] or x["outcome"] or x["kind"],
                    "detail": {"script": x["script"], "kind": x["kind"], "outcome": x["outcome"], "url": x["subject"] if str(x["subject"] or "").startswith("http") else None}})
+    if urls:   # image decisions made before the live notes existed: the same sentence, rebuilt from media.page_image
+        from backend.media_images import image_note
+        st.execute("""SELECT p.page_url, p.status, p.how, p.error, p.checked_at, i.width, i.height FROM media.page_image p
+                      LEFT JOIN media.image i USING (image_id) WHERE p.page_url = ANY(%s)""", (urls,))
+        for p in st.fetchall():
+            if ("image", p["page_url"]) in noted:
+                continue
+            size = (p["width"], p["height"]) if p["width"] else None
+            ev.append({"at": p["checked_at"], "stage": "note", "what": image_note(p["status"], p["how"], size, None, p["error"], []),
+                       "detail": {"kind": "image", "url": p["page_url"], "reconstructed": True}})
     st.execute("SELECT decided_at, status FROM staging.review_decision WHERE table_name = %s AND row_key = %s", (table, rec_id))
     for d in st.fetchall():
         ev.append({"at": d["decided_at"], "stage": "review", "what": f"review: {d['status']}", "detail": {}})

@@ -39,7 +39,7 @@ done
 for db in kssl_serving kssl_staging; do
   "${SSH[@]}" "$PSQL_VPS -d $db" <<'SQL'
 DO $$ DECLARE s text; BEGIN
-  FOR s IN SELECT nspname FROM pg_namespace WHERE nspname IN ('ui','serving','staging','staging_ui','activity') LOOP
+  FOR s IN SELECT nspname FROM pg_namespace WHERE nspname IN ('ui','serving','staging','staging_ui','activity','ops') LOOP
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO kssl_app', s);
     EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO kssl_app', s);
     EXECUTE format('GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO kssl_app', s);
