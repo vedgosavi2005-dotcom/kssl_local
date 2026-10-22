@@ -67,6 +67,11 @@ export default function Layout() {
   const [dirFilter, setDirFilter] = useState("all");
   const [tile, setTile] = useState(null);
   const [hasSelection, setHasSelection] = useState(false);
+  /* Competitor Movement (owner 2026-10-23): every threat and watch card of any date ("signals", the overview's feed and drawer),
+     or the per-competitor moves ("moves") */
+  const [moveTab, setMoveTabState] = useState("signals");
+  const setMoveTab = (t) => { setMoveTabState(t); setHasSelection(false); };
+  const onMoveSignals = view === "threat-analysis" && moveTab === "signals";
 
   // switching pillar resets the feed controls, as the original rebuild did -- and
   // picks up that pillar's own remembered sequence
@@ -115,7 +120,7 @@ export default function Layout() {
      metric strip above, and the shell's third column collapsed so it can use the width.
      Gating those on `isOverview` alone left it rendering into a two-column grid with a
      third column reserved for a drawer that never opens. */
-  const wideNoDrawer = onOverview || onMarketReport || onProjects || view === "innovation";
+  const wideNoDrawer = onOverview || onMarketReport || onProjects || view === "innovation" || onMoveSignals;
   /* no tile rows in the database -> no strip (the slot is not reserved) */
   const showMetricsStrip = (onOverview || onMarketReport || onProjects) && metrics.length > 0;
   /* Each pillar's overview carries its own heading ("Market Intelligence"), which lives
@@ -191,8 +196,39 @@ export default function Layout() {
         );
       case "profile":
         return <Profile />;
-      case "threat-analysis":
-        return <ThreatAnalysis />;
+      case "threat-analysis": {
+        const tabs = (
+          <div className="mv-tabs" role="tablist" aria-label="Competitor Movement">
+            {[["signals", `Threats and watches (${(data.movementCards || []).length})`], ["moves", "Moves by competitor"]].map(([k, text]) => (
+              <button key={k} type="button" role="tab" aria-selected={moveTab === k} className={`cm-chip${moveTab === k ? " on" : ""}`} onClick={() => setMoveTab(k)}>{text}</button>
+            ))}
+          </div>
+        );
+        return (
+          <div className="mv-wrap">
+            {tabs}
+            {moveTab === "signals" ? (
+              <Overview
+                cards={data.movementCards || []}
+                dirFilter={dirFilter}
+                filters={data.overviewConfig.competitive.filters}
+                onFilter={(f) => {
+                  setDirFilter(f);
+                  setTile(null);
+                }}
+                onSelectionChange={setHasSelection}
+                onSeq={setSeqMode}
+                pillarKey="competitive"
+                seqMode={seqMode}
+                tile={null}
+                title="All threats and watches"
+              />
+            ) : (
+              <ThreatAnalysis />
+            )}
+          </div>
+        );
+      }
       case "products":
         return <Products />;
       case "positioning":

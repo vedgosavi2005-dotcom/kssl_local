@@ -25,7 +25,9 @@ const news = rivals.reduce((n, [, v]) => n + v.length, 0);
 const moments = rivals.reduce((n, [, v]) => n + momentsOf(v).length, 0);
 assert.equal(news, 30, "the fixture holds 30 rival news + moment rows");
 assert.equal(moments, 13, "of which 13 are moments");
-assert.equal(navCounts(d)["threat-analysis"], moments, "the rail counts moments, not the plain news");
+// owner 2026-10-23: Competitor Movement opens on every threat and watch card (one per story); the moves are its second tab
+assert.equal(navCounts(d)["threat-analysis"], d.movementCards.length, "the rail counts the threat and watch cards Movement opens on");
+assert.ok(d.movementCards.every((c) => !c.noStance), "Movement holds threats and watches only");
 
 /* the page reads the same filter */
 const page = readFileSync("src/pages/competitive/ThreatAnalysis.jsx", "utf-8");

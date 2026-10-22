@@ -14,8 +14,12 @@
 /* ---- stances ------------------------------------------------------------------------------------------------ */
 export const STANCES = ["threat", "watch"];
 export const STANCE_WORD = { threat: "Threat", watch: "Watch" };
-/* the competitive overview shows at most this many threats, the riskiest (probability x impact) first */
-export const THREAT_CAP = 10;
+/* THE COMPETITIVE OVERVIEW IS A SHORTLIST (owner 2026-10-23): signals of the last OVERVIEW_DAYS days only (by the card's
+   date), at most THREAT_CAP threats and WATCH_CAP watches, the riskiest (probability x impact) first. Every threat and watch,
+   of any date, is on Competitor Movement. */
+export const OVERVIEW_DAYS = 90;
+export const THREAT_CAP = 15;
+export const WATCH_CAP = 15;
 /* the stance filter options, in menu order: [{code, label}] */
 export const STANCE_OPTIONS = STANCES.map((code) => ({ code, label: STANCE_WORD[code] }));
 /* A card's stance, or "": only threat or watch count. Anything else has no stance. */

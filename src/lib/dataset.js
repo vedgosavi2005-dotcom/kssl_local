@@ -14,11 +14,11 @@ import { formatDate } from "../utils/formatDate.js";
 // the patent country vocabulary. patents.js imports nothing from here, so this edge
 // adds no cycle -- and the normaliser lives with the rest of the patent display rules.
 import { normCountry } from "./patents.js";
-import { cutGroupsByDirection, marketAttention, technologyAttention, isRivalCard, dateVal, ATTENTION_DAYS, capThreats, clubByStory } from "./overview.js";
+import { cutGroupsByDirection, marketAttention, technologyAttention, isRivalCard, dateVal, ATTENTION_DAYS, capThreats, clubByStory, recentCards } from "./overview.js";
 import { sortCompaniesByName } from "./roster.js";
 import { rosterIndex, rosterLookup } from "./partners.js";
 import { markOverlaps } from "./overlap.js";
-import { competitiveLane, technologyLane, marketLane, stanceOf, THREAT_CAP } from "./chrome.js";
+import { competitiveLane, technologyLane, marketLane, stanceOf, THREAT_CAP, WATCH_CAP, OVERVIEW_DAYS } from "./chrome.js";
 import { logger } from "../utils/logger.js";
 import { setFxRates } from "./tenderValue.js";
 
@@ -281,11 +281,14 @@ export function wireDataset(raw) {
       const m = String(c.meta).match(/closes (\d{1,2} \w{3} \d{4})/);
       return !!m && Date.parse(m[1]) >= today0;
     });
+    /* Competitor Movement holds every threat and watch, of any date (one card per story); the overview, the recent best of them
+       (chrome.js OVERVIEW_DAYS, THREAT_CAP, WATCH_CAP; owner 2026-10-23) */
+    d.movementCards = clubByStory((d.competitiveCards || []).filter((c) => !c.noStance));
     d.overviewConfig = {
       competitive: {
         ...d.overviewConfig.competitive,
         ...competitiveLane(),
-        cards: capThreats(clubByStory((d.competitiveCards || []).filter((c) => !c.noStance)), THREAT_CAP),
+        cards: capThreats(capThreats(recentCards(d.movementCards, d, OVERVIEW_DAYS), THREAT_CAP), WATCH_CAP, "watch"),
         groups: cutGroupsByDirection(d.overviewConfig.competitive.groups),
       },
       market: { ...d.overviewConfig.market, ...marketLane(), cards: d.marketCards || [] },

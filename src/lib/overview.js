@@ -159,9 +159,20 @@ export function clubByStory(cards) {
     .map((c) => (c && c.storyId && count.get(c.storyId) > 1 ? { ...c, episodes: count.get(c.storyId) } : c));
 }
 
-export function capThreats(cards, cap) {
-  const top = new Set((cards || []).filter((c) => c && c.dir === "threat").sort(compareRisk).slice(0, cap));
-  return (cards || []).filter((c) => !c || c.dir !== "threat" || top.has(c));
+export function capThreats(cards, cap, dir = "threat") {
+  const top = new Set((cards || []).filter((c) => c && c.dir === dir).sort(compareRisk).slice(0, cap));
+  return (cards || []).filter((c) => !c || c.dir !== dir || top.has(c));
+}
+
+/* The cards whose date (the one the card prints, signalDate) is within `days` of `today`. An undated card is not shown as
+   recent: its age is not known (it stays on Competitor Movement). A month-only date counts as the 1st of that month. */
+export function recentCards(cards, data, days, today = new Date()) {
+  const t = new Date(today.getFullYear(), today.getMonth(), today.getDate() - days);
+  const cut = t.getFullYear() * 10000 + (t.getMonth() + 1) * 100 + t.getDate();
+  return (cards || []).filter((c) => {
+    const v = dateVal(signalDate(c, data));
+    return v > 0 && (v % 100 === 0 ? v + 1 : v) >= cut;
+  });
 }
 
 export function compareCards(data) {
@@ -699,7 +710,7 @@ export function navCounts(d, gapModel) {
     counts.profile = Object.keys(d.competitors).filter(
       (k) => k !== ((d.client && d.client.id)),
     ).length;
-    counts["threat-analysis"] = Object.entries(d.competitorNews || {}).filter(([k]) => k !== ((d.client && d.client.id))).reduce((n, [, v]) => n + momentsOf(v).length, 0);  // competitor moments on record: the competitorNews rows that carry a level
+    counts["threat-analysis"] = (d.movementCards || []).length;   // every threat and watch (one per story): what Competitor Movement opens on
     counts.projects = (d.projects || []).length;
     if (isVisible("finances")) counts.finances = 0;
 
@@ -810,7 +821,7 @@ export function viewMetaFor(d) {
     },
     "threat-analysis": {
       title: navTitle("competitive", "threat-analysis"),
-      cnt: `${momentCount} competitor moves on record · newest first`,
+      cnt: `${(d.movementCards || []).length} threats and watches of any date · ${momentCount} competitor moves`,
       filters: false,
     },
     products: {

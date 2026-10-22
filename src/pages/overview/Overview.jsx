@@ -47,6 +47,7 @@ export default function Overview({
   title,   // optional: the feed's heading, where the pillar's own would be wrong (Global Requirements)
   cardFilter,   // optional: keep only the signal cards this returns true for (Global Requirements keeps the Global ones)
   part,   // market only: "cockpit" = the tender tables (Market overview), "feed" = the signal cards (Global Requirements)
+  cards,   // optional: the card set to show instead of the pillar's overview shortlist (Competitor Movement: every threat and watch)
 }) {
   const { data } = useData();
   const { setScope, takePending } = useAppState();
@@ -58,7 +59,7 @@ export default function Overview({
 
   /* What the feed is filtered and ordered by, as one string. The page is remembered
      under it and reset when it changes. */
-  const filterKey = JSON.stringify([pillarKey, seqMode, dirFilter || "all", tile || "", feedSearchQuery]);
+  const filterKey = JSON.stringify([pillarKey, seqMode, dirFilter || "all", tile || "", feedSearchQuery, title || ""]);   // title: Movement keeps its own page
 
   /* Restored on mount, per pillar and for this filter. Layout keys the boundary above
      this component on the view, so a detour to Competitor and back is a remount -- and
@@ -75,8 +76,9 @@ export default function Overview({
     /* A cardFilter reads the pillar's WHOLE served lane, not the overview cards: those keep the
        latest tenders and only the 24 newest perceived opportunities, so filtering them listed 8 of the 27 Global
        signals. */
-    () => (cardFilter || title ? { ...cfg0, ...(cardFilter ? { cards: (data[`${pillarKey}Cards`] || cfg0.cards || []).filter(cardFilter) } : {}), ...(title ? { title } : {}) } : cfg0),
-    [cfg0, cardFilter, title, data, pillarKey],
+    () => (cardFilter || title || cards ? { ...cfg0, ...(cardFilter ? { cards: (data[`${pillarKey}Cards`] || cfg0.cards || []).filter(cardFilter) } : {}),
+      ...(cards ? { cards } : {}), ...(title ? { title } : {}) } : cfg0),
+    [cfg0, cardFilter, title, cards, data, pillarKey],
   );
   /* The card's status word. Technology cards are grouped by kind (rival/adopt), not by
      dir, so a flat dir->word map stamped the same "Advancement" on every card; read the
