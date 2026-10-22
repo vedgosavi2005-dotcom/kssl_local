@@ -77,3 +77,12 @@ BEGIN
 END $$;
 
 COMMENT ON VIEW ops.step_history IS 'live steps (ops.step) + steps reconstructed from table timestamps (reconstructed = true), one row per stage per day';
+
+-- The view is dropped and re-created here (and by every sync, db/sync_staging_to_vps.sh), which drops its grants: give the
+-- app role (the VPS APIs run as kssl_app) read access again each time.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kssl_app') THEN
+    EXECUTE 'GRANT USAGE ON SCHEMA ops TO kssl_app';
+    EXECUTE 'GRANT SELECT ON ops.step_history TO kssl_app';
+  END IF;
+END $$;
