@@ -34,6 +34,8 @@ from urllib.request import Request, urlopen
 
 import psycopg2
 
+from backend import ops_log
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 MONTHS = {m: i + 1 for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"])}
@@ -160,6 +162,25 @@ def from_issue(html):
     return parse_date(f"{m.group(1)}-01-01") if m else None
 
 
+# the pipeline log's words for where a date came from (backend/ops_log notes)
+HOW_WORDS = {"json-ld": "the page's structured data (JSON-LD datePublished)", "meta": "a published-time <meta> tag",
+             "markup": "a <time> / date element on the page", "header": "a date line just under the article's title",
+             "dateline": "the press-release dateline", "url": "the date in the article's web address",
+             "issue-year": "the magazine's issue line (the year only)"}
+
+
+def note_date(sid, url, v, how, old=None):
+    tbl = "staging.competitive_signal" if TABLE == "signal" else "staging.competitive_news_article"
+    if old is not None:
+        msg = f"Stored date {old} replaced by {v}: {HOW_WORDS.get(how, how)} says so (the stored date was off by {abs((old - v).days)} days)."
+        outcome = "date_corrected"
+    elif v:
+        msg, outcome = f"Date set to {v}, taken from {HOW_WORDS.get(how, how)}.", "date_" + how.replace("-", "_")
+    else:
+        msg, outcome = f"No date found ({how}); left as 'date not known' -- nothing is guessed.", "no_date"
+    ops_log.note("date", outcome, msg, subject=url, tbl=tbl, rec_id=str(sid), detail={"date": v, "how": how, "old": old})
+
+
 MACHINE = ("json-ld", "meta", "url")     # sources reliable enough to overrule a stored date; markup / header guesses are not
 
 
@@ -194,6 +215,8 @@ def fix_wrong(con, cur, write):
     print(f"\n{len(rows)} dated {TABLES[TABLE][3]} checked; {len(wrong)} contradicted by the page's own date" + ("" if write else "  (dry run: --write to replace)"))
     if write and wrong:
         cur.executemany(TABLES[TABLE][2], [(v, sid) for sid, _, _, v, _ in wrong])
+        for sid, url, old, v, how in wrong:
+            note_date(sid, url, v, how, old)
         if TABLE == "news":
             cur.executemany("UPDATE staging.source_document SET published_at = %s WHERE url = %s", [(v, url) for _, url, _, v, _ in wrong])
         con.commit()
@@ -201,6 +224,7 @@ def fix_wrong(con, cur, write):
     con.close()
 
 
+@ops_log.logged("scripts.backfill_published_dates")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true")
@@ -238,6 +262,9 @@ def main():
                             "WHERE signal_id = %s AND published_date IS NULL", [(v, prec, sid) for sid, v, prec in hits])
         con.commit()      # both tables (news used to skip it, so its dates were never saved)
         print(f"written: {len(hits)}")
+    if args.write:
+        for sid, url, v, how in found:          # every row looked at: the date and where it came from, or why there is none
+            note_date(sid, url, v if (v and not (TABLE == "news" and how == "issue-year")) else None, how)
     con.close()
 
 
