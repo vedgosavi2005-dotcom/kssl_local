@@ -21,6 +21,13 @@ import { STANCE_WORD as DIR_WORD, stanceOf, TENDER_WORD as tenderWord } from "..
    empty word draws no pill. Without it, the stance pill as before. */
 /* a story step that only records a stance moving ("Label change" / label_change) is not an event of the story */
 const LABEL_CHANGE = /^\s*label[\s_-]*change\s*$/i;
+// a step's date, cut to what the source states: "month" -> "Sep 2026", "year" -> "2026" (not a made-up 1st of the month)
+const stepDate = (d, precision) => {
+  const v = String(d);
+  if (precision === "year") return v.slice(0, 4);
+  if (precision === "month") return new Date(`${v.slice(0, 7)}-01T00:00:00Z`).toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+  return formatDate(v);
+};
 
 export default function DetailPanel({ detail, onClose, badge }) {
   const { data } = useData();
@@ -175,7 +182,7 @@ export default function DetailPanel({ detail, onClose, badge }) {
 
         <div className="ctx-sec">
           <span className="eyebrow">At a glance</span>
-          <div className="cd-facts">
+          <div className="cd-facts cd-glance">
             {facts.map((f, i) => (
               <div
                 className={`cd-frow${f[2] ? " sourced" : ""}`}
@@ -283,7 +290,7 @@ export default function DetailPanel({ detail, onClose, badge }) {
         ) : null}
 
         {/* review API only: the scores and tests behind watch / threat (the live API ships no labelBasis) */}
-        <RiskBasis basis={detail.labelBasis || (tenderRec && tenderRec.labelBasis)} stats={detail.promptStats} />
+        <RiskBasis basis={detail.labelBasis || (tenderRec && tenderRec.labelBasis)} stats={detail.promptStats} title={detail.title} />
 
         {/* the story timeline, drawn like the Projects timeline: dated steps on a rail, the event, what changed in grey,
             its source chip; a label change (a stance moving) is not an event of the story and is not listed */}
@@ -295,7 +302,13 @@ export default function DetailPanel({ detail, onClose, badge }) {
                 const later = /^planned$/i.test(String(s.type || "")) || (/^\d{4}-\d{2}-\d{2}/.test(String(s.date || "")) && new Date(s.date) > new Date());
                 return (
                   <li className={later ? "next" : ""} key={`s-${i}`}>
-                    <span className="pj-d">{/^\d/.test(String(s.date || "")) ? formatDate(s.date) : s.date || "date not stated"}</span>
+                    <span className="pj-d">
+                      {/^\d/.test(String(s.date || "")) ? stepDate(s.date, s.precision) : s.date || "date not stated"}
+                      {/* when it happened vs when it was reported: an event of 8 Oct in an article of 12 Oct shows both */}
+                      {s.reported && String(s.reported).slice(0, 10) !== String(s.date || "").slice(0, 10) ? (
+                        <span className="pj-rep">reported {formatDate(String(s.reported))}</span>
+                      ) : null}
+                    </span>
                     <span className="pj-e">
                       {s.current ? <b>{s.line}</b> : s.line}
                       {later ? " (expected)" : ""}

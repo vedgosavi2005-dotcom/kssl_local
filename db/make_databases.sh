@@ -50,6 +50,7 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/28_media_images.sql           # media.image: article pictures stored in the DB (/api/image/<id>)
 "${PSQL[@]}" -d "$STG" < db/setup/29_text_translation.sql       # originals of translated market cells + translation cache
 "${PSQL[@]}" -d "$STG" < db/setup/30_evidence_dates.sql         # story_step / signal evidence dates (as on VPS serving)
+"${PSQL[@]}" -d "$STG" < db/setup/35_glance_who_wider.sql      # glance_who up to 80 characters (co-winners)
 "${PSQL[@]}" -d "$STG" < db/setup/31_user_activity.sql         # activity.event: review-site usage log (not synced, not reviewed)
 "${PSQL[@]}" -d "$STG" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
 "${PSQL[@]}" -d "$STG" < db/setup/33_pipeline_log.sql          # ops.*: pipeline log (runs, steps, every row written, script notes)
@@ -69,6 +70,7 @@ build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/26_competitor_short_details.sql  # same columns in serving
 "${PSQL[@]}" -d "$SRV" < db/setup/27_tender_translation.sql      # same columns in serving
 "${PSQL[@]}" -d "$SRV" < db/setup/30_evidence_dates.sql         # same columns in serving
+"${PSQL[@]}" -d "$SRV" < db/setup/35_glance_who_wider.sql      # glance_who up to 80 characters (co-winners)
 "${PSQL[@]}" -d "$SRV" < db/setup/31_user_activity.sql         # activity.event: live-site usage log (outside serving/ui: no approve guard)
 "${PSQL[@]}" -d "$SRV" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
 for d in "$STG" "$SRV"; do

@@ -263,6 +263,11 @@ def add_step(cur, story_id, *, step_date, step_type: str, one_line, source_url=N
              probability=None, impact=None, label=None, run_id=None, rule_version=None) -> dict:
     """One real step (replaced, not duplicated, when the same card is loaded again), then the timeline is rebuilt."""
     sid = _step_id(story_id, source_table, source_row_id, step_type) if source_row_id else _step_id(story_id, None, None, step_type, f"{step_date}|{one_line}")
+    if source_row_id:
+        # one step per card in a story: a re-run that reads the same card as another kind of move ("update" -> "announced")
+        # replaces its step instead of adding a second one beside it (owner 22 Oct: the K9 thread listed one article twice)
+        cur.execute("""DELETE FROM staging.story_step WHERE story_id = %s AND source_table = %s AND source_row_id = %s
+                       AND step_type NOT IN (%s, 'label_change')""", (story_id, source_table, str(source_row_id), step_type))
     cur.execute("""INSERT INTO staging.story_step (step_id, story_id, step_no, step_date, step_type, one_line, source_url, source_table, source_row_id,
                                                    probability, impact, label_after, run_id)
                    VALUES (%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)

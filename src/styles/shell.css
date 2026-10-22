@@ -471,3 +471,7 @@
 /* a product name that opens that product in Products (tender "Matched products" and "Competitor fit") */
 .prod-link{background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;text-align:left;cursor:pointer;text-decoration:underline;text-decoration-color:var(--l-line-2,#cfcdc3);text-underline-offset:3px}
 .prod-link:hover,.prod-link:focus-visible{color:var(--ok,#1f6e45);text-decoration-color:currentColor}
+/* At a glance: label and value both left-aligned, values in one column (owner 22 Oct) */
+.cd-glance .cd-fline{justify-content:flex-start}
+.cd-glance .cd-fk{flex:0 0 120px;max-width:120px}
+.cd-glance .cd-fv{text-align:left;margin-left:0}

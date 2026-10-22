@@ -1,4 +1,5 @@
 import "../../styles/risk.css";
+import { reasonFor, dimensionReason, analyticalReading } from "../../lib/riskReading";
 
 /* Why a signal is watch or threat, from details[id].labelBasis, and what its prompts cost, from details[id].promptStats
    (review API only; the live API ships neither, so the live drawer keeps "no risk scores"). A threat is exactly every test
@@ -10,7 +11,7 @@ const BASIS = { stated: "From the article", derived: "Worked out from the facts"
 const usd = (x) => (x == null ? "—" : `$${Number(x).toFixed(x < 1 ? 3 : 2)}`);
 const num = (x) => (x == null ? "—" : Number(x).toLocaleString("en-IN"));
 
-export default function RiskBasis({ basis, stats }) {
+export default function RiskBasis({ basis, stats, title }) {
   if (!basis && !stats) return null;
   const { probability: p, impact: i, dimensions = [], tests = [], mainDimension, label, labelText, summary, score, confidence } = basis || {};
   const failed = tests.filter((t) => !t.pass).length;
@@ -56,6 +57,7 @@ export default function RiskBasis({ basis, stats }) {
               <span className="rk-dk">{d.label}</span>
               <span className="rk-bar"><span style={{ width: `${((d.score || 0) / 5) * 100}%` }} /></span>
               <span className="rk-dv">{shown(d.score)}</span>
+              {dimensionReason(d.key, basis) && (d.score || 0) > 1 ? <span className="rk-why">{dimensionReason(d.key, basis)}</span> : null}
             </div>
           ))}
         </div>
@@ -75,8 +77,19 @@ export default function RiskBasis({ basis, stats }) {
                 {t.need ? `${allPass ? "Threat needs" : "Needs"}: ${t.need}` : null}
                 {t.basis && BASIS[t.basis] ? <span className={`rk-basis ${t.basis}`}>{BASIS[t.basis]}</span> : null}
               </span>
+              {reasonFor(t, basis) ? <span className="rk-why">Why: {reasonFor(t, basis)}</span> : null}
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {/* the analytical reading: the checks above as one chain of plain sentences, ending in why it is a threat or a watch */}
+      {analyticalReading(basis, title).length ? (
+        <div className="ctx-sec">
+          <span className="eyebrow">Analytical reading</span>
+          <div className="rk-reading">
+            {analyticalReading(basis, title).map((line, n) => <p key={n}>{line}</p>)}
+          </div>
         </div>
       ) : null}
 

@@ -1,6 +1,6 @@
 id: signal
 title: Competitive signal from a news article
-version: 4
+version: 5
 fills: [competitive_signal, competitive_signal_detail, competitive_signal_evidence, competitive_product_news]
 shows_on: Competitive Overview cards (risk matrix) + signal drawer + Products timeline
 cadence: daily                   # routine: run for every new article since the last run
@@ -164,7 +164,9 @@ task: |
    competitive_signal_detail (exactly one):
    - drawer_title: the headline for the drawer, max 140 characters; a finished headline under the same rule as title
    - AT A GLANCE, six short fields. A word or a short phrase each, never a sentence, never a summary:
-       glance_who: the rival's name, max 40 characters
+       glance_who: who made the move: the rival's name; when the article names two or more firms making the SAME move (contracts
+                   signed with Tata Advanced Systems and NIBE; a joint bid), all of them, joined by " and ", max 80 characters.
+                   The buyer, ministry or end user is the third party, never Who (v5, owner 22 Oct)
        glance_move: one of Order | Contract | Selection | Delivery | Induction | Trial | Launch | JV | MoU | Acquisition |
                     Capacity | Export approval | Policy | Supply deal | Cancellation
        glance_where: the country or buyer, max 40 characters

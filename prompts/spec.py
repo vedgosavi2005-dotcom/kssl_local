@@ -81,7 +81,7 @@ PLAIN_MODES = ("warn", "strict", "off")
 
 # Hard limits of the fixed at-a-glance fields (Fable A.1.2): applied when a prompt does not set its own `max` / `enum`.
 BUILTIN_RULES = {
-    "glance_who": {"max": 40}, "glance_where": {"max": 40}, "glance_impact": {"max": 40},
+    "glance_who": {"max": 80}, "glance_where": {"max": 40}, "glance_impact": {"max": 40},
     "glance_third_party": {"max": 60}, "glance_when": {"max": 60},
     "glance_move": {"enum": ["Order", "Contract", "Selection", "Delivery", "Induction", "Trial", "Launch", "JV", "MoU", "Acquisition",
                              "Capacity", "Export approval", "Policy", "Supply deal", "Cancellation"]},

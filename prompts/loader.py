@@ -1309,9 +1309,9 @@ def _selftest_rules() -> None:
     assert [c.table for c in ok.recs[0].children] == ["competitive_signal_evidence"] * 5
     # glance fields: hard length limits and the move list apply with no rule in the prompt file
     det = lambda **k: {"competitive_signal_detail": [{"drawer_title": "D", **k}]}
-    v = run(out, children=det(glance_who="x" * 41))
-    assert any("glance_who is 41 characters, max 40" in r for r in v.rejected) and len(v.recs[0].children) == 5
-    assert not run(out, children=det(glance_who="x" * 40, glance_when="y" * 60, glance_move="Export approval")).rejected
+    v = run(out, children=det(glance_who="x" * 81))
+    assert any("glance_who is 81 characters, max 80" in r for r in v.rejected) and len(v.recs[0].children) == 5
+    assert not run(out, children=det(glance_who="x" * 80, glance_when="y" * 60, glance_move="Export approval")).rejected
     assert any("glance_when" in r for r in run(out, children=det(glance_when="y" * 61)).rejected)
     assert any("glance_move='Weird'" in r for r in run(out, children=det(glance_move="Weird")).rejected)
     assert next(c for c in run(out, children=det(glance_move="contract")).recs[0].children if c.table == "competitive_signal_detail").values["glance_move"] == "Contract"        # case-insensitive, stored as listed

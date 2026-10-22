@@ -335,8 +335,10 @@ def client_of(database) -> str | None:
     return rows[0].get("client_name") if rows else None
 
 
-def signal_story(row, det, labels, steps_by, stories):
-    """The story (event) timeline of a signal, for every signal that has a story (a v1 row with no scores too)."""
+def signal_story(row, det, labels, steps_by, stories, reported=None):
+    """The story (event) timeline of a signal, for every signal that has a story (a v1 row with no scores too).
+    A step's date is when the event happened; `reported` (signal id -> its article's publication date) adds when it was
+    reported, so a step dated 8 Oct whose article came out on 12 Oct says both (owner 22 Oct: the K9 thread's dates)."""
     lab = lambda col, code: labels.get(("story_step", col, text(code))) or code  # noqa: E731
     story_id = text(row.get("story_id"))
     story = stories.get(story_id) or {}
@@ -346,6 +348,8 @@ def signal_story(row, det, labels, steps_by, stories):
             "label": lab("label_after", story.get("current_label")),
             "steps": [{"date": s.get("step_date"), "type": lab("step_type", s.get("step_type")),
                        "line": s.get("one_line"), "changed": s.get("changed"), "url": s.get("source_url"),
+                       "reported": (reported or {}).get(text(s.get("source_row_id"))) if s.get("source_table") == "competitive_signal" else None,
+                       "precision": s.get("date_precision"),
                        "label": lab("label_after", s.get("label_after")) if s.get("label_after") else None,
                        "current": bool(det) and s.get("source_url") == det.get("source_url")}
                       for s in ordered(steps_by.get(story_id, []), "step_no")],
@@ -378,7 +382,7 @@ def _review() -> bool:
     return os.environ.get("KSSL_VIEW", "").strip().lower() == "review"
 
 
-def label_basis(row):
+def label_basis(row, reasons=None):
     """Review site only (owner 2026-10-21): the scores behind threat / watch -- the probability x impact point for the risk grid,
     the impact score per dimension, and each threat test with what it needs, what the signal got and pass / fail
     (prompts/derive.signal_label_tests: the same rule as the label). The live site never ships this (decision 2026-10-17)."""
@@ -404,6 +408,8 @@ def label_basis(row):
         # test / got repeat question / answer for the first panel version
         "tests": [{**t, "test": t.get("question"), "got": t.get("answer")} for t in b.get("tests") or []],
         "ruleVersion": row.get("rule_version"),
+        # the prompt's own one-sentence reason per judgement, keyed by column (probability, impact_orders_revenue, subtype_match...)
+        "reasons": reasons or {},
     }}
 
 
@@ -440,6 +446,10 @@ def build_signals(database, competitors, details):
     news_by = by_key(table(database, "serving", "competitive_product_news"), "story_id")
     products = {text(r.get("product_id")): r for r in table(database, "serving", "competitive_product")}
     stats_by = by_key(table(database, "serving", "signal_prompt_stats"), "signal_id")    # review only (backend/app.py)
+    reported = {text(r.get("signal_id")): published_text(r) for r in table(database, "serving", "competitive_signal") if r.get("published_date")}
+    reasons_by = {}                                   # review only: signal id -> {judgement column: the prompt's reason}
+    for r in table(database, "serving", "signal_reasons"):
+        reasons_by.setdefault(text(r.get("row_id")), {})[r.get("column_name")] = r.get("quote")
     cards = []
     for row in ordered(table(database, "serving", "competitive_signal"), "sequence_no"):
         sid = text(row.get("signal_id"))
@@ -504,8 +514,8 @@ def build_signals(database, competitors, details):
             "eyebrow": det.get("impact_eyebrow"),
             "suggest": [det.get("ask_box_query")] if det.get("ask_box_query") else [],
             "_src": src("competitive_signal", "signal_id", sid),
-            "story": signal_story(row, det, labels, steps_by, stories),
-            **label_basis(row),
+            "story": signal_story(row, det, labels, steps_by, stories, reported),
+            **label_basis(row, reasons_by.get(sid)),
             **prompt_stats(stats_by.get(sid, [])),
             **signal_v2(database, row, det, labels, steps_by, stories, news_by, products),
         }
