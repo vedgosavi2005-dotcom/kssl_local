@@ -21,6 +21,23 @@ import { escAll } from "./html.js";
    "Minimum 30 minutes hours"), a placeholder is left as it is, and no unit on the
    record means no unit on screen. The one thing removed is a unit the record
    repeated ("over 67 km/h km/h"). */
+/* One stored value that packs several figures ("GVW 19,000 kg; L 6,700 mm; 375-400 hp") -> one part per figure,
+   so the sheet shows a line each. Splits at "; " outside brackets only, and drops a leading "• " bullet.
+   A value with no "; " comes back as one part, unchanged. Display only: the stored row is not touched. */
+export function specParts(v) {
+  const s = String(v == null ? "" : v), out = [];
+  let depth = 0, cur = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if ("([{".includes(c)) depth++;
+    else if (")]}".includes(c)) depth = Math.max(0, depth - 1);
+    if (c === ";" && depth === 0 && /\s/.test(s[i + 1] || "")) { out.push(cur); cur = ""; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((t) => t.trim().replace(/^•\s*/, "")).filter(Boolean);
+}
+
 export function specValueWithUnit(v, u) {
   if (v == null) return "";
   const s = String(v).trim();

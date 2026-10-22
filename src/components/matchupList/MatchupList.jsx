@@ -30,28 +30,22 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
   const { matchups, POS_CATS, CAT_KEY } = data;
   const { searchQuery } = useAppState();
   const [query, setQuery] = useState("");
-  /* "Compare any two products": the two picks, pre-filled from an open comparison */
-  const [pickA, setPickA] = useState(compare ? compare.a : "");
-  const [pickB, setPickB] = useState(compare ? compare.b : "");
-  // KSSL's own products first, then one group per category
-  const productGroups = useMemo(() => {
-    const g = new Map();
+  /* "Compare any two products": two type-to-search boxes over the whole catalogue (~4,500 products is
+     too many for a plain select). Each box holds the typed text; a pick is the product whose label matches it. */
+  const labelOf = useMemo(() => {
+    const m = new Map(), used = new Set();
     products.forEach((p) => {
-      const k = p.side === "client" ? `${clientShort()} products` : p.cat;
-      if (!g.has(k)) g.set(k, []);
-      g.get(k).push(p);
+      let l = `${p.name} — ${p.side === "client" ? clientShort() : p.maker || "?"}`;
+      if (used.has(l)) l += ` (${p.cat || p.key})`;
+      used.add(l);
+      m.set(p.key, l);
     });
-    return [...g.entries()];
+    return m;
   }, [products, data.client]);
-  const productOptions = productGroups.map(([label, list]) => (
-    <optgroup key={label} label={label}>
-      {list.map((p) => (
-        <option key={p.key} value={p.key}>
-          {p.name}{p.side === "rival" && p.maker ? ` — ${p.maker}` : ""}
-        </option>
-      ))}
-    </optgroup>
-  ));
+  const keyOf = useMemo(() => new Map([...labelOf].map(([k, l]) => [l, k])), [labelOf]);
+  const [textA, setTextA] = useState(compare ? labelOf.get(compare.a) || "" : "");
+  const [textB, setTextB] = useState(compare ? labelOf.get(compare.b) || "" : "");
+  const pickA = keyOf.get(textA) || "", pickB = keyOf.get(textB) || "";
   const [co, setCo] = useState("");
   const [cat, setCat] = useState("");
   const [koel, setKoel] = useState("");
@@ -223,20 +217,19 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
             {/* its own section, headed exactly like "Competitor Products" above */}
             <span className="eyebrow">Compare Any Two Products</span>
             <div className="mu-compare-fields">
-            <select className="mu-fsel" value={pickA} onChange={(e) => setPickA(e.target.value)} aria-label="First product to compare">
-              <option value="">Product A…</option>
-              {productOptions}
-            </select>
+            <input className="mu-fsel" list="mu-cmp-products" value={textA} onChange={(e) => setTextA(e.target.value)}
+              placeholder={`Product A… (type to search ${products.length.toLocaleString()})`} aria-label="First product to compare" />
             <span className="mu-compare-vs">vs</span>
-            <select className="mu-fsel" value={pickB} onChange={(e) => setPickB(e.target.value)} aria-label="Second product to compare">
-              <option value="">Product B…</option>
-              {productOptions}
-            </select>
+            <input className="mu-fsel" list="mu-cmp-products" value={textB} onChange={(e) => setTextB(e.target.value)}
+              placeholder="Product B… (type to search)" aria-label="Second product to compare" />
+            <datalist id="mu-cmp-products">
+              {[...labelOf.values()].map((l) => <option key={l} value={l} />)}
+            </datalist>
             <button
               type="button"
               className="mu-compare-btn"
               disabled={!pickA || !pickB || pickA === pickB}
-              title={pickA && pickA === pickB ? "Pick two different products" : "Compare the two products"}
+              title={!pickA || !pickB ? "Pick both products from the suggestions" : pickA === pickB ? "Pick two different products" : "Compare the two products"}
               onClick={() => onCompare(pickA, pickB)}
             >
               Compare

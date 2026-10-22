@@ -80,8 +80,15 @@ AGE_SRC = [
     ("Raw layer", "Harvested documents", "published_at::date", "source_document"),
     ("Raw layer", "Tender notices (raw)", "published_at::date", "tender_raw"),
 ]
-AGE_SQL = "WITH d(pillar, what, dt) AS (" + " UNION ALL ".join(
-    f"SELECT '{p}', '{w}', ({c})::date FROM staging.{t}" for p, w, c, t in AGE_SRC) + """)
+AGE_CTE = "WITH d(pillar, what, dt) AS (" + " UNION ALL ".join(
+    f"SELECT '{p}', '{w}', ({c})::date FROM staging.{t}" for p, w, c, t in AGE_SRC) + ")"
+# rows per calendar month (last 12), per pillar
+MONTH_SQL = AGE_CTE + """
+    SELECT pillar, CASE WHEN dt IS NULL THEN 'nodate' WHEN dt > current_date THEN 'future'
+                        WHEN dt < date_trunc('month', current_date) - interval '11 months' THEN 'older'
+                        ELSE to_char(dt, 'YYYY-MM') END AS m, count(*)::int AS n
+    FROM d GROUP BY 1, 2"""
+AGE_SQL = AGE_CTE + """
     SELECT pillar, what, count(*) n, min(dt) oldest, max(dt) newest,
       count(*) FILTER (WHERE dt > current_date) future,
       count(*) FILTER (WHERE dt <= current_date AND dt >= current_date - 30) m1,
@@ -449,6 +456,163 @@ FLOW_STAGES = [
 ]
 
 
+# Raw / bookkeeping tables -> (who wrote the rows, script, where the data itself came from). web = fetched from outside sites by code.
+RAW_FROM = {
+    "tender_raw": ("web", "backend/harvest_tenders.py", "public tender portals: GeM India, Prozorro (UA), Diavgeia (GR), TED (EU), UK Find a Tender, DECP (FR), CanadaBuys"),
+    "source_document": ("web", "backend/harvest_sites.py, harvest_specs.py, import_dc_corpus.py", "trade press, company newsrooms, government sites, maker spec pages, the DC crawler corpus"),
+    "media.image": ("web", "backend/media_images.py", "the lead picture of each article page (stored as bytes)"),
+    "media.page_image": ("web", "backend/media_images.py", "which picture belongs to which page, and why a page has none"),
+    "news_candidate": ("code", "backend/news.py, flood.py", "news items built from the harvested documents"),
+    "prompt_run": ("prompt", "prompts/run.py, triage_routes.py, signal_gate.py", "log of every Claude call: input, output, tokens, cost"),
+    "fact_source": ("split", "backend/excel_load.py, the prompt loader, fill_sources", "the source (URL + quote) behind each value: Excel rows count as Excel, "
+                    "rows on prompt-written tables as Prompt, the rest as Code"),
+    "review_decision": ("code", "backend/review.py", "your Approve / Reject clicks on the review site"),
+    "text_original": ("code", "backend/translate_market.py", "the original-language text kept when a market cell was translated (local model)"),
+    "text_translation": ("code", "backend/translate_market.py", "cache of local-model translations"),
+    "spec_dictionary": ("code", "prompts/matchup_code.py", "spec names mapped to one dictionary"),
+    "fx_rate": ("code", "scripts/load_fx_rates.py", "currency exchange rates"),
+    "code_label": ("code", "db/setup/*.sql", "fixed labels and vocabularies"),
+}
+RAW_TABLES = {t for t in RAW_FROM if "." not in t}
+PILLAR_OF = (("competitive_", "Competitive"), ("client_", "KSSL (client)"), ("market_", "Market"), ("technology_", "Technology"),
+             ("story", "Competitive"))
+
+
+def inventory(cur, counts: dict, fills: dict, age: list) -> dict:
+    """Owner 22 Oct: how many tables, how many GB, what loading cost (time, tokens), how old the data is and how much per period,
+    and where every row came from (Excel / prompt / code / raw layer)."""
+    inv: dict = {}
+    inv["dbs"] = q(cur, """SELECT datname AS db, round(pg_database_size(datname) / 1024.0 ^ 3, 3) AS gb FROM pg_database
+                           WHERE datname IN ('kssl_staging', 'kssl_serving') ORDER BY 1""")
+    schemas = []
+    for db, dsn in (("kssl_staging", DSN), ("kssl_serving", re.sub(r"dbname=\S+", "dbname=kssl_serving", DSN))):
+        try:
+            with psycopg2.connect(dsn, connect_timeout=5) as c2, c2.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as c:
+                c.execute("""SELECT n.nspname AS schema, count(*) AS tables, round(sum(pg_total_relation_size(c.oid)) / 1024.0 ^ 2, 1) AS mb,
+                                    sum(greatest(c.reltuples, 0))::bigint AS approx_rows
+                             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                             WHERE c.relkind = 'r' AND n.nspname IN ('staging', 'staging_ui', 'media', 'serving', 'ui') GROUP BY 1 ORDER BY 1""")
+                schemas += [{"db": db, **dict(r)} for r in c.fetchall()]
+        except psycopg2.Error as e:
+            schemas.append({"db": db, "schema": f"unreachable: {str(e)[:80]}", "tables": None, "mb": None, "approx_rows": None})
+    inv["schemas"] = schemas
+    inv["biggest"] = q(cur, """SELECT n.nspname || '.' || c.relname AS t, round(pg_total_relation_size(c.oid) / 1024.0 ^ 2, 1) AS mb,
+                                      greatest(c.reltuples, 0)::bigint AS approx_rows
+                               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                               WHERE c.relkind = 'r' AND n.nspname IN ('staging', 'staging_ui', 'media')
+                               ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 10""")
+    # what loading cost: every model run is in prompt_run (local-model work is not: it is free and logged in its own tables)
+    inv["spend"] = q(cur, f"""SELECT coalesce(model, '-') AS model, count(*) AS runs, round(coalesce(sum(seconds), 0) / 3600, 1) AS hours,
+                                     coalesce(sum(tokens_in), 0) AS tin, coalesce(sum(tokens_out), 0) AS tout,
+                                     coalesce(sum(tokens_cache_read), 0) AS tcache, round(coalesce(sum(cost_usd), 0), 2) AS cost,
+                                     coalesce(sum(rows_loaded), 0) AS rows,
+                                     to_char(min(started_at) AT TIME ZONE '{TZ}', 'DD Mon') AS first, to_char(max(started_at) AT TIME ZONE '{TZ}', 'DD Mon') AS last
+                              FROM staging.prompt_run GROUP BY 1 ORDER BY cost DESC""")
+    inv["local"] = q(cur, """SELECT (SELECT count(*) FROM staging.text_translation) AS answers,
+                                    (SELECT count(*) FROM staging.text_original) AS cells,
+                                    (SELECT count(*) FROM staging.market_tender WHERE text_lang IS NOT NULL AND text_lang <> 'en') AS tenders,
+                                    (SELECT count(*) FROM staging.competitive_competitor WHERE revenue_short IS NOT NULL) AS companies,
+                                    (SELECT count(*) FROM media.page_image) AS pages, (SELECT count(*) FROM media.image) AS images""")[0]
+    inv["harvest"] = q(cur, """SELECT source_kind AS kind, count(*) AS docs, round(sum(length(body_text)) / 1024.0 ^ 2, 1) AS text_mb,
+                                      to_char(min(fetched_at), 'DD Mon') AS first, to_char(max(fetched_at), 'DD Mon') AS last,
+                                      count(DISTINCT fetched_at::date) AS days
+                               FROM staging.source_document GROUP BY 1 ORDER BY 2 DESC""")
+    # volume by age, per pillar (from the Data age rows)
+    keys = ("future", "m1", "m3", "m6", "m12", "y3", "y3p", "nodate")
+    per = {}
+    for a in age:
+        p = per.setdefault(a["pillar"], dict.fromkeys(keys, 0) | {"n": 0})
+        for k in keys + ("n",):
+            p[k] += int(a[k] or 0)
+    inv["age_total"] = [{"pillar": k, **v} for k, v in per.items()]
+    inv["by_month"] = q(cur, MONTH_SQL)
+    # where the rows came from
+    excel = {r["t"]: r["n"] for r in q(cur, """SELECT table_name AS t, count(DISTINCT row_id) AS n FROM staging.fact_source
+                                                 WHERE document_id LIKE 'excel:%%' GROUP BY 1""")}
+    prompt_tables = set(fills) | {t for r in q(cur, """SELECT DISTINCT jsonb_object_keys(rows_by_table) AS t FROM staging.prompt_run
+                                                         WHERE status = 'loaded' AND jsonb_typeof(rows_by_table) = 'object'""") for t in [r["t"]]}
+    mb = {r["t"]: float(r["mb"]) for r in q(cur, """SELECT CASE WHEN n.nspname = 'staging' THEN '' ELSE n.nspname || '.' END || c.relname AS t,
+                                                     pg_total_relation_size(c.oid) / 1024.0 ^ 2 AS mb
+                                              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                                              WHERE c.relkind = 'r' AND n.nspname IN ('staging', 'media')""")}
+    fs = {"excel": 0, "prompt": 0, "code": 0}
+    for r in q(cur, """SELECT table_name AS t, document_id LIKE 'excel:%%' AS x, count(*) AS n FROM staging.fact_source GROUP BY 1, 2"""):
+        fs["excel" if r["x"] else "prompt" if r["t"] in prompt_tables else "code"] += r["n"]
+    media = {f"media.{r['t']}": r["n"] for r in q(cur, "SELECT 'image' AS t, count(*) AS n FROM media.image UNION ALL SELECT 'page_image', count(*) FROM media.page_image")}
+    origin = []
+    for t, n in {**counts, **media}.items():
+        if t in RAW_FROM:
+            pil, k = "Raw layer (inputs + logs)", RAW_FROM[t][0]
+            o = fs if k == "split" else {k: n}
+        else:
+            pil = next((p for pre, p in PILLAR_OF if t.startswith(pre)), "Other")
+            x = min(excel.get(t, 0), n)
+            o = {"excel": x, "prompt" if t in prompt_tables else "code": n - x}
+        o = {k: o.get(k, 0) for k in ("excel", "prompt", "code", "web")}
+        tot = sum(o.values())
+        # ponytail: a table's size is split by row share (Excel and prompt rows of one table assumed the same width)
+        size = mb.get(t, 0.0)
+        origin.append({"table": t, "pillar": pil, **o, "mb": round(size, 2),
+                       **{k + "_mb": (size * v / tot if tot else 0.0) for k, v in o.items()}})
+    inv["origin"] = sorted(origin, key=lambda o: -o["mb"])
+    rows = {o["table"]: o["excel"] + o["prompt"] + o["code"] + o["web"] for o in origin}
+    inv["raw_from"] = [{"table": t, "who": w, "script": sc, "what": wh, "rows": rows.get(t, 0), "mb": round(mb.get(t, 0.0), 1)}
+                       for t, (w, sc, wh) in RAW_FROM.items()]
+    return inv
+
+
+LIVE_API = os.environ.get("KSSL_LIVE_API", "http://127.0.0.1:8600")
+# AWS hosting (owner 22 Oct: "what services do we need, only the database and the frontend? how much compute happens between them;
+# most processing is done here and pushed into tables; daily cost"). List prices, on-demand, Mumbai (ap-south-1) where found, checked
+# 22 Oct 2026: Lightsail Linux 2 GB $12/mo, 4 GB $24/mo (aws.amazon.com/lightsail/pricing); RDS PostgreSQL db.t4g.micro ~$15/mo Mumbai
+# (bytebase dbcost, Jul 2026); Fargate $0.04048 / vCPU-h + $0.004445 / GB-h (us-east-1, AWS blog); gp3 / S3 / ALB / IPv4 from AWS list
+# prices. ponytail: hard-coded prices -- re-check in the AWS pricing calculator before buying.
+AWS_OPTIONS = [
+    {"name": "A. One Lightsail server (same as today's VPS)", "pick": "recommended now",
+     "services": "Lightsail Linux 2 GB (2 vCPU, 60 GB SSD, 3 TB transfer) running the same docker compose: Postgres + API + web (+ Caddy for HTTPS)",
+     "lines": [("Lightsail 2 GB, public IPv4", 12.0 / 30.4)],
+     "note": "Simplest; one box to patch. Add the review site and its 1.7 GB staging DB: take the 4 GB bundle ($24/mo ≈ $0.79/day)."},
+    {"name": "B. Managed services", "pick": "if you want AWS to run the database",
+     "services": "S3 + CloudFront (frontend), ECS Fargate 0.25 vCPU / 0.5 GB behind an Application Load Balancer (API), RDS PostgreSQL db.t4g.micro + 20 GB gp3",
+     "lines": [("RDS db.t4g.micro (Mumbai)", 15.0 / 30.4), ("RDS 20 GB gp3 storage", 20 * 0.131 / 30.4), ("Fargate 0.25 vCPU + 0.5 GB, 24 h", (0.25 * 0.04048 + 0.5 * 0.004445) * 24),
+               ("Application Load Balancer (base)", 0.0225 * 24), ("Public IPv4 on the ALB (2 AZ)", 2 * 0.005 * 24), ("S3 + CloudFront (free tier at this traffic)", 0.01)],
+     "note": "Backups, patching and fail-over handled by AWS; costs about 4x option A for the same small workload."},
+    {"name": "C. Static site (no database, no server in AWS)", "pick": "cheapest; needs a small code change",
+     "services": "At publish: write the live dataset once as a file (dataset.json, 4.5 MB gzipped) and the pictures as files to S3; CloudFront serves both. "
+                 "A Lambda function only for the two live helpers (/api/img image proxy, /api/pulse web mentions)",
+     "lines": [("S3 storage ~0.5 GB + requests", 0.01), ("CloudFront (1 TB/month always-free tier)", 0.0), ("Lambda for /api/img, /api/pulse (free tier)", 0.0)],
+     "note": "The live data only changes when you publish, so nothing has to be computed per visit. Review (Approve / Trace) stays on this PC or a small server."},
+]
+
+
+def aws_measure(inv: dict) -> dict:
+    """What the live site actually computes per visit, measured against the running live API."""
+    import time
+    import urllib.request
+    out: dict = {"api": LIVE_API, "options": [], "sizes": {}}
+    for o in AWS_OPTIONS:
+        lines = [{"what": w, "usd_day": round(v, 3)} for w, v in o["lines"]]
+        out["options"].append({**{k: o[k] for k in ("name", "pick", "services", "note")}, "lines": lines,
+                               "day": round(sum(x["usd_day"] for x in lines), 2), "month": round(sum(x["usd_day"] for x in lines) * 30.4, 1)})
+    for db in inv.get("dbs", []):
+        out["sizes"][db["db"]] = db["gb"]
+    out["sizes"]["media_mb"] = next((s["mb"] for s in inv.get("schemas", []) if s.get("schema") == "media"), None)
+    try:
+        t, raw = [], 0
+        for _ in range(3):
+            t0 = time.monotonic()
+            with urllib.request.urlopen(LIVE_API + "/api/dataset", timeout=120) as r:
+                raw = len(r.read())
+            t.append(time.monotonic() - t0)
+        req = urllib.request.Request(LIVE_API + "/api/dataset", headers={"Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            gz = len(r.read())
+        out.update(dataset_s=round(min(t), 2), dataset_mb=round(raw / 1024 ** 2, 1), dataset_gz_mb=round(gz / 1024 ** 2, 1))
+    except Exception as e:  # noqa: BLE001  the live API may be down when the report is made
+        out["error"] = f"live API not reachable ({type(e).__name__}); per-visit figures from 22 Oct: 2.2 s, 18.9 MB, 4.3 MB gzipped"
+    return out
+
+
 def example(cur) -> dict:
     """The latest signal card followed back through every stage (live from staging)."""
     rows = q(cur, """SELECT r.subject_key, r.model, r.seconds, r.tokens_in, r.tokens_out, r.cost_usd, r.rows_loaded, r.rows_by_table,
@@ -747,7 +911,11 @@ def collect(conn, with_pending: bool) -> dict:
                             "state": state})
 
     d["age"] = safe(lambda: q(cur, AGE_SQL), [])
-    avg = {p["prompt_id"]: float(p["avg_cost"] or 0) for p in d["prompts"]}
+    conn.rollback()
+    d["inventory"] = safe(lambda: inventory(cur, counts, fills, d["age"]), {})
+    conn.rollback()
+    d["aws"] = safe(lambda: aws_measure(d["inventory"]), {})
+    avg ={p["prompt_id"]: float(p["avg_cost"] or 0) for p in d["prompts"]}
     pend_of = {p["prompt_id"]: (p["pending"] or 0) + p["subj_failed"] for p in d["prompts"]}
     d["impact"] = []
     for it in IMPACT:
@@ -873,8 +1041,37 @@ ol.ex{margin:0;padding-left:0;list-style:none;font-size:13px}ol.ex li{margin:0 0
 </style></head><body><main>
 <h1>KSSL data flood: analytics</h1>
 <div class="sub">Generated __GEN__ (IST) from <code>staging.prompt_run</code> and the staging tables · local <code>kssl_staging</code> · status: routine ready, not scheduled</div>
-<nav><a href="#stages">How it works</a><a href="#example">End-to-end example</a><a href="#routine">Routine</a><a href="#trial">Model trial</a><a href="#round">18 Oct round</a><a href="#age">Data age</a><a href="#lanes-h">Lanes</a><a href="#prompts-h">Per prompt</a><a href="#tables-h">Tables</a><a href="#impact">Frontend → DB impact</a><a href="#cat">Prompt catalogue</a><a href="prompt_catalogue.html">Catalogue page ↗</a><a href="#code">Code steps</a><a href="#redteam">Red-team audit</a></nav>
+<nav><a href="#inv">Data inventory</a><a href="#stages">How it works</a><a href="#example">End-to-end example</a><a href="#routine">Routine</a><a href="#trial">Model trial</a><a href="#round">18 Oct round</a><a href="#age">Data age</a><a href="#lanes-h">Lanes</a><a href="#prompts-h">Per prompt</a><a href="#tables-h">Tables</a><a href="#impact">Frontend → DB impact</a><a href="#cat">Prompt catalogue</a><a href="prompt_catalogue.html">Catalogue page ↗</a><a href="#code">Code steps</a><a href="#redteam">Red-team audit</a><a href="#aws">Hosting on AWS</a></nav>
 <div id="kpis" class="kpis"></div>
+
+<h2 id="inv">Data inventory: tables, size, cost, age and origin</h2>
+<div id="inv-k" class="kpis" style="margin:0 0 10px"></div>
+<div class="grid2"><div class="card"><table id="inv-s"></table><div class="note">Tables and size per database schema (size includes indexes; rows are
+Postgres' estimate). staging = what the review site reads; serving / ui = the live site; media = stored article pictures.</div></div>
+<div class="card"><table id="inv-b"></table><div class="note">The ten largest tables in the staging database.
+<b>Why staging is ~10&times; serving:</b> serving holds only the finished rows the live site shows. Staging also keeps the inputs that only the
+local pipeline reads: <code>tender_raw</code> (every harvested notice with its full original payload, mostly stored out of line as large text;
+only a few percent become tenders), <code>media.image</code> (article pictures stored inside the database), <code>source_document</code>
+(article texts the prompts read) and <code>prompt_run</code> (every model call's input and output). <code>fact_source</code> is about the same
+size in both. <code>tender_raw</code> is the obvious one to trim: notices that never became a tender could keep only their key fields.</div></div></div>
+<div class="grid2" style="margin-top:12px"><div class="card"><table id="inv-c"></table><div class="note">Every model run is logged in
+<code>prompt_run</code>: hours = model time summed over parallel calls (wall-clock is shorter). Cache = input tokens read from the prompt cache
+(billed at a fraction).</div><div id="inv-l" class="note"></div></div>
+<div class="card"><table id="inv-h"></table><div class="note">Harvest runs are not timed in the database; these are the documents each harvester
+stored, their text size and the days it ran (no model, no cost).</div></div></div>
+<div class="card" style="margin-top:12px"><table id="inv-a"></table><div class="note">How old the data is: rows per age bucket, by pillar
+(the dated tables of "Data age" below, summed). Future = planned dates (deliveries, programme ends).</div></div>
+<div class="card" style="margin-top:12px"><table id="inv-m"></table><div class="note">The same rows by calendar month of their date
+(published, event or step date; the current month runs to today). Older = before the 12 months shown.</div></div>
+<div class="grid2" style="margin-top:12px"><div class="card"><table id="inv-o"></table><div class="note">Where the rows came from.
+Excel = rows with a source in a loaded workbook (<code>fact_source.document_id = 'excel:…'</code>); Prompt = the rest of a table a prompt
+writes (and the prompt log); Code = tables only code writes (roll-ups, derive rules, local-model fills, review clicks); Web = raw inputs
+code fetched from outside sites (tender notices, articles, pictures). Second line = size on disk (staging + media); a table's size is
+split by its row share.</div></div>
+<div class="card tbl-wrap"><table id="inv-ot"></table></div></div>
+<style>#inv-r td:nth-child(n+4), #inv-r code { white-space: normal }</style>
+<div class="card tbl-wrap" style="margin-top:12px"><table id="inv-r"></table><div class="note">The raw layer, table by table: which script
+writes it and where its data comes from. Nothing in it is written by a model except the prompt log and prompt-written sources.</div></div>
 
 <h2 id="age">Data age by pillar (staging, counted from today)</h2>
 <div class="card tbl-wrap"><table id="age-t"></table>
@@ -956,6 +1153,14 @@ when its compared rows or documents change), per-run budgets (the matchup engine
 <div class="card"><div class="note" style="margin:0 0 8px">The product attacked as a client would use it, at every level, under the standing rule: nothing hardcoded, defaulted or fabricated; data only from the tables, wording only in the UI chrome. Split: <b>kssl-52</b> = database, prompts / loader, data builders, deploy; <b>kssl-40</b> = frontend and HTTP API. <span class="pill filled">fixed</span> done and checked · <span class="pill n-corrected">open</span> needs more work · <span class="pill n-missed">decision</span> needs you. Tests at audit time: npm test 128 / 128, all Python self-checks pass. "Now" re-counts the problem live (0 = gone). 18 Oct evening: all fixes committed (132335c, b5e5b39, cf96458), pushed to both GitHub repos, deployed to the VPS; VPS staging and serving synced from local.</div>
 <div id="rt-sum" class="kpis" style="margin:0 0 10px"></div>
 <div class="tbl-wrap" style="max-height:none"><table id="rt-t"></table></div></div>
+
+<h2 id="aws">Hosting on AWS: what runs where, what it needs, daily cost</h2>
+<div class="card"><div id="aws-where" class="note" style="margin:0 0 10px;font-size:13px;color:var(--ink)"></div>
+<div id="aws-k" class="kpis" style="margin:0 0 10px"></div><div id="aws-m" class="note"></div></div>
+<div id="aws-o" class="grid2" style="margin-top:12px"></div>
+<div class="note">Prices: AWS list prices, on-demand, Mumbai (ap-south-1) where found, checked 22 Oct 2026 (Lightsail pricing page; RDS via
+bytebase dbcost; Fargate rate from AWS's own blog example, us-east-1). Taxes and data transfer beyond the free allowances not included.
+Re-check in the AWS pricing calculator before buying.</div>
 </main>
 <script>
 const D = __DATA__;
@@ -1027,7 +1232,71 @@ $('trial-f').innerHTML = (D.trial_findings || []).map(x => `<li>${esc(x)}</li>`)
 $('round-t').innerHTML = head(['Area', 'Prompt / step', 'Checked and fixed', 'Runs', 'Spend', 'Before → after', 'Open']).replace(/<th>/g, '<th class="w">') +
   (D.round || []).map(x => `<tr><td class="l">${esc(x.area)}</td><td class="l">${esc(x.prompt)}</td><td class="w">${esc(x.fixed)}</td><td>${f(x.runs)}</td><td>${usd(x.cost)}</td><td class="w">${esc(x.counts)}</td><td class="w">${esc(x.open) || '–'}</td></tr>`).join('');
 $('code-t').innerHTML = head(['Step', 'Reads', 'Writes', 'Planned']) + (D.code_steps || []).map(s => `<tr><td class="l">${esc(s.step)}</td><td class="l">${esc(s.reads)}</td><td class="l" style="white-space:normal">${esc(s.writes)}</td><td class="l">${esc(s.plan) || '–'}</td></tr>`).join('');
-$('flow-t').innerHTML = head(['Stage', 'Model', 'Script(s)', 'Reads', 'Writes', 'How it is kept honest']).replace(/<th>/g, '<th class="w">') +
+const AW = D.aws || {};
+if (AW.options) {
+  const IVs = (D.inventory || {}), spendAll = (IVs.spend || []).reduce((s, x) => s + (+x.cost || 0), 0);
+  $('aws-where').innerHTML = `<b>Almost all the work happens on this PC</b>, and only finished tables are pushed (sync / publish): harvesting the web,
+  the model prompts (${usd(spendAll)} so far, run through the claude CLI here), translation and company-detail shortening on the local GPU (Ollama),
+  image fetching, dates, roll-ups and labels by code. <b>The hosted site does none of that.</b> It only (1) serves the built frontend
+  (0.9 MB of files), (2) answers one data request per visit (the API reads the live tables and sends them as one JSON), and (3) serves stored
+  pictures and proxies outside ones. So AWS needs a database (or just files) and a small web server. No GPU, no model, no harvester.`;
+  const S = AW.sizes || {};
+  $('aws-k').innerHTML = [
+    [AW.dataset_s != null ? AW.dataset_s + ' s' : '2.2 s', 'server CPU per visit (whole dataset rebuilt)'],
+    [AW.dataset_mb != null ? AW.dataset_mb + ' MB' : '18.9 MB', 'data per visit (raw JSON)'], [AW.dataset_gz_mb != null ? AW.dataset_gz_mb + ' MB' : '4.3 MB', 'data per visit (gzipped, sent)'],
+    ['~0.02 s', 'per stored picture (avg 105 KB)'], [(S.kssl_serving ?? '–') + ' GB', 'live database (serving)'], [f(S.media_mb) + ' MB', 'stored pictures'],
+    [Math.round(20 * (AW.dataset_s ?? 2.2)) + ' s / day', 'API CPU at 20 visits a day'], [(20 * 30.4 * (AW.dataset_gz_mb ?? 4.3) / 1024).toFixed(1) + ' GB / month', 'transfer at 20 visits a day (data only)'],
+  ].map(([b, s]) => `<div class="k"><b>${b}</b><span>${s}</span></div>`).join('');
+  $('aws-m').innerHTML = (AW.error ? esc(AW.error) + '. ' : `Measured now against ${esc(AW.api)}. `) +
+    'Every visit rebuilds the whole dataset from the live tables although it only changes when you publish: caching it per publish ' +
+    '(or writing it as a file, option C) cuts the per-visit work to almost nothing. Even uncached, a 2-vCPU server handles this for a client team easily.';
+  $('aws-o').innerHTML = AW.options.map(o => `<div class="card"><b>${esc(o.name)}</b> <span class="pill">${esc(o.pick)}</span>
+    <div class="note" style="margin:6px 0">${esc(o.services)}</div>
+    <table>${head(['Item', '$ / day'])}${o.lines.map(l => `<tr><td class="l" style="white-space:normal">${esc(l.what)}</td><td>${usd(l.usd_day)}</td></tr>`).join('')}
+    <tr style="font-weight:600"><td>Total</td><td>${usd(o.day)} / day ≈ ${usd(o.month)} / month</td></tr></table>
+    <div class="note">${esc(o.note)}</div></div>`).join('');
+}
+const IV = D.inventory || {};
+if (IV.dbs) {
+  const sum = (a, k) => (a || []).reduce((s, x) => s + (+x[k] || 0), 0);
+  const stg = (IV.schemas || []).filter(s => s.db === 'kssl_staging'), srv = (IV.schemas || []).filter(s => s.db === 'kssl_serving');
+  const O = IV.origin || [], ot = k => sum(O, k), all = ot('excel') + ot('prompt') + ot('code') + ot('web');
+  const pc = n => all ? Math.round(n / all * 100) + '%' : '–';
+  const gb = m => (m / 1024).toFixed(m < 10 ? 3 : 2) + ' GB', two = (n, m) => `${f(n)}<div class="note" style="margin:0">${gb(m)}</div>`;
+  $('inv-k').innerHTML = [
+    [f(sum(stg, 'tables')), 'tables in the staging DB'], [f(sum(srv, 'tables')), 'tables in the serving (live) DB'],
+    ...IV.dbs.map(x => [x.gb + ' GB', x.db.replace('kssl_', '') + ' database on disk']),
+    [usd(sum(IV.spend, 'cost')), 'model spend, all time'], [f(sum(IV.spend, 'hours')) + ' h', 'model time (summed)'],
+    [f(Math.round(sum(IV.spend, 'tin') / 1e6)) + ' M / ' + f(Math.round(sum(IV.spend, 'tout') / 1e6 * 10) / 10) + ' M', 'tokens in / out'],
+    [pc(ot('excel')) + ' · ' + gb(ot('excel_mb')), 'rows from Excel'], [pc(ot('prompt')) + ' · ' + gb(ot('prompt_mb')), 'rows from prompts'],
+    [pc(ot('code')) + ' · ' + gb(ot('code_mb')), 'rows from code'], [pc(ot('web')) + ' · ' + gb(ot('web_mb')), 'raw rows harvested from the web'],
+  ].map(([b, s]) => `<div class="k"><b>${b}</b><span>${s}</span></div>`).join('');
+  $('inv-s').innerHTML = head(['Database', 'Schema', 'Tables', 'Rows (est.)', 'Size']) + (IV.schemas || []).map(s => `<tr><td>${esc(s.db)}</td><td class="l">${esc(s.schema)}</td><td>${f(s.tables)}</td><td>${f(s.approx_rows)}</td><td>${s.mb == null ? '–' : (s.mb >= 1024 ? (s.mb / 1024).toFixed(2) + ' GB' : f(s.mb) + ' MB')}</td></tr>`).join('');
+  $('inv-b').innerHTML = head(['Table', 'Rows (est.)', 'Size']) + (IV.biggest || []).map(s => `<tr><td>${esc(s.t)}</td><td>${f(s.approx_rows)}</td><td>${f(s.mb)} MB</td></tr>`).join('');
+  $('inv-c').innerHTML = head(['Model', 'Runs', 'Model hours', 'Tokens in', 'of which cache', 'Tokens out', 'Spend', 'Rows loaded', 'From – to']) + (IV.spend || []).map(s => `<tr><td>${esc(s.model)}</td><td>${f(s.runs)}</td><td>${f(s.hours)}</td><td>${f(s.tin)}</td><td>${f(s.tcache)}</td><td>${f(s.tout)}</td><td>${usd(s.cost)}</td><td>${f(s.rows)}</td><td>${esc(s.first)} – ${esc(s.last)}</td></tr>`).join('');
+  const L = IV.local || {};
+  $('inv-l').innerHTML = `Local models on this PC (Ollama, no cost, not in prompt_run): ${f(L.answers)} translation answers → ${f(L.tenders)} tenders and ${f(L.cells)} other market cells translated; ${f(L.companies)} company details shortened. Code with no model: ${f(L.pages)} article pages checked, ${f(L.images)} pictures stored.`;
+  $('inv-h').innerHTML = head(['Harvested documents', 'Docs', 'Text', 'Fetched', 'Days']) + (IV.harvest || []).map(s => `<tr><td>${esc(s.kind)}</td><td>${f(s.docs)}</td><td>${f(s.text_mb)} MB</td><td>${esc(s.first)} – ${esc(s.last)}</td><td>${f(s.days)}</td></tr>`).join('');
+  const AT = IV.age_total || [];
+  $('inv-a').innerHTML = head(['Pillar', 'Dated rows', 'Future', 'Last month', '1–3 months', '3–6 months', '6–12 months', '1–3 years', '3+ years', 'No date']) +
+    [...AT, AT.reduce((t, a) => { for (const k in a) if (k !== 'pillar') t[k] = (t[k] || 0) + a[k]; return t; }, {pillar: 'All'})]
+      .map(a => `<tr${a.pillar === 'All' ? ' style="font-weight:600"' : ''}><td>${esc(a.pillar)}</td><td>${f(a.n)}</td><td>${f(a.future)}</td><td>${f(a.m1)}</td><td>${f(a.m3)}</td><td>${f(a.m6)}</td><td>${f(a.m12)}</td><td>${f(a.y3)}</td><td>${f(a.y3p)}</td><td>${f(a.nodate)}</td></tr>`).join('');
+  const BM = IV.by_month || [], PL = [...new Set(BM.map(r => r.pillar))].sort(), MC = {};
+  BM.forEach(r => { (MC[r.m] ||= {})[r.pillar] = r.n; });
+  const now = new Date(), mk = [];
+  for (let i = 0; i < 12; i++) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); mk.push([`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, d.toLocaleString('en-GB', {month: 'short', year: 'numeric'}) + (i ? '' : ' (to date)')]); }
+  const mrow = (k, label, b) => { const v = MC[k] || {}, t = PL.reduce((s, p) => s + (v[p] || 0), 0); return `<tr${b ? ' style="font-weight:600"' : ''}><td>${esc(label)}</td>${PL.map(p => `<td>${f(v[p] || 0)}</td>`).join('')}<td>${f(t)}</td></tr>`; };
+  MC.all = {}; Object.entries(MC).forEach(([k, v]) => { if (k !== 'all') PL.forEach(p => MC.all[p] = (MC.all[p] || 0) + (v[p] || 0)); });
+  $('inv-m').innerHTML = head(['Month', ...PL, 'All']) + [['future', 'Future'], ...mk, ['older', 'Older'], ['nodate', 'No date']].map(([k, l]) => mrow(k, l)).join('') + mrow('all', 'All', true);
+  const K = ['excel', 'prompt', 'code', 'web'], byP = {}, tot = {};
+  O.forEach(o => { const p = byP[o.pillar] ||= {}; K.forEach(k => { for (const x of [p, tot]) { x[k] = (x[k] || 0) + o[k]; x[k + '_mb'] = (x[k + '_mb'] || 0) + o[k + '_mb']; } }); });
+  const prow = (p, v, b) => `<tr${b ? ' style="font-weight:600"' : ''}><td>${esc(p)}</td>${K.map(k => `<td>${two(v[k], v[k + '_mb'])}</td>`).join('')}<td>${two(K.reduce((s, k) => s + v[k], 0), K.reduce((s, k) => s + v[k + '_mb'], 0))}</td></tr>`;
+  $('inv-o').innerHTML = head(['Pillar', 'Excel', 'Prompt', 'Code', 'Web (harvested)', 'Total']) + Object.entries(byP).map(([p, v]) => prow(p, v)).join('') + prow('All', tot, true);
+  $('inv-ot').innerHTML = head(['Table', 'Excel', 'Prompt', 'Code', 'Web', 'Size']) + O.filter(o => o.excel + o.prompt + o.code + o.web).map(o => `<tr><td>${esc(o.table)}</td><td>${f(o.excel)}</td><td>${f(o.prompt)}</td><td>${f(o.code)}</td><td>${f(o.web)}</td><td>${gb(o.mb)}</td></tr>`).join('');
+  const WHO = {web: 'Web (code fetched it)', code: 'Code', prompt: 'Prompt', split: 'Excel + Prompt + Code'};
+  $('inv-r').innerHTML = head(['Table', 'Rows', 'Size', 'Written by', 'Script', 'Where the data comes from']) + (IV.raw_from || []).map(r => `<tr><td>${esc(r.table)}</td><td>${f(r.rows)}</td><td>${gb(r.mb)}</td><td class="l">${esc(WHO[r.who])}</td><td class="l"><code>${esc(r.script)}</code></td><td class="l">${esc(r.what)}</td></tr>`).join('');
+}
+$('flow-t').innerHTML =head(['Stage', 'Model', 'Script(s)', 'Reads', 'Writes', 'How it is kept honest']).replace(/<th>/g, '<th class="w">') +
   (D.flow || []).map(s => `<tr><td class="l"><b>${esc(s.stage)}</b></td><td class="l">${esc(s.model) || '–'}</td><td class="w"><code>${esc(s.scripts)}</code></td><td class="w">${esc(s.reads)}</td><td class="w">${esc(s.writes)}</td><td class="w">${esc(s.check)}</td></tr>`).join('');
 const E = D.example || {};
 if (E.subject_key) {

@@ -50,12 +50,34 @@ function detailIndex(data) {
   return byUrl;
 }
 
+/* BROAD NEWS GROUPS (owner 22 Oct): the feed filters on five defence-relevant groups, not the pipeline's eleven
+   narrow categories, and an article whose only categories are "Other" / "Non-defence business" is not shown at all.
+   A deduped article can carry several categories ("Export · Other"); it takes the first one that has a group. */
+export const NEWS_GROUPS = {
+  "Contract & order": "Government & contracts",
+  "Delivery & induction": "Government & contracts",
+  Export: "Government & contracts",
+  "Product launch & testing": "Products & technology",
+  "Partnership / JV": "Industry & partnerships",
+  "Facility & capacity": "Industry & partnerships",
+  "Financial results": "Finance & markets",
+  "Stock & market": "Finance & markets",
+  "Leadership & corporate": "Leadership & corporate",
+};
+export const NEWS_GROUP_ORDER = ["Government & contracts", "Products & technology", "Industry & partnerships", "Finance & markets", "Leadership & corporate"];
+const HIDDEN_NEWS = new Set(["Other", "Non-defence business"]);
+const catsOf = (c) => String(c || "").split("·").map((x) => x.trim()).filter(Boolean);
+export const newsGroup = (category) => catsOf(category).map((c) => NEWS_GROUPS[c]).find(Boolean) || null;
+// not defence news: every category it carries is a hidden one (an unclassified article is kept)
+export const hiddenNews = (category) => { const c = catsOf(category); return c.length > 0 && c.every((x) => HIDDEN_NEWS.has(x)); };
+
 function shape(row, byUrl, i) {
   const d = (row.url && byUrl[row.url]) || null;
   return {
     id: row.id != null ? `news-${row.id}` : `news-${i}`,
     _src: row._src,
     category: row.category || "—",
+    group: newsGroup(row.category),
     ago: newsDate(row.date),
     date: row.date || null,
     title: row.title,
@@ -186,7 +208,8 @@ function dedupeArticles(rows) {
 /* Every article for one competitor, newest first. `compId` is the serving key. */
 export function companyNews(data, compId) {
   if (!data || !compId) return [];
-  const rows = dedupeArticles((data.competitorNews || {})[compId] || []);
+  // competitor moments (rows with a stored level) are not news articles and are never hidden here
+  const rows = dedupeArticles((data.competitorNews || {})[compId] || []).filter((r) => r.level != null || !hiddenNews(r.category));
   const byUrl = detailIndex(data);
   const shaped = rows.map((r, i) => shape(r, byUrl, i));
   /* One publisher hero (e.g. new.diehl.com's product render) is attached as the
@@ -227,7 +250,15 @@ function mentions(article, name) {
    falling back to the company feed — an article about a different platform is not
    news about this one, and presenting it as such is the bug we removed. */
 export function productNews(data, compId, productName) {
-  return companyNews(data, compId).filter((a) => mentions(a, productName));
+  return companyNews(data, compId).filter((a) => namesProduct(a, productName));
+}
+
+/* Does this article name the product? Matched on the DESIGNATOR -- the name before " - " and without brackets:
+   "COBRA - Personnel Carrier (One Manned Turret)" is matched as "COBRA". Requiring every word of the long
+   catalogue name matched nothing, so the page fell back to loose web results. Also used on those web results. */
+export function namesProduct(article, productName) {
+  const core = String(productName || "").replace(/\([^)]*\)/g, " ").split(/\s[-–—]\s/)[0].trim();
+  return mentions(article, core || productName);
 }
 
 /* The company's articles that actually name this country. */
@@ -421,12 +452,18 @@ export function newsSelfCheck() {
     productNews(data, "saab", "Gripen").length === 0);
   t("a generic word alone does not match",
     productNews(data, "saab", "system").length === 0);
+  t("a long catalogue name matches on its designator",
+    productNews(data, "saab", "Carl-Gustaf M4 - Recoilless Rifle (Man-portable)").length === 1);
   t("market filter matches the country named in the story",
     marketNews(data, "saab", "Brazil").length === 1);
   t("market filter is empty rather than wrong",
     marketNews(data, "saab", "Peru").length === 0);
   t("newsDate passes through what it cannot parse", newsDate("soon") === "soon");
   t("newsDate on nothing is empty", newsDate(null) === "");
+  t("Other / Non-defence-only news is hidden, a mixed or unclassified one is kept",
+    hiddenNews("Other") && hiddenNews("Other · Non-defence business") && !hiddenNews("Export · Other") && !hiddenNews(null));
+  t("a mixed article takes the first category that has a group",
+    newsGroup("Other · Export") === "Government & contracts" && newsGroup("Stock & market") === "Finance & markets" && newsGroup("Other") === null);
 
   return out;
 }

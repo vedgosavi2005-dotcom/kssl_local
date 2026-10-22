@@ -24,7 +24,7 @@ function split(label, fallbackMaker) {
   return { maker: fallbackMaker || "", name: s };
 }
 
-export function buildProductIndex(matchups, clientLabel) {
+export function buildProductIndex(matchups, clientLabel, competitors = null, clientCid = null) {
   const byKey = new Map();
   const add = (side, label, maker, cat, country, spec, v, n) => {
     const { maker: mk, name } = split(label, maker);
@@ -47,6 +47,22 @@ export function buildProductIndex(matchups, clientLabel) {
     specs.forEach((s) => {
       add("rival", m.comp, m.compBy, m.cat, m.country, s, s && s.cv, s && s.cn);
       add("client", m.bf || m.anchor, clientLabel, m.cat, "", s, s && s.kv, s && s.kn);
+    });
+  });
+  /* Then the whole served catalogue (owner 22 Oct: "compare any two" must offer every product, not only
+     the matched pairs). A catalogue spec is text with no direction, so it is shown, never scored.
+     ponytail: a product already listed from a matchup under the same name is not repeated; the same
+     product spelled differently in the two places appears twice. */
+  const named = new Set([...byKey.values()].map((e) => `${e.side}|${e.name.toLowerCase()}`));
+  Object.entries(competitors || {}).forEach(([cid, co]) => {
+    const side = String(cid) === String(clientCid) ? "client" : "rival";
+    (co.products || []).forEach((p) => {
+      const nm = String((p && p.name) || "").trim();
+      if (!nm || named.has(`${side}|${nm.toLowerCase()}`)) return;
+      const label = side === "client" ? nm : `${co.name} · ${nm}`;
+      const specs = Object.entries(p.specs || {});
+      (specs.length ? specs : [[null, null]]).forEach(([l, v]) =>
+        add(side, label, co.name, p.category || co.sector, p.country || co.country, l ? { l } : null, v, null));
     });
   });
   return [...byKey.values()].sort((a, b) =>

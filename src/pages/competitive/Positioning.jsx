@@ -6,6 +6,10 @@ import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { advantageText } from "../../lib/specs";
 import { buildProductIndex, compareProducts } from "../../lib/compareProducts";
+import { specParts } from "../../lib/specs";
+
+// a packed value ("a; b; c") as one line per figure
+const specLines = (v) => { const p = specParts(v); return p.length > 1 ? p.map((t, i) => <div key={i}>{t}</div>) : v; };
 
 /* The right pane for a FREE comparison: any two products the user picked. Same frame as
    the matchup dossier, but no KSSL-vs-rival wording -- either side can be anyone's. */
@@ -56,8 +60,8 @@ function CompareView({ a, b, onClose }) {
                     {row.hi != null ? <span className="fc-dir">{row.hi ? "higher is better" : "lower is better"}</span> : null}
                     {row.note ? <span className="fc-note">{row.note}</span> : null}
                   </td>
-                  <td className={row.win === "a" ? "win" : ""}>{row.av == null ? <span className="fc-na">not published</span> : <>{row.win === "a" ? "▲ " : ""}{row.av}</>}</td>
-                  <td className={row.win === "b" ? "win" : ""}>{row.bv == null ? <span className="fc-na">not published</span> : <>{row.win === "b" ? "▲ " : ""}{row.bv}</>}</td>
+                  <td className={row.win === "a" ? "win" : ""}>{row.av == null ? <span className="fc-na">not published</span> : <>{row.win === "a" ? "▲ " : ""}{specLines(row.av)}</>}</td>
+                  <td className={row.win === "b" ? "win" : ""}>{row.bv == null ? <span className="fc-na">not published</span> : <>{row.win === "b" ? "▲ " : ""}{specLines(row.bv)}</>}</td>
                 </tr>
               ))}
             </tbody>
@@ -137,7 +141,10 @@ export default function Positioning() {
   /* Free comparison of any two products (keys into the product index), or null. Opening
      a matched pair closes it; a comparison closes the matched pair. */
   const clientShortName = clientShort();
-  const products = useMemo(() => buildProductIndex(data.matchups, clientShortName), [data.matchups, clientShortName]);
+  const products = useMemo(
+    () => buildProductIndex(data.matchups, clientShortName, data.competitors, data.client && data.client.id),
+    [data.matchups, data.competitors, data.client, clientShortName],
+  );
   const [compare, setCompare] = useState(null);
   const byKey = useMemo(() => new Map(products.map((p) => [p.key, p])), [products]);
   const cmpA = compare && byKey.get(compare.a);

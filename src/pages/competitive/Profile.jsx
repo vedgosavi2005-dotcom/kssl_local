@@ -7,7 +7,7 @@ import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { buildProfile, rosterOf, formatSectorName } from "../../lib/profile";
 import { companyNews, FEED_N, collapseThreads,
-         NEWS_MAX, NEWS_WINDOWS, NEWS_WINDOW_DEFAULT, NEWS_LIST_RANGES, windowDays, withinWindow, capNews, newsDate } from "../../lib/news";
+         NEWS_MAX, NEWS_WINDOWS, NEWS_WINDOW_DEFAULT, NEWS_LIST_RANGES, windowDays, withinWindow, capNews, newsDate, NEWS_GROUP_ORDER } from "../../lib/news";
 import { facetOptionsByName, tidyHq } from "../../lib/countryFacet";
 import { INDEX, INDEX_NOTE } from "../../lib/articleUrl";
 import Thumb from "../../components/thumb/Thumb.jsx";
@@ -526,17 +526,18 @@ export default function Profile() {
 
   // Filter articles based on selected Category Pill
   const filteredArticles = useMemo(() => {
-    if (!newsFilter || newsFilter === "All" || !windowedArticles.some((a) => a.category === newsFilter)) {
+    if (!newsFilter || newsFilter === "All" || !windowedArticles.some((a) => a.group === newsFilter)) {
       return capNews(windowedArticles, NEWS_MAX);
     }
-    return capNews(windowedArticles.filter((a) => a.category === newsFilter), NEWS_MAX);
+    return capNews(windowedArticles.filter((a) => a.group === newsFilter), NEWS_MAX);
   }, [windowedArticles, newsFilter]);
 
   // the filter pills are the categories this company's articles actually carry, commonest first
   const newsCategories = useMemo(() => {
     const n = new Map();
-    windowedArticles.forEach((a) => a.category && n.set(a.category, (n.get(a.category) || 0) + 1));
-    return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([c]) => c);
+    // the broad groups this company's articles fall in, in the fixed group order (lib/news NEWS_GROUP_ORDER)
+    windowedArticles.forEach((a) => a.group && n.set(a.group, (n.get(a.group) || 0) + 1));
+    return NEWS_GROUP_ORDER.filter((g) => n.has(g));
   }, [windowedArticles]);
 
   /* The lead needs no special rule any more: nothing sourced from a listing page

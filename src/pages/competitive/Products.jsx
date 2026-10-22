@@ -5,10 +5,10 @@ import { Fragment, useState, useMemo, useEffect } from "react";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { revenueOptions, revenueTierOf } from "../../lib/revenueFacet";
 import { useData } from "../../state/DataProvider";
-import { companyNews, productNews, feedSplit } from "../../lib/news";
+import { companyNews, productNews, namesProduct, feedSplit, NEWS_GROUP_ORDER } from "../../lib/news";
 import { formatLabel, formatSectorName, formatProductName } from "../../lib/profile";
 import { threatOf } from "../../lib/threat";
-import { productSpecs, specValueWithUnit } from "../../lib/specs";
+import { productSpecs, specValueWithUnit, specParts } from "../../lib/specs";
 import { unescapeEntities } from "../../lib/html";
 import { companyCountries, facetOptionsByName } from "../../lib/countryFacet";
 import Thumb from "../../components/thumb/Thumb.jsx";
@@ -631,17 +631,9 @@ export default function Products() {
   // Generate Product News Dataset when a product is selected
   const productNewsArticles = useMemo(() => {
     if (!selectedProduct) return [];
-    const direct = productNews(data, selectedCompany.cid, selectedProduct.name);
-    if (direct && direct.length > 0) return direct;
-    const allCompany = companyNews(data, selectedCompany.cid) || [];
-    const pName = (selectedProduct.name || "").toLowerCase();
-    const cat = (selectedProduct.category || "").toLowerCase();
-    const filtered = allCompany.filter((a) => {
-      const txt = `${a.title || ""} ${a.category || ""}`.toLowerCase();
-      return txt.includes(pName) || txt.includes(cat);
-    });
-    if (filtered.length > 0) return filtered;
-    return allCompany.slice(0, 6);
+    /* only articles that name this product (owner 22 Oct). The old fallbacks -- company articles sharing a
+       category word, then the company's six latest -- showed news about other products as this one's. */
+    return productNews(data, selectedCompany.cid, selectedProduct.name);
   }, [data, selectedProduct, selectedCompany]);
 
   /* LIVE WEB MENTIONS for the selected product -- Google News RSS, anchored to the maker,
@@ -666,7 +658,8 @@ export default function Products() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompany && selectedCompany.cid, selectedProduct && selectedProduct.name]);
-  const productMentions = (productPulse && productPulse.trending) || [];
+  // live web results only when they name the product too (owner 22 Oct: product news = news about this product)
+  const productMentions = ((productPulse && productPulse.trending) || []).filter((m) => selectedProduct && namesProduct(m, selectedProduct.name));
 
   /* The pills used to be a fixed list -- Sales, Technology, Testing -- matched against
      each article's `category`. But `category` is the pipeline's PRODUCT category
@@ -675,7 +668,7 @@ export default function Products() {
      always, for every product. So the pills are built from the categories the articles
      actually have; a category that appears in the data is a category you can filter by. */
   const prodNewsCats = useMemo(
-    () => ["All", ...Array.from(new Set(productNewsArticles.map((a) => a.category).filter(Boolean)))],
+    () => ["All", ...NEWS_GROUP_ORDER.filter((g) => productNewsArticles.some((a) => a.group === g))],
     [productNewsArticles],
   );
 
@@ -683,7 +676,7 @@ export default function Products() {
     if (!prodNewsFilter || prodNewsFilter === "All") {
       return productNewsArticles;
     }
-    return productNewsArticles.filter((a) => a.category === prodNewsFilter);
+    return productNewsArticles.filter((a) => a.group === prodNewsFilter);
   }, [productNewsArticles, prodNewsFilter]);
 
   /* No `|| productNewsArticles[0]` tail: falling back to the unfiltered list meant a
@@ -1045,7 +1038,11 @@ export default function Products() {
                         {label}
                       </span>
                       <span style={{ color: "#ffffff", fontWeight: "600" }}>
-                        {val}
+                        {specParts(val).length > 1 ? (
+                          <ul style={{ margin: 0, paddingLeft: "16px" }}>
+                            {specParts(val).map((t, i) => <li key={i}>{t}</li>)}
+                          </ul>
+                        ) : val}
                       </span>
                     </div>
                   ))}
