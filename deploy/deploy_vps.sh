@@ -33,7 +33,7 @@ for f in db/setup/08_competitor_text_columns.sql db/setup/11_foundations.sql db/
   if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_serving"; else echo "   skip $f (not committed in $REF)"; fi
 done
 # the usage log is not synced (each API logs into its own DB), so the review API's staging DB gets the schema here too
-for f in db/setup/31_user_activity.sql db/setup/32_activity_replay.sql; do
+for f in db/setup/31_user_activity.sql db/setup/32_activity_replay.sql db/setup/33_pipeline_log.sql; do   # 33: ops.* for the VPS review site's Approve log
   if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f (staging)"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_staging"; fi
 done
 for db in kssl_serving kssl_staging; do

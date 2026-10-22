@@ -34,6 +34,8 @@ import psycopg2
 import psycopg2.extras
 from psycopg2 import sql
 
+from backend import ops_log
+
 C = "competitive_competitor"
 # table -> (key column, reviewed?, [(fk column, parent table)]); an fk value equals the parent's key.
 # Children (reviewed = False) belong to the card of their parent chain.
@@ -386,6 +388,8 @@ def approve(st, sv, table: str, key: str) -> None:
         st.execute("SELECT * FROM staging.fact_source WHERE table_name = %s AND row_id = ANY(%s)", (tb, list(ids)))
         _insert(sv, "serving", "fact_source", [dict(r) for r in st.fetchall()])
     st.execute("DELETE FROM staging.review_decision WHERE table_name = %s AND row_key = %s", (table, key))
+    # the pipeline log: what went live, row counts per table (backend/ops_log, db/setup/33)
+    ops_log.review_event("approve", table, key, {"rows": {tb: len(ids) for tb, ids in _row_ids(new).items()}, "replaced_live": bool(live)}, st)
 
 
 def reject(st, sv, table: str, key: str) -> None:
@@ -399,11 +403,13 @@ def reject(st, sv, table: str, key: str) -> None:
         """INSERT INTO staging.review_decision (table_name, row_key, status, signature) VALUES (%s, %s, 'rejected', %s)
            ON CONFLICT (table_name, row_key) DO UPDATE SET signature = EXCLUDED.signature, decided_at = now()""",
         (table, key, _signature(_bundle(S, table, row))))
+    ops_log.review_event("reject", table, key, None, st)
 
 
 def undo_reject(st, sv, table: str, key: str) -> None:
     _check(table)
     st.execute("DELETE FROM staging.review_decision WHERE table_name = %s AND row_key = %s", (table, key))
+    ops_log.review_event("undo", table, key, None, st)
 
 
 def unpublish(st, sv, table: str, key: str) -> None:
@@ -413,7 +419,9 @@ def unpublish(st, sv, table: str, key: str) -> None:
     row = V.card(table, key)
     if row is not None:
         _live_write(sv)
-        _remove(sv, _bundle(V, table, row, reviewed_too=True))
+        gone = _bundle(V, table, row, reviewed_too=True)
+        _remove(sv, gone)
+        ops_log.review_event("unpublish", table, key, {"rows": {tb: len(ids) for tb, ids in _row_ids(gone).items()}}, st)
 
 
 ACTIONS = {"approve": approve, "reject": reject, "undo": undo_reject, "unpublish": unpublish}
@@ -431,12 +439,14 @@ def approve_table(st, sv, schema: str, name: str) -> None:
     _live_write(sv)
     sv.execute(sql.SQL("DELETE FROM {}.{}").format(sql.Identifier(LIVE[schema]), sql.Identifier(name)))
     _insert(sv, LIVE[schema], name, rows)
+    ops_log.review_event("approve", f"{STAGING[schema]}.{name}", "*", {"whole_table": True, "rows": len(rows)}, st)
 
 
 def unpublish_table(st, sv, schema: str, name: str) -> None:
     _check_setup(st, schema, name)
     _live_write(sv)
     sv.execute(sql.SQL("DELETE FROM {}.{}").format(sql.Identifier(LIVE[schema]), sql.Identifier(name)))
+    ops_log.review_event("unpublish", f"{STAGING[schema]}.{name}", "*", {"whole_table": True}, st)
 
 
 TABLE_ACTIONS = {"approve": approve_table, "unpublish": unpublish_table}

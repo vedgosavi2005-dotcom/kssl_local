@@ -250,6 +250,10 @@ def run(budget: float, only: set, start: str | None, skip: set) -> int:
     t0 = datetime.now(timezone.utc)
     conn = connect()
     results, limit_hit, started = [], False, start is None
+    # the pipeline log (backend/ops_log, db/setup/33): this run, each step, and every row each step writes
+    from backend import ops_log
+    run_id = ops_log.start_run("routine", {"budget": budget, "only": sorted(only), "from_step": start, "skip": sorted(skip),
+                                           "log": f"db/flood_logs/routine_{stamp}.log"})
     for name, kind, what in steps():
         started = started or name == start
         if not started or (only and name not in only) or name in skip:
@@ -261,6 +265,7 @@ def run(budget: float, only: set, start: str | None, skip: set) -> int:
             if why or limit_hit or spent >= budget:
                 rec["status"] = "skipped: " + (why or ("usage limit" if limit_hit else f"budget ${budget:.0f} reached"))
                 results.append(rec)
+                ops_log.finish_step(ops_log.begin_step(name, f"prompt {what}", run_id), "skipped", error=rec["status"])
                 print(f"{name:24} {rec['status']}", flush=True)
                 continue
             cap = min(CAP.get(what, DEFAULT_CAP), budget - spent)
@@ -270,15 +275,26 @@ def run(budget: float, only: set, start: str | None, skip: set) -> int:
         t = time.time()
         logf.write(f"\n===== {name}: python {' '.join(args)}\n")
         logf.flush()
-        p = subprocess.run([PY, *args], cwd=ROOT, env=env(), stdout=logf, stderr=subprocess.STDOUT)
+        at = logf.tell()
+        sid = ops_log.begin_step(name, " ".join(args[1:] if args[:1] == ["-m"] else args), run_id)
+        p = subprocess.run([PY, *args], cwd=ROOT, env=ops_log.tag_env(env(), sid, run_id), stdout=logf, stderr=subprocess.STDOUT)
         rec.update(seconds=round(time.time() - t, 1), exit=p.returncode)
         rec["status"] = "ok" if p.returncode == 0 else ("usage limit" if p.returncode == 3 else "FAILED (see log)")
+        tail = None
+        if p.returncode != 0:                      # the step's own part of the log, for the Pipeline log page
+            with open(logf.name, encoding="utf-8", errors="replace") as lf:
+                lf.seek(at)
+                tail = lf.read()[-4000:]
+        ops_log.finish_step(sid, {0: "ok", 3: "usage_limit"}.get(p.returncode, "failed"), p.returncode, tail,
+                            f"db/flood_logs/routine_{stamp}.log")
         limit_hit = limit_hit or p.returncode == 3
         results.append(rec)
         print(f"{name:24} {rec['status']:18} {rec['seconds']:>7}s  spent so far ${spent_since(conn, t0):.2f}", flush=True)
     total = spent_since(conn, t0)
     conn.close()
     logf.close()
+    failed = any(r.get("status", "").startswith("FAILED") for r in results)
+    ops_log.end_run(run_id, "failed" if failed else ("partial" if limit_hit else "ok"), round(total, 4))
     out = {"started": t0.isoformat(), "budget": budget, "cost_usd": round(total, 2), "steps": results}
     (LOGS / f"routine_{stamp}.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
     print(f"routine done: ${total:.2f}; log db/flood_logs/routine_{stamp}.log")

@@ -24,7 +24,9 @@ GRANTS="GRANT USAGE ON SCHEMA staging, staging_ui, media TO kssl_app;
 dump() {
   docker exec kssl-pg pg_dump -U kssl -d kssl_staging -n staging -n staging_ui ${MEDIA:+-n media} \
       --clean --if-exists --no-owner --no-privileges "${args[@]}" \
-    | sed -e '/^DROP SCHEMA /d' -e 's/^CREATE SCHEMA \(.*\);$/CREATE SCHEMA IF NOT EXISTS \1;/'
+    | sed -e '/^DROP SCHEMA /d' -e 's/^CREATE SCHEMA \(.*\);$/CREATE SCHEMA IF NOT EXISTS \1;/' \
+          -e '/^CREATE TRIGGER ops_log/d'
+  # the pipeline-log triggers (db/setup/33) stay local: the pipeline runs here, and the copy must not need the ops schema there
 }
 
 TARGET="${KSSL_SYNC_TARGET:-vps}"

@@ -52,6 +52,7 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/30_evidence_dates.sql         # story_step / signal evidence dates (as on VPS serving)
 "${PSQL[@]}" -d "$STG" < db/setup/31_user_activity.sql         # activity.event: review-site usage log (not synced, not reviewed)
 "${PSQL[@]}" -d "$STG" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
+"${PSQL[@]}" -d "$STG" < db/setup/33_pipeline_log.sql          # ops.*: pipeline log (runs, steps, every row written, script notes)
 build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/08_competitor_text_columns.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/11_foundations.sql              # same DDL on the serving schemas (Approve copies by column name); no seed rows here
