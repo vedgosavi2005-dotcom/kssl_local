@@ -34,7 +34,7 @@ export default function Analytics({ onClose, onPlay }) {
     api("analytics/day", { site, user: who.user, visitor: who.visitor, ...dayWindow(day) }).then(setData, fail); }, [site, who, day]);
 
   const play = (s) => api("activity/events", { site, session: s.id })
-    .then((d) => onPlay && onPlay(d.events, `${who.label} · ${hm(s.started)}–${hm(s.ended)}`), fail);
+    .then((d) => onPlay && onPlay(d.events, `${who.label} · ${hm(s.started)}–${hm(s.ended)}`, site), fail);
 
   if (heat) return <HeatOverlay site={site} who={who} day={day} page={heat} onClose={() => setHeat(null)} />;
   const t = data && data.totals;
