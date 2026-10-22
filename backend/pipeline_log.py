@@ -22,6 +22,13 @@ SEARCH_TABLES = ("competitive_signal", "competitive_news_article", "market_tende
 LIMIT = 300
 
 
+def _has(cur, name: str) -> bool:
+    """True when the table exists in this DB: the VPS staging DB has no raw layer (source_document, tender_raw, news_candidate,
+    prompt_run are not synced), so every read of them is conditional."""
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (name,))
+    return bool(cur.fetchone()["ok"])
+
+
 def _uuid(v: str) -> str | None:
     try:
         return str(uuid.UUID(str(v)))
@@ -89,6 +96,11 @@ def step_records(st, step_id: str) -> dict:
     }.get(kind)
     if not q:
         raise ValueError("unknown step id")
+    table = {"prompt": "staging.prompt_run", "harvest": "staging.source_document", "tenders": "staging.tender_raw",
+             "triage": "staging.source_document", "news_candidates": "staging.news_candidate", "images": "media.image",
+             "translate": "staging.text_original", "review": "staging.review_decision"}[kind]
+    if not _has(st, table):
+        return {"kind": kind, "records": [], "notes": [], "missing": f"{table} is not in this database"}
     st.execute(q[0] + " LIMIT %s", (*q[1], LIMIT))
     return {"kind": kind, "records": st.fetchall(), "notes": []}
 
@@ -136,15 +148,18 @@ def journey(st, sv, table: str, rec_id: str) -> dict:
                    "detail": {"url": url, "tier": f["source_tier"], "publisher": f["publisher"], "fields": cols}})
     urls = {f["source_url"] for f in facts if (f["source_url"] or "").startswith("http")}
     docs = sorted({f["document_id"] for f in facts if f["document_id"]})
-    st.execute("""SELECT run_id::text, prompt_id, model, started_at, status, cost_usd, subject_key, rows_loaded FROM staging.prompt_run
-                  WHERE loaded @> %s::jsonb ORDER BY started_at""", (f'[{{"table": "{table}", "id": "{rec_id}"}}]',))
-    runs_ = st.fetchall()
+    raw = {t: _has(st, f"staging.{t}") for t in ("prompt_run", "news_candidate", "source_document", "text_original")}
+    runs_ = []
+    if raw["prompt_run"]:
+        st.execute("""SELECT run_id::text, prompt_id, model, started_at, status, cost_usd, subject_key, rows_loaded FROM staging.prompt_run
+                      WHERE loaded @> %s::jsonb ORDER BY started_at""", (f'[{{"table": "{table}", "id": "{rec_id}"}}]',))
+        runs_ = st.fetchall()
     # a prompt's subject is often the news article it read: follow it back to that article's url
     subj = sorted({r["subject_key"] for r in runs_ if _uuid(r["subject_key"] or "")})
     if subj:
         st.execute("SELECT article_url FROM staging.competitive_news_article WHERE article_id::text = ANY(%s) AND article_url LIKE 'http%%'", (subj,))
         urls |= {r["article_url"] for r in st.fetchall()}
-    if urls:
+    if urls and raw["news_candidate"]:
         st.execute("""SELECT found_at, decided_at, status, article_url, headline, match_via FROM staging.news_candidate
                       WHERE article_url = ANY(%s) ORDER BY found_at""", (sorted(urls),))
         for n in st.fetchall():
@@ -153,7 +168,7 @@ def journey(st, sv, table: str, rec_id: str) -> dict:
             if n["decided_at"]:
                 ev.append({"at": n["decided_at"], "stage": "triage", "what": f"news candidate {n['status']}", "detail": {"url": n["article_url"]}})
     urls = sorted(urls)
-    if urls or docs:
+    if (urls or docs) and raw["source_document"]:
         st.execute("""SELECT doc_id::text, url, title, source_kind, fetched_at, triage, processed_by FROM staging.source_document
                       WHERE url = ANY(%s) OR doc_id::text = ANY(%s)""", (urls, docs))
         for d in st.fetchall():
@@ -168,8 +183,8 @@ def journey(st, sv, table: str, rec_id: str) -> dict:
     for r in runs_:
         ev.append({"at": r["started_at"], "stage": "prompt", "what": f"written by prompt '{r['prompt_id']}' ({r['status']})",
                    "detail": {"run_id": r["run_id"], "model": r["model"], "cost_usd": r["cost_usd"], "subject": r["subject_key"]}})
-    st.execute("SELECT translated_at, column_name, lang FROM staging.text_original WHERE table_name = %s AND row_id = %s", (table, rec_id))
-    for t in st.fetchall():
+    st.execute("SELECT translated_at, column_name, lang FROM staging.text_original WHERE table_name = %s AND row_id = %s", (table, rec_id))         if raw["text_original"] else None
+    for t in (st.fetchall() if raw["text_original"] else []):
         ev.append({"at": t["translated_at"], "stage": "translate", "what": f"{t['column_name']} translated from {t['lang']}", "detail": {}})
     st.execute("SELECT at, action, detail, step_id::text FROM ops.record_event WHERE tbl = %s AND rec_id = %s ORDER BY at",
                (f"staging.{table}", rec_id))
@@ -182,7 +197,7 @@ def journey(st, sv, table: str, rec_id: str) -> dict:
         noted.add((x["kind"], x["subject"]))
         ev.append({"at": x["at"], "stage": "note", "what": x["message"] or x["outcome"] or x["kind"],
                    "detail": {"script": x["script"], "kind": x["kind"], "outcome": x["outcome"], "url": x["subject"] if str(x["subject"] or "").startswith("http") else None}})
-    if urls:   # image decisions made before the live notes existed: the same sentence, rebuilt from media.page_image
+    if urls and _has(st, "media.page_image"):   # image decisions made before the live notes existed: the same sentence, rebuilt from media.page_image
         from backend.media_images import image_note
         st.execute("""SELECT p.page_url, p.status, p.how, p.error, p.checked_at, i.width, i.height FROM media.page_image p
                       LEFT JOIN media.image i USING (image_id) WHERE p.page_url = ANY(%s)""", (urls,))
