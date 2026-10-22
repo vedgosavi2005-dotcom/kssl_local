@@ -283,6 +283,42 @@ def _uuid_or_none(v: Any) -> str | None:
         return None
 
 
+# ---- temporary login (owner 22 Oct; the real login page comes later) ------------------------------------------------
+# KSSL_LOGIN_USERS in the gitignored .env: "user1:pbkdf2_sha256.<iterations>.<salt hex>.<hash hex>[,user2:...]" ("." not "$": the .env is read by bash).
+# ponytail: checks a password and names the user for the UI and the usage log; no session token, the API is not locked.
+def _login_users() -> dict[str, str]:
+    out = {}
+    for item in os.environ.get("KSSL_LOGIN_USERS", "").split(","):
+        name, _, h = item.strip().partition(":")
+        if name and h:
+            out[name] = h
+    return out
+
+
+def _password_ok(password: str, stored: str) -> bool:
+    import hashlib
+    import hmac
+    try:
+        algo, iters, salt, want = stored.split(".")
+        if algo != "pbkdf2_sha256":
+            return False
+        got = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), int(iters)).hex()
+        return hmac.compare_digest(got, want)
+    except (ValueError, TypeError):
+        return False
+
+
+@app.post("/api/login")
+def login(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if REVIEW:
+        raise HTTPException(status_code=404, detail="the review site has no login")
+    user = str(body.get("user") or "").strip()[:60]
+    stored = _login_users().get(user)
+    if not stored or not _password_ok(str(body.get("password") or ""), stored):
+        raise HTTPException(status_code=401, detail="Wrong user or password")
+    return {"user": user}
+
+
 @app.post("/api/track")
 def track(request: Request, events: list[dict[str, Any]] = Body(...)) -> dict[str, Any]:
     """A batch of usage events -> activity.event in this API's own DB (live -> serving DB, review -> staging DB). Anonymous:

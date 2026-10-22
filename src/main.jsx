@@ -1,5 +1,7 @@
 import ReactDOM from "react-dom/client";
 import { isDesktop } from "./lib/device";
+import { LOGIN_REQUIRED, currentUser } from "./lib/login";
+import Login from "./components/login/Login";
 import "./styles/index.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
@@ -14,11 +16,16 @@ function loadAskParallax() {
 }
 
 /* Desktop only (lib/device): a phone or tablet gets this notice and never loads the app or its data. */
-if (isDesktop()) {
+const startApp = () =>
   import("./App").then(({ default: App }) => {
     root.render(<App />);
     loadAskParallax();
   });
+
+if (isDesktop()) {
+  // temporary login (lib/login): the app and its data load only after sign-in
+  if (LOGIN_REQUIRED && !currentUser()) root.render(<Login onDone={startApp} />);
+  else startApp();
 } else {
   root.render(
     <div className="device-gate" role="alert">

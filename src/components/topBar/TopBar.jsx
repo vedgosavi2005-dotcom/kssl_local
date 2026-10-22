@@ -3,6 +3,7 @@ import { useRef, useEffect, useMemo, useState } from "react";
 import { useAppState, PILLARS, PILLAR_LABEL } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { searchDataset, SEARCH_MIN_CHARS } from "../../lib/search";
+import { LOGIN_REQUIRED, currentUser, logout } from "../../lib/login";
 
 /* The global search.
 
@@ -202,6 +203,12 @@ export default function TopBar() {
         <div className="statusbox client">
           <span className="v">{clientShort()}</span>
         </div>
+        {LOGIN_REQUIRED && currentUser() ? (
+          <div className="statusbox user">
+            <span className="v">{currentUser()}</span>
+            <button type="button" onClick={logout}>Log out</button>
+          </div>
+        ) : null}
         {/* The Feed / Live box is off at the operator's request. It was never a liveness
             READING: the dot animated on a CSS keyframe from the moment the bundle
             parsed, so it said "Live" just as confidently against a stale snapshot as

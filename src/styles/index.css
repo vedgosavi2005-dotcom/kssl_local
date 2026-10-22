@@ -26,3 +26,12 @@
 .device-gate-box b { display: block; font-size: 22px; margin-bottom: 14px; }
 .device-gate-box p { margin: 0 0 10px; font-size: 16px; }
 .device-gate-sub { color: #9a9a96; font-size: 14px !important; }
+/* temporary login (components/login/Login.jsx) */
+.login-box { display: flex; flex-direction: column; gap: 12px; text-align: left; width: 320px; }
+.login-box b { text-align: center; }
+.login-box label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #9a9a96; }
+.login-box input { background: #1d1d21; color: #e8e8e6; border: 1px solid #3a3a40; padding: 9px 10px; font-size: 14px; }
+.login-box button { background: #2a2a30; color: #fff; border: 1px solid #55555c; padding: 9px; font-size: 14px; cursor: pointer; }
+.login-box button:disabled { opacity: .5; cursor: default; }
+.login-err { color: #ff8a80; margin: 0; font-size: 13px; }
+.statusbox.user button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; padding: 0 0 0 6px; }
