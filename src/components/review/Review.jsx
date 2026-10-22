@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import "../../styles/review.css";
 import { ReplayPanel, ReplayPlayer } from "../replay/Replay";
 import PipelineLog from "../pipelineLog/PipelineLog";
+import Analytics from "../analytics/Analytics";
 
 /* The review copy. Same app in Vite mode "review" (`npm run dev:review`, 127.0.0.1:5180) against
    the review backend (KSSL_VIEW=review, :8601), which reads the staging DB and sends a status per
@@ -105,8 +106,14 @@ export function ReviewProvider({ initial, children }) {
         <button type="button" onClick={() => setPanel({ kind: "pipeline" })} title="Every run and step of the data pipeline, and any record's journey">
           Pipeline log
         </button>
+        <button type="button" onClick={() => setPanel({ kind: "analytics" })} title="How people use the site: logins, pages, searches, heat map">
+          Analytics
+        </button>
       </div>
       {panel?.kind === "pipeline" && <PipelineLog onClose={() => setPanel(null)} />}
+      {panel?.kind === "analytics" && (
+        <Analytics onClose={() => setPanel(null)} onPlay={(events, who) => { setPanel(null); setReplay({ events, who }); }} />
+      )}
       {panel?.kind === "replay" && (
         <ReplayPanel onClose={() => setPanel(null)} onPlay={(events, who) => { setPanel(null); setReplay({ events, who }); }} />
       )}
