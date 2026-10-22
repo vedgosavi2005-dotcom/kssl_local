@@ -1,0 +1,42 @@
+/* Pipeline log panel (review site only): components/pipelineLog/PipelineLog.jsx. Same dark floating style as the replay panel. */
+.pl-panel{position:fixed;top:60px;left:16px;right:16px;bottom:70px;z-index:1200;display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:#18181b;border:1px solid #3a3a40;color:#e8e8e6;font-size:12.5px;box-shadow:0 12px 40px rgba(0,0,0,.55)}
+.pl-panel button{background:#26262b;color:#e8e8e6;border:1px solid #3a3a40;padding:4px 8px;font-size:12px;cursor:pointer;text-align:left}
+.pl-panel button:hover{border-color:#6a6a72}
+.pl-panel a{color:#8fb7ff}
+.pl-h{display:flex;align-items:center;gap:12px}
+.pl-h b{font-size:14px}
+.pl-search{display:flex;gap:6px;margin-left:auto;flex:0 1 520px}
+.pl-search input{flex:1;background:#101013;color:#e8e8e6;border:1px solid #3a3a40;padding:5px 8px;font-size:12.5px;min-width:0}
+.pl-err{color:#ff8a7a;margin:0}
+.pl-dim{color:#9a9aa2;font-size:11.5px}
+.pl-cols{flex:1;display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.4fr) minmax(320px,2.4fr);gap:10px;min-height:0}
+.pl-col{overflow:auto;display:flex;flex-direction:column;gap:4px;min-width:0;border-right:1px solid #2c2c31;padding-right:8px}
+.pl-col:last-child{border-right:none}
+.pl-sec{font-family:var(--mono,monospace);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#b8b8be;margin:4px 0}
+.pl-item{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;width:100%}
+.pl-item.on{border-color:#b7791f;background:#2b2418}
+.pl-t{color:#f0f0ee;overflow-wrap:anywhere;min-width:0}
+.pl-script{flex-basis:100%;font-family:var(--mono,monospace);font-size:10.5px}
+.pl-st{font-family:var(--mono,monospace);font-size:10px;text-transform:uppercase;padding:0 5px;border-radius:3px;background:#2c2c31}
+.pl-st.ok,.pl-st.loaded{color:#7fd18b}
+.pl-st.failed,.pl-st.rejected{color:#ff8a7a}
+.pl-st.partial,.pl-st.skipped,.pl-st.running{color:#e8b85a}
+.pl-tag{font-size:10px;color:#9a9aa2;border:1px dashed #55555c;padding:0 4px;border-radius:3px}
+.pl-rec{display:flex;flex-wrap:wrap;gap:3px 8px;align-items:baseline;padding:5px 0;border-bottom:1px solid #26262b}
+.pl-acts{display:flex;gap:6px;flex-wrap:wrap;flex-basis:100%}
+.pl-acts button{padding:1px 6px;font-size:11px}
+.pl-back{padding:0 6px !important;margin-right:6px}
+.pl-jh{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px}
+.pl-link{font-size:11px !important;padding:1px 6px !important;align-self:flex-start}
+.pl-tl{list-style:none;margin:6px 0 0;padding:0 0 0 14px;border-left:2px solid #3a3a40;display:flex;flex-direction:column;gap:8px}
+.pl-tl li{position:relative;display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}
+.pl-tl li::before{content:"";position:absolute;left:-19px;top:5px;width:8px;height:8px;border-radius:50%;background:#6a6a72}
+.pl-tl li.st-harvest::before{background:#8fb7ff}
+.pl-tl li.st-triage::before{background:#c3a6ff}
+.pl-tl li.st-prompt::before{background:#e8b85a}
+.pl-tl li.st-source::before{background:#9a9aa2}
+.pl-tl li.st-review::before{background:#ff8a7a}
+.pl-tl li.st-live::before{background:#7fd18b}
+.pl-stage{font-family:var(--mono,monospace);font-size:10px;text-transform:uppercase;color:#b8b8be;min-width:62px}
+.pl-tl li.st-note::before{background:#5ad1c4}
+.pl-col > *{flex-shrink:0}   /* a fixed-height scrolling column must not squeeze its rows onto each other */

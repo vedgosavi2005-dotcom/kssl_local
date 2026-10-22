@@ -449,3 +449,45 @@ def activity_events(site: str = "live", session: str = "") -> dict[str, Any]:
         return json_value({"site": site, "session": sid, "events": cur.fetchall()})
     finally:
         conn.close()
+
+
+# ---- pipeline log (review site only): runs -> steps -> records, and one record's journey (backend/pipeline_log.py) ----------
+
+def _pipeline(fn, *args):
+    _review_only()
+    from backend import pipeline_log
+    try:
+        with review.session() as (st, sv):
+            return json_value(getattr(pipeline_log, fn)(st, *args) if fn != "journey" else pipeline_log.journey(st, sv, *args))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.get("/api/review/pipeline/runs")
+def pipeline_runs() -> dict[str, Any]:
+    """Live runs and, before the live log, one reconstructed run per day (newest first)."""
+    return {"runs": _pipeline("runs")}
+
+
+@app.get("/api/review/pipeline/steps")
+def pipeline_steps(run: str) -> dict[str, Any]:
+    """A run's steps: run uuid, or day:YYYY-MM-DD for the steps outside a run."""
+    return {"run": run, "steps": _pipeline("steps", run)}
+
+
+@app.get("/api/review/pipeline/records")
+def pipeline_records(step: str) -> dict[str, Any]:
+    """What one step touched (capped at 300 rows)."""
+    return {"step": step, **_pipeline("step_records", step)}
+
+
+@app.get("/api/review/pipeline/journey")
+def pipeline_journey(table: str, id: str) -> dict[str, Any]:  # noqa: A002 -- the query parameter is "id"
+    """One record from harvest to the live site, in time order."""
+    return _pipeline("journey", table, id)
+
+
+@app.get("/api/review/pipeline/search")
+def pipeline_search(q: str) -> dict[str, Any]:
+    """Records by 'table:id', by a source url, or by title text."""
+    return {"q": q, "results": _pipeline("search", q)}
