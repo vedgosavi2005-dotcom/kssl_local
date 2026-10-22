@@ -87,7 +87,7 @@ export function segments(d, openTenders, today = new Date(), closedTenders = [])
     if (!m.segment) return;
     const seg = segmentOf(m.segment);
     const cur = latestSignal.get(seg);
-    if (!cur || (m.date && (!cur.date || m.date > cur.date))) latestSignal.set(seg, { title: c.title, kind: m.kind, country: m.country, date: m.date });
+    if (!cur || (m.date && (!cur.date || m.date > cur.date))) latestSignal.set(seg, { title: c.title, kind: m.kind, country: m.country, date: m.date, url: c.url });
   });
   return [...by.values()].map((r) => {
     const mine = fit.filter((t) => segmentOf(t.cat) === r.segment);
@@ -185,7 +185,7 @@ export function drivers(d) {
     const seg = segmentOf(m.segment);
     const key = `${m.country}||${seg}`;
     const r = by.get(key) || { country: m.country, segment: seg, signals: [], tenders: [] };
-    r.signals.push({ kind: m.kind, title: c.title, date: m.date });
+    r.signals.push({ kind: m.kind, title: c.title, date: m.date, url: c.url });
     by.set(key, r);
   });
   /* a tender is in the same place when its country is one of the comma-separated parts of the signal's location */

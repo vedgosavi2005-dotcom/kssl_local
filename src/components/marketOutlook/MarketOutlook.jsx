@@ -4,6 +4,11 @@ import { formatDate } from "../../utils/formatDate";
 import "../../styles/market-overview.css";
 import "../../styles/tender-intel.css";
 import { Review } from "../review/Review";
+import { SourceChip } from "../sourceLink/SourceLink";
+import { hostOf } from "../../lib/marketOverview";
+
+// the article a signal came from, as a link to it (owner 22 Oct: "add the latest signal's source")
+const SignalSource = ({ url }) => (url ? <span className="od-sub">Source: <SourceChip url={url} source={hostOf(url) || "article"} /></span> : null);
 
 /* Market outlook: five tables, each headed with the records it was counted from (lib/marketOutlook), so a reader
    can see what a number rests on. The page passes the computed outlook (open tenders from its own bucketTenders split). */
@@ -110,6 +115,7 @@ export default function MarketOutlook({ data, o, onSegment }) {
                 <>
                   <span className="od-main od-clip" title={r.latest.title}>{r.latest.title}</span>
                   <span className="od-sub">{[codeWord(r.latest.kind), r.latest.country, r.latest.date ? fmtDate(r.latest.date) : null].filter(Boolean).join(" · ")}</span>
+                  <SignalSource url={r.latest.url} />
                 </>
               ) : (
                 <span className="od-none">No signal on record</span>
@@ -176,6 +182,7 @@ export default function MarketOutlook({ data, o, onSegment }) {
             <td>
               <span className="ti-title" title={r.signals[0].title}>{r.signals[0].title}</span>
               {r.signals[0].date ? <span className="ovt-buyer">{codeWord(r.signals[0].kind)} · {fmtDate(r.signals[0].date)}</span> : null}
+              <SignalSource url={r.signals[0].url} />
             </td>
           </tr>
         ))}
