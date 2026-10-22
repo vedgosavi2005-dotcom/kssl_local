@@ -112,12 +112,12 @@ export function ReviewProvider({ initial, children }) {
       </div>
       {panel?.kind === "pipeline" && <PipelineLog onClose={() => setPanel(null)} />}
       {panel?.kind === "analytics" && (
-        <Analytics onClose={() => setPanel(null)} onPlay={(events, who) => { setPanel(null); setReplay({ events, who }); }} />
+        <Analytics onClose={() => setPanel(null)} onPlay={(events, who, site) => { setPanel(null); setReplay({ events, who, site }); }} />
       )}
       {panel?.kind === "replay" && (
-        <ReplayPanel onClose={() => setPanel(null)} onPlay={(events, who) => { setPanel(null); setReplay({ events, who }); }} />
+        <ReplayPanel onClose={() => setPanel(null)} onPlay={(events, who, site) => { setPanel(null); setReplay({ events, who, site }); }} />
       )}
-      {replay && <ReplayPlayer events={replay.events} who={replay.who} onClose={() => setReplay(null)} />}
+      {replay && <ReplayPlayer events={replay.events} who={replay.who} site={replay.site || "live"} onClose={() => setReplay(null)} />}
       {panel?.kind === "trace" && (
         <TraceDrawer {...panel} onOpen={(t, id) => setPanel({ kind: "trace", t, id })} onClose={() => setPanel(null)} />
       )}

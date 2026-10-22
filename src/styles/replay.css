@@ -39,3 +39,4 @@ body.rp-on .rv-bar, body.rp-on .rv-banner, body.rp-on .rp-panel { display: none 
 .rp-mid input[type=range] { width: 100%; accent-color: #e0a63a; }
 .rp-time { font-family: var(--mono, monospace); color: #9a9a96; white-space: nowrap; }
 .rp-skip { display: flex; align-items: center; gap: 4px; color: #9a9a96; white-space: nowrap; }
+.rp-site { font-family: var(--mono, monospace); font-size: 10px; color: #9a9a96; border: 1px solid #3a3a40; padding: 1px 6px; }

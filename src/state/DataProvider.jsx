@@ -17,8 +17,36 @@ const DataContext = createContext(null);
 /* Loads the dataset once, wires it, and derives everything the panels read from it.
    The derived objects are memoised on the dataset identity, so a refetch rebuilds
    them and a re-render does not. */
+function build(src) {
+  /* the client first: wireDataset builds strings that name it */
+  setClient(src.client);
+  /* which sections the database switched on; read before anything below counts or routes */
+  setVisibility(src.sectionVisibility);
+  const data = wireDataset(src);
+  const gapModel = buildGapModel(data);
+  const geo = createGeo(data);
+  const partners = createPartners(data);
+  return {
+    data,
+    gapModel,
+    geo,
+    partners,
+    counts: navCounts(data, gapModel),
+    viewMeta: viewMetaFor(data),
+  };
+}
+
 export function DataProvider({ children }) {
   const [raw, setRaw] = useState(null);
+  /* another dataset shown for a while in place of this site's own: the review site's Session replay of a LIVE visit
+     shows the live dataset, so the cards, order and numbering are what that person saw (components/replay/Replay.jsx).
+     Set by the "kssl:dataset-override" event (detail = the payload, or null to go back). */
+  const [override, setOverride] = useState(null);
+  useEffect(() => {
+    const on = (e) => setOverride(e.detail || null);
+    window.addEventListener("kssl:dataset-override", on);
+    return () => window.removeEventListener("kssl:dataset-override", on);
+  }, []);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -44,25 +72,18 @@ export function DataProvider({ children }) {
     };
   }, [reloadKey]);
 
-  const value = useMemo(() => {
-    if (!raw) return null;
-    /* the client first: wireDataset builds strings that name it */
-    setClient(raw.client);
-    /* which sections the database switched on; read before anything below counts or routes */
-    setVisibility(raw.sectionVisibility);
-    const data = wireDataset(raw);
-    const gapModel = buildGapModel(data);
-    const geo = createGeo(data);
-    const partners = createPartners(data);
-    return {
-      data,
-      gapModel,
-      geo,
-      partners,
-      counts: navCounts(data, gapModel),
-      viewMeta: viewMetaFor(data),
-    };
-  }, [raw]);
+  /* each dataset is wired once and kept: wireDataset changes the objects it is given, so the site's own dataset is never
+     wired a second time when a replay hands it back */
+  const own = useMemo(() => (raw ? build(raw) : null), [raw]);
+  const shown = useMemo(() => (override ? build(override) : null), [override]);
+  const value = shown || own;
+  // the client and the switched-on sections follow whichever dataset is on screen
+  useEffect(() => {
+    const src = override || raw;
+    if (!src) return;
+    setClient(src.client);
+    setVisibility(src.sectionVisibility);
+  }, [raw, override]);
 
   /* The three self-checks the standalone file ran on load. They assert the derived
      logic against the corpus and log only on failure — a silent console is the pass. */

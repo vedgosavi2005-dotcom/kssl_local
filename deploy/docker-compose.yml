@@ -39,6 +39,7 @@ services:
     container_name: kssl2-api-review
     environment:
       KSSL_VIEW: review
+      KSSL_LIVE_API: http://api:8600          # Session replay of a live visit plays on the live dataset (backend/app.py)
       KSSL_SERVING_DSN: host=db port=5432 dbname=kssl_serving user=kssl_app password=${APP_PASSWORD}
       KSSL_STAGING_DSN: host=db port=5432 dbname=kssl_staging user=kssl_app password=${APP_PASSWORD}
 

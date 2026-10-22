@@ -14,7 +14,7 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -436,6 +436,22 @@ def activity_sessions(site: str = "live", user: str | None = None, visitor: str 
         raise HTTPException(status_code=400, detail=f"bad time: {exc.pgerror or exc}") from None
     finally:
         conn.close()
+
+
+@app.get("/api/review/live-dataset")
+def review_live_dataset() -> Response:
+    """The LIVE site's dataset, for the review site's Session replay of a live visit: the replay must show the cards, order and
+    numbering that person saw, not the review copy's (owner 22 Oct: a click on the 9th card replayed on the 7th). Fetched from the
+    live API (KSSL_LIVE_API; locally :8600, on the VPS the api container) and passed through as it is."""
+    _review_only()
+    import urllib.request
+    base = os.environ.get("KSSL_LIVE_API", "http://127.0.0.1:8600").rstrip("/")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"{base}/api/dataset", headers={"Accept-Encoding": "gzip"}), timeout=120) as r:
+            body, enc = r.read(), r.headers.get("Content-Encoding")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"live API not reachable at {base}: {exc}") from None
+    return Response(content=body, media_type="application/json", headers={"Content-Encoding": enc} if enc else {})
 
 
 @app.get("/api/review/activity/events")

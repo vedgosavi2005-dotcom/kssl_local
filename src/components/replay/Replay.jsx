@@ -50,7 +50,7 @@ export function ReplayPanel({ onClose, onPlay }) {
         all.push(...(await get("/api/review/activity/events", { site, session: s.id })).events);
       }
       if (!all.length) return setErr("No events in this visit.");
-      onPlay(all, who.user ? people.users.find((u) => u.id === who.user)?.label || who.user : `Browser ${who.visitor.slice(0, 8)}`);
+      onPlay(all, who.user ? people.users.find((u) => u.id === who.user)?.label || who.user : `Browser ${who.visitor.slice(0, 8)}`, site);
     } catch (e) {
       setErr(e.message);
     }
@@ -119,8 +119,32 @@ export function ReplayPanel({ onClose, onPlay }) {
 }
 
 /* the player: the control bar, the ghost cursor, the highlight. Plays `events` on this page. */
-export function ReplayPlayer({ events, who, onClose }) {
+export function ReplayPlayer({ events, who, site = "live", onClose }) {
   const [skipIdle, setSkipIdle] = useState(true);
+  /* a LIVE visit plays on the live dataset (cards, order and numbering as that person saw them), not on the review copy;
+     playback starts once it is in, and closing the player hands the review data back (state/DataProvider) */
+  const [ready, setReady] = useState(site !== "live");
+  const [dataNote, setDataNote] = useState("");
+  useEffect(() => {
+    if (site !== "live") return undefined;
+    let gone = false;
+    fetch("/api/review/live-dataset")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`live dataset ${r.status}`))))
+      .then((payload) => {
+        if (gone) return;
+        window.dispatchEvent(new CustomEvent("kssl:dataset-override", { detail: payload }));
+        setTimeout(() => !gone && setReady(true), 300);          // one render on the live data before the first step
+      })
+      .catch((e) => {
+        if (gone) return;
+        setDataNote(`Live data not available (${e.message}); playing on the review data.`);
+        setReady(true);
+      });
+    return () => {
+      gone = true;
+      window.dispatchEvent(new CustomEvent("kssl:dataset-override", { detail: null }));
+    };
+  }, [site]);
   const steps = useRef([]);
   const [total, setTotal] = useState(0);
   const [clock, setClock] = useState(0);
@@ -133,11 +157,12 @@ export function ReplayPlayer({ events, who, onClose }) {
 
   // build the clock; keep the position on a skip-idle change by real time
   useEffect(() => {
+    if (!ready) return;
     steps.current = timeline(events, { skipIdle });
     setTotal(steps.current.length ? steps.current[steps.current.length - 1].at : 0);
     seek(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, skipIdle]);
+  }, [events, skipIdle, ready]);
 
   // mute the tracker and hide the review chrome (the person did not see it) while the player is open
   useEffect(() => {
@@ -226,7 +251,7 @@ export function ReplayPlayer({ events, who, onClose }) {
 
   // the playback loop
   useEffect(() => {
-    if (!playing) return undefined;
+    if (!playing || !ready) return undefined;
     let raf;
     let prev = performance.now();
     const tick = (t) => {
@@ -245,7 +270,7 @@ export function ReplayPlayer({ events, who, onClose }) {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, speed, total]);
+  }, [playing, speed, total, ready]);
 
   const fmtClock = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
   return (
@@ -262,8 +287,9 @@ export function ReplayPlayer({ events, who, onClose }) {
         <div className="rp-mid">
           <div className="rp-top">
             <b>{who}</b>
+            <span className="rp-site">{!ready ? "loading the live data…" : site === "live" && !dataNote ? "live site data" : "review data"}</span>
             <span>{now ? fmtTime(now) : ""}</span>
-            <span className="rp-cap">{caption}</span>
+            <span className="rp-cap">{dataNote || caption}</span>
           </div>
           <input type="range" min="0" max={Math.max(1, total)} step="100" value={clock}
             onChange={(e) => { seek(Number(e.target.value)); }} aria-label="Position in the replay" />

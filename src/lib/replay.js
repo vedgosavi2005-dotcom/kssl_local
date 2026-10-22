@@ -56,9 +56,15 @@ const PICKABLE = "a,button,[role=button],[role=tab],select,input,.alert,.tcard,.
 /* the element a logged event was on, on the page as it is now: its selector + label, else any element with that label,
    else what is under the logged point. null when nothing matches (the player then shows a caption only). */
 export function findTarget(ev, root = document) {
-  const label = ev.target || null;
+  // the item's own id first (a card's data-id): right whatever order or numbering the page shows now
+  if (ev.value && !/^(https?:|\/|#)/.test(ev.value)) {
+    const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(String(ev.value)) : String(ev.value).replace(/[^\w-]/g, "\\$&");
+    const byId = safeAll(root, `[data-id="${esc}"]`).filter(visible);
+    if (byId.length) return byId[0];
+  }
+  const label = ev.target ? sameLabel(ev.target) : null;
   const sel = ev.props && ev.props.sel;
-  const byLabel = (list) => list.filter((el) => visible(el) && labelOf(el) === label);
+  const byLabel = (list) => list.filter((el) => visible(el) && sameLabel(labelOf(el)) === label);
   if (sel && label) {
     const hit = byLabel(safeAll(root, sel));
     if (hit.length) return pickByValue(hit, ev.value);
@@ -73,6 +79,9 @@ export function findTarget(ev, root = document) {
   }
   return null;
 }
+
+// a card's label starts with its position in the list ("09 Nibe Group ..."), which differs between two pages: compare without it
+export const sameLabel = (t) => String(t || "").replace(/^\s*\d{1,3}\s+/, "").trim();
 
 function pickByValue(list, value) {
   if (!value) return list[0];
@@ -140,6 +149,7 @@ export function replaySelfCheck() {
   ok("without skipping, the pause is kept", timeline(ev, { skipIdle: false }).slice(-1)[0].at === 300000);
   ok("a page view replays its route", hashOf(ev[0]) === "#p=market&v=tender");
   ok("a logged full hash wins", hashOf({ props: { hash: "#p=market&v=tender&x=1" } }) === "#p=market&v=tender&x=1");
+  ok("a list position is not part of the label", sameLabel("09 Nibe Group PULS") === sameLabel("07 Nibe Group PULS"));
   ok("captions read as words", captionOf({ kind: "search", ev: ev[3] }) === "Searched “Spike”" && fmtDur(125000) === "2 min 5 s");
   return bad;
 }
