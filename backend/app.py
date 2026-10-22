@@ -271,8 +271,9 @@ def review_table(schema: str, table: str, action: str) -> dict[str, Any]:
 
 # ---- usage log (db/setup/31_user_activity.sql, docs/ui_port/ACTIVITY_LOG.md): written by src/lib/track.js ----
 
-TRACK_TYPES = {"page_view", "leave", "click", "search", "hover"}
+TRACK_TYPES = {"page_view", "leave", "click", "search", "hover", "move", "scroll"}   # move / scroll: review session replay
 TRACK_MAX = 100          # events per batch (the client flushes every few seconds)
+TRACK_PROPS_MAX = 2000   # chars of props: a mouse path of ~40 points fits
 
 
 def _uuid_or_none(v: Any) -> str | None:
@@ -302,15 +303,16 @@ def track(request: Request, events: list[dict[str, Any]] = Body(...)) -> dict[st
         dur = e.get("ms")
         dur = int(dur) if isinstance(dur, (int, float)) and 0 <= dur < 86_400_000 else None
         props = e.get("props") if isinstance(e.get("props"), dict) else None
-        if props is not None and len(json.dumps(props)) > 1000:
+        if props is not None and len(json.dumps(props)) > TRACK_PROPS_MAX:
             props = None
         rows.append((cut(e.get("ts"), 40), site, vid, sid, e["type"], cut(e.get("pillar"), 40), cut(e.get("view"), 60),
-                     cut(e.get("target"), 160), cut(e.get("value"), 300), dur, json.dumps(props) if props else None, ua))
+                     cut(e.get("target"), 160), cut(e.get("value"), 300), dur, json.dumps(props) if props else None, ua,
+                     cut(e.get("user"), 60)))
     if rows:
         with connect() as conn, conn.cursor() as cur:
             psycopg2.extras.execute_values(cur, """INSERT INTO activity.event (client_ts, site, visitor_id, session_id, event_type, pillar,
-                view, target, value, duration_ms, props, user_agent) VALUES %s""", rows,
-                template="(%s::timestamptz, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)")
+                view, target, value, duration_ms, props, user_agent, user_id) VALUES %s""", rows,
+                template="(%s::timestamptz, %s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)")
     return {"stored": len(rows), "dropped": len(events) - len(rows)}
 
 

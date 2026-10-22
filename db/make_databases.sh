@@ -51,6 +51,7 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/29_text_translation.sql       # originals of translated market cells + translation cache
 "${PSQL[@]}" -d "$STG" < db/setup/30_evidence_dates.sql         # story_step / signal evidence dates (as on VPS serving)
 "${PSQL[@]}" -d "$STG" < db/setup/31_user_activity.sql         # activity.event: review-site usage log (not synced, not reviewed)
+"${PSQL[@]}" -d "$STG" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
 build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/08_competitor_text_columns.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/11_foundations.sql              # same DDL on the serving schemas (Approve copies by column name); no seed rows here
@@ -67,6 +68,7 @@ build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/27_tender_translation.sql      # same columns in serving
 "${PSQL[@]}" -d "$SRV" < db/setup/30_evidence_dates.sql         # same columns in serving
 "${PSQL[@]}" -d "$SRV" < db/setup/31_user_activity.sql         # activity.event: live-site usage log (outside serving/ui: no approve guard)
+"${PSQL[@]}" -d "$SRV" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
 for d in "$STG" "$SRV"; do
     "${PSQL[@]}" -d "$d" -At -c "SELECT '$d: ' || string_agg(nspname || '=' || n, ' ') FROM (SELECT nspname, count(*) n FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE relkind = 'r' AND nspname IN ('ui','serving','staging','staging_ui') GROUP BY nspname ORDER BY nspname) t"
 done

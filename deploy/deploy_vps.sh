@@ -29,12 +29,13 @@ echo "== build + up"
 
 echo "== serving schema"
 # the SQL comes from the SAME committed ref as the code (never the working tree): a file not committed in $REF is skipped
-for f in db/setup/08_competitor_text_columns.sql db/setup/11_foundations.sql db/setup/09_ui_port_tables.sql db/setup/15_signal_published_date.sql db/setup/21_fx_rate.sql db/setup/16_signal_rule_s2.sql db/setup/18_tender_notice_merge.sql db/setup/20_matchup_advantage_kind.sql db/setup/22_product_description_status.sql db/setup/23_signal_risk_v3.sql db/setup/25_leader_record_text.sql db/setup/26_competitor_short_details.sql db/setup/27_tender_translation.sql db/setup/30_evidence_dates.sql db/setup/31_user_activity.sql; do
+for f in db/setup/08_competitor_text_columns.sql db/setup/11_foundations.sql db/setup/09_ui_port_tables.sql db/setup/15_signal_published_date.sql db/setup/21_fx_rate.sql db/setup/16_signal_rule_s2.sql db/setup/18_tender_notice_merge.sql db/setup/20_matchup_advantage_kind.sql db/setup/22_product_description_status.sql db/setup/23_signal_risk_v3.sql db/setup/25_leader_record_text.sql db/setup/26_competitor_short_details.sql db/setup/27_tender_translation.sql db/setup/30_evidence_dates.sql db/setup/31_user_activity.sql db/setup/32_activity_replay.sql; do
   if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_serving"; else echo "   skip $f (not committed in $REF)"; fi
 done
 # the usage log is not synced (each API logs into its own DB), so the review API's staging DB gets the schema here too
-f=db/setup/31_user_activity.sql
-if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f (staging)"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_staging"; fi
+for f in db/setup/31_user_activity.sql db/setup/32_activity_replay.sql; do
+  if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f (staging)"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_staging"; fi
+done
 for db in kssl_serving kssl_staging; do
   "${SSH[@]}" "$PSQL_VPS -d $db" <<'SQL'
 DO $$ DECLARE s text; BEGIN

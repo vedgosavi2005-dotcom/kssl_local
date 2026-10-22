@@ -18,12 +18,19 @@ What people do on the site, first-party, in our own database, Mixpanel / Hotjar 
 | `click` | a click on a button, link, tab, card or list row | its label (aria-label, title or text) | its data-id / href | |
 | `search` | typing pauses for 1.2 s in a text or search box | the box's label / placeholder | what was typed | |
 | `hover` | the pointer rests on a card or row for 0.8 s or more | the card's label | | the dwell |
+| `move` | the mouse moves (for the review site's session replay) | | | |
+| `scroll` | a page or panel scrolls (throttled to 300 ms, plus the final position) | the scrolled element ("doc" = the page) | | |
 
 Every event also has `pillar` and `view` (the page it happened on), `visitor_id` (a random id kept in that browser),
 `session_id` (one visit; a new one after 30 minutes idle), `client_ts`, `received_at`, the user agent and small `props`
-(element kind, window size, referrer host).
+(element kind, window size, referrer host). For the replay player: `page_view` props carry the full route hash, `click` props
+the click position (`x`, `y` as fractions of the window) and a short selector `sel`, `move` props a mouse path
+`pts = [[ms after client_ts, x, y], ...]` (a point per 100 ms, one event per 2 s), `scroll` props `top` (px) and `frac`.
+`user_id` is set once a login stores the user in the browser (`localStorage.kssl_user`); before that it is empty
+(`db/setup/32_activity_replay.sql`).
 
-**Privacy.** No login, no name, no IP address. The ids are random and live in the browser; clearing site data gives a
+**Privacy.** No IP address. Visits are anonymous until a login sets `user_id`; from then on the session-replay player
+on the review site can replay that user's visit (pages, clicks, typed searches, mouse path, scrolling). Tell users so. The ids are random and live in the browser; clearing site data gives a
 new visitor. A browser that sends Do Not Track is not logged. Events are batched every 5 seconds; a failed send is
 dropped, never retried into the page.
 
@@ -95,7 +102,8 @@ not deliver.
 
 - Volume: about 50-200 events per visit. A year of light client use is a few million rows; the indexes cover time,
   visit and type. To keep a window: `DELETE FROM activity.event WHERE received_at < now() - interval '13 months';`
-- Not tracked on purpose: mouse paths, scroll heatmaps and screen recordings (Hotjar-style replays). They need a far
-  larger payload and record what people read; add them only with a clear question to answer.
+- Mouse paths and scrolling are logged for the replay player (about 1 event per 2 s of movement). Screen recordings
+  (pixels, DOM snapshots) are not: the player re-drives the real UI from the route, clicks and positions instead.
+- While the replay player drives the page (`window.__ksslReplay` set), nothing is logged, and synthetic events never are.
 - To tag a control by name, give it `data-track="Approve all"`; to log hovers on a new kind of card, give it
   `data-track-hover`.
