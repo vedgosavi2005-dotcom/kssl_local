@@ -43,3 +43,4 @@ db/test_seed_full/KSSL_all_pillars_test_data*.txt
 
 # Vite dev server logs
 .vite-*.log
+.api-*.log

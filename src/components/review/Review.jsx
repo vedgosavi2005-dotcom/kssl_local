@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import "../../styles/review.css";
+import { ReplayPanel, ReplayPlayer } from "../replay/Replay";
 
 /* The review copy. Same app in Vite mode "review" (`npm run dev:review`, 127.0.0.1:5180) against
    the review backend (KSSL_VIEW=review, :8601), which reads the staging DB and sends a status per
@@ -32,7 +33,8 @@ export function onScreenKeys(root = document) {
 export function ReviewProvider({ initial, children }) {
   const [st, setSt] = useState(initial || {});
   const [busy, setBusy] = useState(false);
-  const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n, cols} | {kind: "setup"} | {kind: "list", title, note, items}
+  const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n, cols} | {kind: "setup"} | {kind: "list", title, note, items} | {kind: "replay"}
+  const [replay, setReplay] = useState(null); // {events, who}: the session replay being played
   if (!REVIEW) return children;
   const apply = (body) => {
     setSt(body.review || {});
@@ -96,7 +98,14 @@ export function ReviewProvider({ initial, children }) {
         <button type="button" onClick={() => setPanel({ kind: "setup" })}>
           Setup tables{pending ? ` · ${pending} to approve` : ""}
         </button>
+        <button type="button" onClick={() => setPanel({ kind: "replay" })} title="Play back what a user did on the site">
+          Session replay
+        </button>
       </div>
+      {panel?.kind === "replay" && (
+        <ReplayPanel onClose={() => setPanel(null)} onPlay={(events, who) => { setPanel(null); setReplay({ events, who }); }} />
+      )}
+      {replay && <ReplayPlayer events={replay.events} who={replay.who} onClose={() => setReplay(null)} />}
       {panel?.kind === "trace" && (
         <TraceDrawer {...panel} onOpen={(t, id) => setPanel({ kind: "trace", t, id })} onClose={() => setPanel(null)} />
       )}

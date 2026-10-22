@@ -324,3 +324,92 @@ def review_trace(table: str, key: str) -> dict[str, Any]:
             return json_value(review.trace(st, sv, table, key))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+# ---- session replay (owner 22 Oct): the review site plays back what a person did, from activity.event ----------------------
+# The live site's events are in the serving DB, the review site's in the staging DB (see /api/track); site picks which.
+REPLAY_USERS = [f"user{i}" for i in range(1, 6)]   # ponytail: the 5 login ids-to-be; renamed when the login lands
+REPLAY_MAX_EVENTS = 20000
+
+
+def _activity_cursor(site: str):
+    if site not in ("live", "review"):
+        raise HTTPException(status_code=400, detail="site is live or review")
+    dsn = review.serving_dsn() if site == "live" else review.staging_dsn()
+    conn = psycopg2.connect(dsn, connect_timeout=5)
+    conn.set_session(readonly=True)
+    return conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+def _who(user: str | None, visitor: str | None) -> tuple[str, list]:
+    """the WHERE part for one person: a login id (user_id, once the login exists) or an anonymous browser (visitor_id)"""
+    if user:
+        return "user_id = %s", [user]
+    if visitor and _uuid_or_none(visitor):
+        return "visitor_id = %s::uuid AND user_id IS NULL", [visitor]
+    raise HTTPException(status_code=400, detail="user or visitor is required")
+
+
+@app.get("/api/review/activity/people")
+def activity_people(site: str = "live") -> dict[str, Any]:
+    """The five users (login ids) and the anonymous browsers seen without a login, each with its event count and last visit."""
+    _review_only()
+    conn, cur = _activity_cursor(site)
+    try:
+        users = {u: {"id": u, "label": f"User {u[4:]}", "events": 0, "last": None} for u in REPLAY_USERS}
+        cur.execute("""SELECT user_id AS id, count(*) AS events, max(coalesce(client_ts, received_at)) AS last
+                       FROM activity.event WHERE user_id IS NOT NULL GROUP BY 1""")
+        for r in cur.fetchall():
+            users.setdefault(r["id"], {"id": r["id"], "label": r["id"]}).update(events=r["events"], last=r["last"])
+        cur.execute("""SELECT visitor_id::text AS id, count(*) AS events, count(DISTINCT session_id) AS sessions,
+                               min(coalesce(client_ts, received_at)) AS first, max(coalesce(client_ts, received_at)) AS last,
+                               max(user_agent) AS user_agent
+                       FROM activity.event WHERE user_id IS NULL GROUP BY 1 ORDER BY last DESC LIMIT 200""")
+        return json_value({"site": site, "users": list(users.values()), "visitors": cur.fetchall()})
+    finally:
+        conn.close()
+
+
+@app.get("/api/review/activity/sessions")
+def activity_sessions(site: str = "live", user: str | None = None, visitor: str | None = None,
+                      start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """One person's visits in a time window (ISO times; either end open): start, end, events, pages seen."""
+    _review_only()
+    conn, cur = _activity_cursor(site)
+    try:
+        where, args = _who(user, visitor)
+        if start:
+            where += " AND coalesce(client_ts, received_at) >= %s::timestamptz"
+            args.append(start)
+        if end:
+            where += " AND coalesce(client_ts, received_at) < %s::timestamptz"
+            args.append(end)
+        cur.execute(f"""SELECT session_id::text AS id, min(coalesce(client_ts, received_at)) AS start,
+                               max(coalesce(client_ts, received_at)) AS "end", count(*) AS events,
+                               count(*) FILTER (WHERE event_type = 'page_view') AS pages,
+                               count(*) FILTER (WHERE event_type = 'click') AS clicks,
+                               count(*) FILTER (WHERE event_type = 'search') AS searches
+                        FROM activity.event WHERE {where} GROUP BY 1 ORDER BY 2 DESC LIMIT 500""", args)
+        return json_value({"site": site, "sessions": cur.fetchall()})
+    except psycopg2.DataError as exc:
+        raise HTTPException(status_code=400, detail=f"bad time: {exc.pgerror or exc}") from None
+    finally:
+        conn.close()
+
+
+@app.get("/api/review/activity/events")
+def activity_events(site: str = "live", session: str = "") -> dict[str, Any]:
+    """Every event of one visit, in the order it happened: what the player plays."""
+    _review_only()
+    sid = _uuid_or_none(session)
+    if not sid:
+        raise HTTPException(status_code=400, detail="session (uuid) is required")
+    conn, cur = _activity_cursor(site)
+    try:
+        cur.execute("""SELECT event_id, coalesce(client_ts, received_at) AS ts, event_type AS type, pillar, view, target, value,
+                              duration_ms AS ms, props
+                       FROM activity.event WHERE session_id = %s::uuid
+                       ORDER BY coalesce(client_ts, received_at), event_id LIMIT %s""", (sid, REPLAY_MAX_EVENTS))
+        return json_value({"site": site, "session": sid, "events": cur.fetchall()})
+    finally:
+        conn.close()
