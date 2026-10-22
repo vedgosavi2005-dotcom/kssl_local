@@ -31,7 +31,7 @@ the click position (`x`, `y` as fractions of the window) and a short selector `s
 
 **Privacy.** No IP address. Visits are anonymous until a login sets `user_id`; from then on the session-replay player
 on the review site can replay that user's visit (pages, clicks, typed searches, mouse path, scrolling). Tell users so. The ids are random and live in the browser; clearing site data gives a
-new visitor. A browser that sends Do Not Track is not logged. Events are batched every 5 seconds; a failed send is
+new visitor. Every visit is logged, Do Not Track or not (owner 2026-10-23). Events are batched every 5 seconds; a failed send is
 dropped, never retried into the page.
 
 **Where it is stored.** Each API logs into the database it already uses: the live site into `kssl_serving`, the review

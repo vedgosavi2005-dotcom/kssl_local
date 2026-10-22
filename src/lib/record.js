@@ -3,7 +3,8 @@
    UI. The usage log (track.js) says WHAT was done; this says what the screen looked like. -> POST /api/track/rec ->
    activity.recording (db/setup/37_activity_recording.sql), under the same session id as the usage log (track.js sets
    window.__ksslSession on every event). Masked as the usage log is: passwords (and e-mail / phone boxes) never leave the
-   browser. Off on the review site, while the replay player drives the page, and with Do Not Track. */
+   browser. Off on the review site and while the replay player drives the page. Do Not Track is not honoured (owner 23 Oct:
+   every visit is logged and recorded). */
 import { record } from "rrweb";
 import { REVIEW_SITE } from "./sources.js";
 
@@ -69,8 +70,7 @@ function start() {
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
 }
 
-if (typeof window !== "undefined" && typeof document !== "undefined" && !REVIEW_SITE
-    && navigator.doNotTrack !== "1" && window.doNotTrack !== "1") {
+if (typeof window !== "undefined" && typeof document !== "undefined" && !REVIEW_SITE) {
   try {
     start();
   } catch (e) {

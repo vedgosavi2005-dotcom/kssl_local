@@ -1,7 +1,7 @@
 /* Usage log: page views (and time on each), clicks, searches, hovers on cards, and for the review site's session-replay
    player the mouse path and scrolling -> POST /api/track -> activity.event (db/setup/31_user_activity.sql, 32_activity_replay.sql;
    reading it: docs/ui_port/ACTIVITY_LOG.md). A random id per browser and per visit, no IP stored; user_id only once a login
-   puts it in localStorage "kssl_user". Off when the browser sends Do Not Track, and inert outside a browser (unit tests).
+   puts it in localStorage "kssl_user". Logged whether or not the browser sends Do Not Track (owner 23 Oct); inert outside a browser (unit tests).
    Imported once for its side effect (src/App.jsx). The server decides live vs review, never this file. While the replay
    player drives the page (window.__ksslReplay), nothing is logged, and synthetic (untrusted) events never are. */
 
@@ -275,7 +275,7 @@ function start() {
   if (route.pillar || route.view) pageView();      // otherwise the first route the app sets logs the first view
 }
 
-if (typeof window !== "undefined" && typeof document !== "undefined" && navigator.doNotTrack !== "1" && window.doNotTrack !== "1") {
+if (typeof window !== "undefined" && typeof document !== "undefined") {
   try {
     start();
   } catch (e) {
