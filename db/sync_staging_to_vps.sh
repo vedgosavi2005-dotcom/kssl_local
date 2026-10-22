@@ -9,6 +9,7 @@
 #   staging.review_decision          -- the VPS review site's own Reject decisions
 #   raw layer / bookkeeping          -- prompt inputs, never displayed (tender_raw alone is ~800 MB)
 set -euo pipefail
+MEDIA=1       # cleared below when the VPS already holds the same image set
 ENV_FILE="$(dirname "$0")/../.env"
 envval() { [ -f "$ENV_FILE" ] && sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 | tr -d "\"'\r"; }
 VPS_HOST="${KSSL_VPS_HOST:-$(envval KSSL_VPS_HOST)}"      # host and user live in the gitignored .env (the repo is public)
@@ -21,7 +22,7 @@ GRANTS="GRANT USAGE ON SCHEMA staging, staging_ui, media TO kssl_app;
         GRANT ALL ON ALL SEQUENCES IN SCHEMA staging, staging_ui, media TO kssl_app;"
 
 dump() {
-  docker exec kssl-pg pg_dump -U kssl -d kssl_staging -n staging -n staging_ui -n media \
+  docker exec kssl-pg pg_dump -U kssl -d kssl_staging -n staging -n staging_ui ${MEDIA:+-n media} \
       --clean --if-exists --no-owner --no-privileges "${args[@]}" \
     | sed -e '/^DROP SCHEMA /d' -e 's/^CREATE SCHEMA \(.*\);$/CREATE SCHEMA IF NOT EXISTS \1;/'
 }
@@ -35,7 +36,12 @@ if [[ "$TARGET" == local:* ]]; then
   docker exec kssl-pg psql -U kssl -d "$db" -Atc "select 'tables: ' || count(*) from pg_tables where schemaname in ('staging','staging_ui','media')"
 else
   [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] || { echo "set KSSL_VPS_HOST and KSSL_VPS_SSH_USER in .env"; exit 1; }
-  SSH=(ssh -i "$HOME/.ssh/kssl_vps" -o ConnectTimeout=20 -o BatchMode=yes "$VPS_USER@$VPS_HOST")
+  SSH=(ssh -i "$HOME/.ssh/kssl_vps" -o ConnectTimeout=20 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$VPS_USER@$VPS_HOST")
+  # media (~400 MB of images) goes only when the VPS image set differs: a full copy over a slow link was cut twice (2026-10-22)
+  IMGQ="select coalesce(md5(string_agg(image_id::text, ',' order by image_id)), 'none') from media.image"
+  here=$(docker exec kssl-pg psql -U kssl -d kssl_staging -Atc "$IMGQ")
+  there=$("${SSH[@]}" "docker exec kssl2-db psql -U kssl_admin -d kssl_staging -Atc \"$IMGQ\"" 2>/dev/null || echo missing)
+  if [ "$here" = "$there" ]; then MEDIA=; echo "   media: same image set on both sides, not sent"; else echo "   media: image set differs, sending it"; fi
   dump | gzip | "${SSH[@]}" 'gunzip | docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -1 -U kssl_admin -d kssl_staging >/dev/null'
   echo "$GRANTS" | "${SSH[@]}" 'docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -U kssl_admin -d kssl_staging'
   "${SSH[@]}" "docker exec kssl2-db psql -U kssl_admin -d kssl_staging -Atc \"select 'VPS staging tables: ' || count(*) from pg_tables where schemaname in ('staging','staging_ui','media')\""
