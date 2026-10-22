@@ -1,0 +1,31 @@
+# Parallax Analyst beside the product's own stack (deploy/docker-compose.yml, project "kssl2").
+# It joins that stack's network and reads what the live site reads: the live database
+# (kssl_serving), the product API (api:8600) and its web server (web:5178, which answers
+# /api/img and /api/pulse). Nothing in the product's stack changes. Start the product first, then,
+# from this folder:   docker compose -p kssl2-parallax up -d --build
+name: kssl2-parallax
+
+services:
+  agent:
+    build: { context: ../.., dockerfile: parallax-agent/deploy/Dockerfile }
+    image: kssl2-parallax-agent
+    restart: unless-stopped
+    env_file: ../.env           # the model key and budget (LLM_PROVIDER, OPENROUTER_API_KEY, AGENT_BUDGET_USD)
+    environment:
+      # the live database. The service creates the read-only `analytics` views and the
+      # parallax_agent role in it on startup, so this login needs CREATE on the database and
+      # CREATEROLE (the stack's admin user; see README.md here for a narrower setup).
+      KSSL_DSN: host=db port=5432 dbname=kssl_serving user=${PARALLAX_DB_USER:-kssl_admin} password=${PARALLAX_DB_PASSWORD:?set PARALLAX_DB_PASSWORD in deploy/.env}
+      PRODUCT_API: http://api:8600
+      PRODUCT_WEB: http://web:5178
+      # forward only what the live pages call; the review, news-refresh and manifest routes stay unreachable
+      PRODUCT_API_ALLOW: /api/dataset,/api/img,/api/pulse,/api/health
+    volumes:
+      - ./state:/.local         # the spend baseline: the budget cap survives rebuilds
+    ports:
+      - "${PARALLAX_PORT:-8101}:8098"
+
+networks:
+  default:
+    external: true
+    name: kssl2_default

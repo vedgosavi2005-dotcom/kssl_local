@@ -1,0 +1,594 @@
+{
+  "_about": "Everything Parallax Analyst knows about the product version it is attached to (KSSL_Deploy v2). The client is data: {client_name}, {client_short} and {client_sector} are filled from the database, and the companies come from the data (\"companies\": \"from_data\"). To port to a new version, edit this folder (see ../PORTING.md) and run ../check_product.py.",
+  "product": {
+    "name": "137Parallax",
+    "version": "KSSL_Deploy v2 (ScriptXDemon/KSSL)"
+  },
+  "client": {
+    "name": "{client_name}",
+    "short_name": "{client_short}",
+    "brief": "137Parallax is a competitive-intelligence platform built for {client_name} ({client_sector}, {client_country}). Its users are {client_short}'s commercial and strategy team. The platform has three pillars: Competitive (rival signals, competitor profiles, competitor movements, products, product evaluation, partnerships, competitor projects, geo footprint, patents), Market (top opportunities, tenders, global requirements, market intelligence and past awards) and Technology (technology developments and innovations in the sector).",
+    "domain": "{client_sector}",
+    "market": "{client_sector} market",
+    "coverage": "{client_short}'s competitive, market and technology intelligence",
+    "scope": "{client_name}'s competitors and their products, specifications, partnerships, sites, projects, patents, leadership and news; tenders, global requirements and contract awards; technology developments in the {client_sector} sector",
+    "page_content": "company profiles (company details, leadership, news), competitor movements (dated moves with what they mean and a read by view), product portfolios with specifications, features and programs, product evaluations (matchup verdicts and analytics), partner and alliance networks, competitor projects, geo footprint by country, patent portfolios, tender assessments (requirements, fit, competitor fit, eligibility, expected revenue, next steps), top opportunities and next moves, global requirements, intelligence signals, technology developments and past awards",
+    "answer_examples": "a company's leadership, what a competitor's latest move means for {client_short}, a product's specifications, what a rival is building or pursuing (its projects), its patent portfolio, a tender's fit and next steps, a product evaluation verdict, what a signal means for {client_short}, a technology development",
+    "single_item_kinds": "one company, product, tender, matchup, project, patent portfolio, signal or technology",
+    "data_summary": "{competitors} tracked competitors; products ({products}) with specifications, head-to-head matchups ({matchups}), tenders ({tenders}) with fit, competitor fit and eligibility, global requirements and opportunities, contract awards ({awards}), partnerships ({partnerships}), footprint rows ({sites}), competitor projects ({projects}), patent filings ({patents}), leaders ({leaders}), news and competitor movements ({news}), intelligence signals ({signals}) and technology developments ({innovations}).",
+    "data_limits": "Known gaps in the data: there is no market-share or sales-volume data. Patent filings are the tracked rivals' filings, not a full IP census. Most tender notices publish no value, and revenue figures for {client_short} are analyst estimates. Amounts are stored in their own currency; INR figures exist only where an official exchange rate is stored.",
+    "data_rules": [
+      "About competitors: exclude the client (NOT is_client). Comparing {client_short} with rivals: include the client and keep is_client or the company name so it can be highlighted.",
+      "Filter text with the exact values listed in the catalogue, or ILIKE. Ids are text: compare them as text.",
+      "Money: amounts are in their own currency (value_currency / currency). Sum per currency and never across currencies; use value_inr only where it is not NULL, and say it uses the stored official rate.",
+      "Specifications are rows (product_spec, matchup_spec): match spec labels with ILIKE, and compare like with like (same category and subcategory)."
+    ],
+    "gap_rule": "When asked for market share, build the best proxy the data supports (presence by country, partnerships, products per category, tender competitor fit, award winners) and say it is a proxy.",
+    "guard_topics": "their products, specifications and categories; tenders, global requirements, contract awards, buyers and segments; partnerships, sites, projects, patents and leadership; news, competitor movements and intelligence signals; technology developments in the {client_sector} sector; the markets {client_short} sells into",
+    "off_topic_suggestions": [
+      "Which competitors are named most often as able to bid on open tenders?",
+      "Which rivals file the most patents, and in which technology areas?"
+    ],
+    "refusal": "I can't help with that one. Ask me about competitors, products, tenders, patents or awards."
+  },
+  "companies": "from_data",
+  "database": {
+    "schema_sql": "analytics.sql",
+    "source_schema": "serving",
+    "catalog_order": [
+      "company",
+      "company_alias",
+      "category",
+      "product",
+      "product_spec",
+      "matchup",
+      "matchup_spec",
+      "tender",
+      "tender_competitor",
+      "tender_product_match",
+      "award",
+      "partnership",
+      "site",
+      "project",
+      "patent",
+      "leader",
+      "swot",
+      "news",
+      "signal",
+      "innovation",
+      "tech_area"
+    ],
+    "companies_sql": "SELECT comp_id, name, is_client, stance FROM company ORDER BY is_client DESC, sort_order",
+    "id_columns": "comp_id, product_id, tender_id and title, matchup_id, signal_id, area_id",
+    "facts": {
+      "client_name": "SELECT name FROM company WHERE is_client LIMIT 1",
+      "client_short": "SELECT coalesce(short_name, name) FROM company WHERE is_client LIMIT 1",
+      "client_sector": "SELECT coalesce(sectors, 'competitive intelligence') FROM company WHERE is_client LIMIT 1",
+      "client_country": "SELECT coalesce(home_country, '') FROM company WHERE is_client LIMIT 1",
+      "competitors": "SELECT count(*) FROM company WHERE NOT is_client",
+      "products": "SELECT count(*) FROM product",
+      "matchups": "SELECT count(*) FROM matchup",
+      "tenders": "SELECT count(*) FROM tender",
+      "awards": "SELECT count(*) FROM award",
+      "partnerships": "SELECT count(*) FROM partnership",
+      "sites": "SELECT count(*) FROM site",
+      "projects": "SELECT count(*) FROM project",
+      "patents": "SELECT count(*) FROM patent",
+      "leaders": "SELECT count(*) FROM leader",
+      "news": "SELECT count(*) FROM news",
+      "signals": "SELECT count(*) FROM signal",
+      "innovations": "SELECT count(*) FROM innovation",
+      "first_rival": "SELECT name FROM company WHERE NOT is_client ORDER BY sort_order LIMIT 1"
+    }
+  },
+  "product_api": {
+    "dataset": "/api/dataset",
+    "required_globals": {
+      "competitors": "object",
+      "competitorNews": "object",
+      "tenders": "array",
+      "matchups": "object",
+      "details": "object",
+      "competitiveCards": "array",
+      "marketCards": "array",
+      "techCards": "array",
+      "innovations": "object",
+      "techAreaMeta": "object",
+      "techCats": "array",
+      "awards": "array",
+      "geoData": "object",
+      "KSSL_PARTNERS": "array",
+      "client": "object",
+      "PATENTS": "object",
+      "projects": "array",
+      "globalRequirements": "array",
+      "topOpportunities": "object",
+      "sectionVisibility": "object"
+    },
+    "news": "/api/pulse",
+    "news_block": null,
+    "web_routes": [
+      "/api/img",
+      "/api/pulse"
+    ]
+  },
+  "routes": {
+    "hash": "#p={pillar}&v={view}",
+    "pillar_param": "p",
+    "view_param": "v",
+    "default": {
+      "pillar": "competitive",
+      "view": "overview"
+    },
+    "pillar_labels": {
+      "competitive": "Competitive",
+      "market": "Market",
+      "technology": "Technology"
+    },
+    "report_sections": [
+      "outlook",
+      "active",
+      "category",
+      "awarded",
+      "closed"
+    ]
+  },
+  "pages": [
+    {
+      "pillar": "competitive",
+      "view": "overview",
+      "label": "Competitive Intelligence: the rival signal feed; a card opens its detail panel",
+      "payload": {
+        "cardId": "signal_id of a competitive-lane signal (analytics.signal)"
+      },
+      "blocks": [
+        "At a glance",
+        "What the article says",
+        "Key points",
+        "Timeline",
+        "Product news",
+        "Source"
+      ],
+      "feed_lane": "competitive"
+    },
+    {
+      "pillar": "competitive",
+      "view": "profile",
+      "label": "Competitor Profile: one company's details, leadership and news",
+      "payload": {
+        "cid": "comp_id"
+      },
+      "blocks": [
+        "Company Details",
+        "Leadership",
+        "Company Latest News",
+        "News"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "threat-analysis",
+      "label": "Competitor Movement: each rival's dated moves, what changed, the story so far, what it means for the client and a read by view",
+      "payload": {},
+      "blocks": [
+        "Competitors",
+        "<a company name>",
+        "At a glance",
+        "What happened",
+        "What changed since the previous move",
+        "Story so far",
+        "Deeper analysis · by view",
+        "Source"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "products",
+      "label": "Products: a company's catalogue; a product opens with description, specifications, features, programs and news",
+      "payload": {
+        "cid": "comp_id",
+        "productName": "product name to open (optional)"
+      },
+      "blocks": [
+        "<company> Product Portfolio",
+        "Description",
+        "Technical specifications",
+        "Features and capabilities",
+        "Programs",
+        "Product comparison",
+        "News"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "positioning",
+      "label": "Product Evaluation: head-to-head matchups, rival product vs the client's, with verdict, analytics and spec comparison",
+      "payload": {
+        "matchupId": "matchup_id"
+      },
+      "blocks": [
+        "Competitor Products",
+        "Compare Any Two Products",
+        "Competitor analytics",
+        "Spec Comparison"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "partnerships",
+      "label": "Partnership: each competitor's alliance network (suppliers, licences, JVs, technology partners) and overlaps with the client",
+      "payload": {},
+      "blocks": [
+        "Competitors",
+        "<a company name>",
+        "Alliance network"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "projects",
+      "label": "Projects: what each competitor is building, supplying or pursuing, with stage, timeline and assessment",
+      "payload": {},
+      "blocks": [
+        "Competitors",
+        "<a company or project name>",
+        "At a glance",
+        "What the project is",
+        "Current stage",
+        "Timeline",
+        "Strategic assessment"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "geo",
+      "label": "Geo Footprint: presence by company and country on a map, with overlaps, anomalies and white space",
+      "payload": {},
+      "blocks": [
+        "Footprint Lookup",
+        "<a country name>"
+      ]
+    },
+    {
+      "pillar": "competitive",
+      "view": "patents-comp",
+      "label": "Patent: each rival's patent portfolio, and filings by technology field",
+      "payload": {
+        "cid": "comp_id"
+      },
+      "blocks": [
+        "Competitors",
+        "<company> · patent portfolio",
+        "Technology fields"
+      ]
+    },
+    {
+      "pillar": "market",
+      "view": "m-overview",
+      "label": "Top opportunity: top tenders, projects to win before they tender and next moves; a market signal opens its detail panel",
+      "payload": {
+        "cardId": "signal_id of a market-lane signal (analytics.signal)"
+      },
+      "blocks": [
+        "Top tenders",
+        "Projects to win before they tender",
+        "Next moves",
+        "At a glance",
+        "Key points"
+      ],
+      "feed_lane": "market"
+    },
+    {
+      "pillar": "market",
+      "view": "tender",
+      "label": "Tenders: the tender list with each tender's fit assessment",
+      "payload": {
+        "tenderTitle": "the tender's title (analytics.tender.title)",
+        "cat": "filter the list to a category (analytics.tender.segment), optional",
+        "country": "filter the list to a country, optional"
+      },
+      "blocks": [
+        "Filter",
+        "Tender Assessment",
+        "Tender details",
+        "What the tender requires",
+        "Expected revenue (estimate)",
+        "Competitor fit",
+        "Source"
+      ]
+    },
+    {
+      "pillar": "market",
+      "view": "global-requirement",
+      "label": "Global Requirements: requirements and demand signals worldwide",
+      "payload": {},
+      "blocks": [
+        "<a requirement title>"
+      ]
+    },
+    {
+      "pillar": "market",
+      "view": "m-report",
+      "label": "Market Intelligence: market outlook (activity by segment, who wins, repeat buyers, drivers), active tenders, by category, awarded (past awards), closed",
+      "payload": {
+        "section": "outlook | active | category | awarded | closed"
+      },
+      "blocks": [
+        "Market outlook",
+        "Activity by segment",
+        "Who wins",
+        "Repeat buyers",
+        "What is driving it",
+        "Past awards"
+      ]
+    },
+    {
+      "pillar": "technology",
+      "view": "t-overview",
+      "label": "Technology Knowledge: the technology signal feed",
+      "payload": {
+        "cardId": "signal_id of a technology-lane signal (analytics.signal)"
+      },
+      "blocks": [
+        "At a glance",
+        "What the article says",
+        "Key points"
+      ],
+      "feed_lane": "technology"
+    },
+    {
+      "pillar": "technology",
+      "view": "innovation",
+      "label": "Innovation Pipeline: developments by technology area",
+      "payload": {
+        "catId": "area_id (analytics.innovation / tech_area)",
+        "title": "development title to open (optional)"
+      },
+      "blocks": [
+        "<a development title>",
+        "Innovation Detail",
+        "What's new",
+        "Background · what it is",
+        "Status"
+      ]
+    }
+  ],
+  "click_targets": [
+    "company -> competitive / profile, payload_key cid, field comp_id",
+    "company products -> competitive / products, payload_key cid, field comp_id",
+    "company patents -> competitive / patents-comp, payload_key cid, field comp_id",
+    "tender -> market / tender, payload_key tenderTitle, field title",
+    "matchup -> competitive / positioning, payload_key matchupId, field matchup_id"
+  ],
+  "tools": {
+    "search_covers": "company details, leadership, news; competitor movements; products with specifications and programs; product evaluations (matchup verdicts); partner networks; competitor projects; geo footprint; patent portfolios; tender assessments; top opportunities and next moves; global requirements; intelligence signals; technology developments; past awards",
+    "search_examples": "'{first_rival} leadership' or a tender's title",
+    "company_example": "{first_rival}",
+    "focus_examples": "'Leadership', 'Company Details', 'Tender Assessment', 'Top tenders', 'Past awards', a tender title or a product name"
+  },
+  "frontend": {
+    "dom": {
+      "root": "#root",
+      "topbar": "#root > .topbar",
+      "body": "#root > .shell",
+      "rail": "#root .rail",
+      "chrome": [
+        "#root > .topbar",
+        "#root > .subhead",
+        "#root > .metrics",
+        "#root > .shell"
+      ],
+      "assistant_button": null,
+      "panel_box": [],
+      "panel_input": [],
+      "panel_send": [],
+      "panel_chip": [],
+      "heading": {
+        "uppercase": true,
+        "font_family_match": "mono",
+        "min_letter_spacing_px": 1.5,
+        "never": [
+          "TH",
+          "BUTTON"
+        ]
+      }
+    },
+    "app_state": {
+      "hook_global": "__parallaxApp",
+      "navigate_fn": "jumpTo",
+      "route_keys": [
+        "pillar",
+        "view"
+      ],
+      "selection": "chatCtx.selection",
+      "view_title": "chatCtx.view",
+      "report": "headerReport",
+      "data_context_has": [
+        "data",
+        "viewMeta"
+      ],
+      "view_meta": "viewMeta"
+    },
+    "theme": {
+      "tokens": {
+        "--pa-bg": "var(--d-bg, #161618)",
+        "--pa-bg-1": "var(--d-bg-1, #1c1c1f)",
+        "--pa-bg-2": "var(--d-bg-2, #212125)",
+        "--pa-bg-3": "var(--d-bg-3, #2a2a2f)",
+        "--pa-line": "var(--d-line, #323237)",
+        "--pa-line-2": "var(--d-line-2, #46464d)",
+        "--pa-txt": "var(--d-txt, #f5f5f4)",
+        "--pa-txt-2": "var(--d-txt-2, #bdbdbb)",
+        "--pa-txt-3": "var(--d-txt-3, #908f8c)",
+        "--pa-txt-4": "var(--d-txt-4, #65656a)",
+        "--pa-read": "var(--d-read, #d8d8d6)",
+        "--pa-fav": "var(--ok, #1f6e45)",
+        "--pa-fav-badge": "var(--ok-badge, #3fa86a)",
+        "--pa-watch": "var(--watch-badge, #e0a020)",
+        "--pa-threat": "var(--threat-badge, #f0593c)",
+        "--pa-sans": "var(--sans, \"Archivo\", system-ui, sans-serif)",
+        "--pa-mono": "var(--mono, \"IBM Plex Mono\", ui-monospace, monospace)"
+      },
+      "palette": [
+        "#3B82F6",
+        "#D97706",
+        "#0891B2",
+        "#DC2626",
+        "#8B5CF6",
+        "#EA580C",
+        "#059669",
+        "#EC4899",
+        "#65A30D"
+      ],
+      "other": "#94A3B8",
+      "surface": "#161618",
+      "panel": "#1c1c1f",
+      "muted_mark": "#46464d",
+      "sequential": [
+        "#1e2a3d",
+        "#1d3d6e",
+        "#22509a",
+        "#2c64c4",
+        "#3B82F6",
+        "#6aa1f8",
+        "#9fc2fa"
+      ],
+      "ink": {
+        "primary": "#f5f5f4",
+        "secondary": "#bdbdbb",
+        "muted": "#908f8c",
+        "faint": "#65656a",
+        "grid": "#2a2a2f",
+        "axis": "#46464d",
+        "line": "#323237"
+      },
+      "font_sans": "Archivo, system-ui, sans-serif",
+      "font_mono": "'IBM Plex Mono', ui-monospace, monospace"
+    },
+    "tagline": "Competitive, market and technology intelligence",
+    "welcome": "Ask about competitors, products and specifications, tenders, partnerships, projects, patents or technology. I query the platform's data, build charts on the canvas and can open any page for you.",
+    "general_suggestions": [
+      "Which competitor is the biggest threat to {client_short}, and why?",
+      "Which open tenders are the best fit for {client_short}?",
+      "Which rivals file the most patents, and in which technology areas?"
+    ],
+    "page_suggestions": {
+      "overview": {
+        "default": [
+          "What are the three biggest competitive threats right now, and why?",
+          "Which rivals moved most in the last 30 days?"
+        ]
+      },
+      "profile": {
+        "with_selection": [
+          "How big a threat is {name} to {client_short}, and why?",
+          "Who leads {name}?",
+          "What is {name} building or pursuing right now?",
+          "What patents has {name} filed?"
+        ],
+        "default": [
+          "Which competitor is the biggest threat to {client_short}, and why?"
+        ]
+      },
+      "threat-analysis": {
+        "default": [
+          "Which rival move this month matters most for {client_short}, and why?",
+          "Summarise the latest moves by competitor"
+        ]
+      },
+      "products": {
+        "with_selection": [
+          "How do {name}'s products compare with {client_short}'s on specifications?"
+        ],
+        "default": [
+          "Where do rival products beat {client_short}'s on specifications?"
+        ]
+      },
+      "positioning": {
+        "default": [
+          "Where do rivals beat {client_short}'s products most often?",
+          "Which matchups have {client_short} ahead?"
+        ]
+      },
+      "partnerships": {
+        "default": [
+          "Which rivals share suppliers, and what does that mean for {client_short}?",
+          "Group rival partnerships by strategic purpose"
+        ]
+      },
+      "projects": {
+        "default": [
+          "Which competitor projects should worry {client_short} most?",
+          "What are rivals building in export markets?"
+        ]
+      },
+      "geo": {
+        "default": [
+          "Where do rivals have the strongest presence by country?",
+          "Where does {client_short} overlap with rivals?"
+        ]
+      },
+      "patents-comp": {
+        "with_selection": [
+          "Which technology areas does {name} file patents in?"
+        ],
+        "default": [
+          "Which rivals file the most patents, and in which technology areas?"
+        ]
+      },
+      "m-overview": {
+        "default": [
+          "Which tenders should {client_short} act on now?",
+          "What are the next moves this week?"
+        ]
+      },
+      "tender": {
+        "with_selection": [
+          "Is this tender worth bidding on for {client_short}?",
+          "Who else could win this tender?"
+        ],
+        "default": [
+          "Which open tenders are the best fit for {client_short}?",
+          "Which tenders close in the next 30 days?"
+        ]
+      },
+      "global-requirement": {
+        "default": [
+          "Which global requirements fit {client_short} best?"
+        ]
+      },
+      "m-report": {
+        "default": [
+          "Who wins the most contract awards, and in which segments?",
+          "Break down active tenders by category and country"
+        ]
+      },
+      "t-overview": {
+        "default": [
+          "Where is {client_short} behind on technology?"
+        ]
+      },
+      "innovation": {
+        "default": [
+          "Where is {client_short} behind on technology, and who leads?"
+        ]
+      }
+    },
+    "launcher": {
+      "anchor": null,
+      "label": "Ask Parallax",
+      "gap_px": 8
+    }
+  },
+  "source_checks": {
+    "route_file": "src/lib/route.js",
+    "route_view_regex": "view: \"([a-z0-9-]+)\"",
+    "views_not_mapped": [],
+    "app_state_file": "src/state/AppState.jsx",
+    "pages_dir": "src",
+    "palette_file": "src/lib/marketOverview.js",
+    "theme_file": "src/styles/theme.css",
+    "dist_dir": "parallax-agent/.local/product-web/dist",
+    "backend_entry": "backend/app.py"
+  }
+}

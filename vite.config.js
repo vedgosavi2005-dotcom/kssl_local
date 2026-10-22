@@ -5,6 +5,7 @@ import { publicImageUrl } from "./src/lib/imgGuard.js";
 
 const apiTarget = process.env.KSSL_API_TARGET || "http://127.0.0.1:8600";
 const reviewApiTarget = process.env.KSSL_API_TARGET || "http://127.0.0.1:8601";
+const agentTarget = process.env.KSSL_AGENT_TARGET || "http://127.0.0.1:8298";   // Ask Parallax service (parallax-agent/)
 
 /* KSSL_Deploy frontend. Dev proxies /api to the FastAPI backend on :8600;
    the production build fetches /api relative to its own origin, so any static
@@ -104,6 +105,10 @@ export default defineConfig(({ mode }) => {
     host: review ? "127.0.0.1" : true,
     strictPort: true,
     proxy: {
+      /* Ask Parallax (parallax-agent/): its chat API and widget files, from the agent service (default :8298).
+         Listed before "/api" so the more specific prefix wins. */
+      "/api/agent": { target: agentTarget, changeOrigin: true },
+      "/parallax-agent": { target: agentTarget, changeOrigin: true },
       "/api": {
         target: review ? reviewApiTarget : apiTarget,
         changeOrigin: true,

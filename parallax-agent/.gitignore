@@ -1,0 +1,9 @@
+.env
+.local/
+node_modules/
+__pycache__/
+service/static/
+deploy/.env
+deploy/state/
+tests/REPORT*.md
+tests/report.json

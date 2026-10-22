@@ -1,0 +1,10 @@
+# context is the repo root: send only what the image needs
+**/node_modules
+**/.local
+**/__pycache__
+dist
+dist-review
+.git
+media
+.cache
+parallax-agent/.env

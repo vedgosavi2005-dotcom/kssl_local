@@ -1,0 +1,16 @@
+--- a/src/state/AppState.jsx
++++ b/src/state/AppState.jsx
+@@ -192,6 +192,13 @@
+      searchQuery, headerReport],
+   );
+ 
++  /* Optional integration point for add-ons such as the Parallax Analyst chat
++     (parallax-agent/). Publishes this provider's value; nothing in the app reads it,
++     so the app behaves the same with or without an add-on installed. */
++  useEffect(() => {
++    window.__parallaxApp = { version: 1, state: value };
++  }, [value]);
++
+   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
+ }
+ 
