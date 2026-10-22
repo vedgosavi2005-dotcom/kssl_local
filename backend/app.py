@@ -276,7 +276,7 @@ def review_table(schema: str, table: str, action: str) -> dict[str, Any]:
 
 # ---- usage log (db/setup/31_user_activity.sql, docs/ui_port/ACTIVITY_LOG.md): written by src/lib/track.js ----
 
-TRACK_TYPES = {"page_view", "leave", "click", "search", "hover", "move", "scroll"}   # move / scroll: review session replay
+TRACK_TYPES = {"page_view", "leave", "click", "search", "hover", "move", "scroll", "login", "logout"}   # move / scroll: replay; login / logout: login sessions (36)
 TRACK_MAX = 100          # events per batch (the client flushes every few seconds)
 TRACK_PROPS_MAX = 2000   # chars of props: a mouse path of ~40 points fits
 
@@ -496,3 +496,33 @@ def pipeline_journey(table: str, id: str) -> dict[str, Any]:  # noqa: A002 -- th
 def pipeline_search(q: str) -> dict[str, Any]:
     """Records by 'table:id', by a source url, or by title text."""
     return {"q": q, "results": _pipeline("search", q)}
+
+
+# ---- usage analytics (review site only): one person's day, and a page's click heat map (backend/activity_analytics.py) ------
+
+def _analytics(fn, site, *args):
+    _review_only()
+    from backend import activity_analytics
+    conn, cur = _activity_cursor(site)
+    try:
+        return json_value(getattr(activity_analytics, fn)(cur, *args))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except psycopg2.DataError as exc:
+        raise HTTPException(status_code=400, detail=f"bad input: {exc.pgerror or exc}") from None
+    finally:
+        conn.close()
+
+
+@app.get("/api/review/analytics/day")
+def analytics_day(site: str = "live", user: str | None = None, visitor: str | None = None,
+                  start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """One person's sessions, pages, searches, clicks (top / dead / rage), hovers and activity by hour in a time window."""
+    return _analytics("day", site, user, visitor, start, end)
+
+
+@app.get("/api/review/analytics/heatmap")
+def analytics_heatmap(view: str, site: str = "live", user: str | None = None, visitor: str | None = None,
+                      start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """Click points (window fractions) and scroll depth on one view; everyone when no user / visitor is given."""
+    return _analytics("heatmap", site, view, user, visitor, start, end)

@@ -53,6 +53,7 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/35_glance_who_wider.sql      # glance_who up to 80 characters (co-winners)
 "${PSQL[@]}" -d "$STG" < db/setup/31_user_activity.sql         # activity.event: review-site usage log (not synced, not reviewed)
 "${PSQL[@]}" -d "$STG" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
+"${PSQL[@]}" -d "$STG" < db/setup/36_activity_sessions.sql     # activity.event: login / logout, v_login_sessions
 "${PSQL[@]}" -d "$STG" < db/setup/33_pipeline_log.sql          # ops.*: pipeline log (runs, steps, every row written, script notes)
 "${PSQL[@]}" -d "$STG" < db/setup/34_pipeline_history.sql      # ops.step_history: live steps + steps reconstructed from table timestamps
 build "$SRV" db/setup/04_serving_db.sql
@@ -73,6 +74,7 @@ build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/35_glance_who_wider.sql      # glance_who up to 80 characters (co-winners)
 "${PSQL[@]}" -d "$SRV" < db/setup/31_user_activity.sql         # activity.event: live-site usage log (outside serving/ui: no approve guard)
 "${PSQL[@]}" -d "$SRV" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
+"${PSQL[@]}" -d "$SRV" < db/setup/36_activity_sessions.sql     # activity.event: login / logout, v_login_sessions
 for d in "$STG" "$SRV"; do
     "${PSQL[@]}" -d "$d" -At -c "SELECT '$d: ' || string_agg(nspname || '=' || n, ' ') FROM (SELECT nspname, count(*) n FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE relkind = 'r' AND nspname IN ('ui','serving','staging','staging_ui') GROUP BY nspname ORDER BY nspname) t"
 done

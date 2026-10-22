@@ -13,6 +13,8 @@ const MOVE_EVERY_MS = 100;             // mouse path: one point per 100 ms at mo
 const MOVE_SPAN_MS = 2000;             // ... one 'move' event per ~2 s of movement
 const MOVE_MAX_PTS = 40;               // ... or 40 points, whichever first (stays under the server's props cap)
 const SCROLL_EVERY_MS = 300;           // scrolling: one 'scroll' per 300 ms, plus the final position
+const LOGIN_IDLE_MS = 2 * 60 * 60 * 1000;   // a login session ends after 2 hours without activity (auto logout)
+const TOUCH_EVERY_MS = 30 * 1000;      // "last active" is written at most every 30 s
 const CLICKABLE = "a,button,[role=button],[role=tab],select,.alert,.tcard,.pat-li,.cm-title,[data-track]";
 const HOVERABLE = ".alert,.tcard,.pat-li,.proj-row,.pg-partner-roster-card,[data-track-hover]";
 
@@ -62,6 +64,18 @@ export function selOf(el) {
 
 const r3 = (v) => Math.round(v * 1000) / 1000;
 
+/* localStorage get / set / remove that never throws (private mode, blocked storage) */
+function ls(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch (e) {
+    /* storage blocked */
+  }
+  return null;
+}
+
 function start() {
   const visitor = stored(localStorage, "kssl_visitor", uuid);
   const user = () => {
@@ -73,8 +87,11 @@ function start() {
   };
   let session = null;
   let lastAt = 0;
+  // a LOGIN SESSION (owner 2026-10-22): from login to logout or to 2 hours idle, shared by the browser's tabs
+  let loginSession = ls("kssl_login_session");
   const sessionId = () => {
     const now = Date.now();
+    if (loginSession && user()) return loginSession;
     try {
       const s = JSON.parse(sessionStorage.getItem("kssl_visit") || "null");
       session = s && now - s.at < IDLE_MS ? s.id : uuid();
@@ -90,8 +107,17 @@ function start() {
   let route = routeOf(location.hash);
   let viewSince = Date.now();
   const replaying = () => !!window.__ksslReplay;
+  let touched = 0;
+  const touch = () => {                          // the user did something: keep the login session alive
+    const now = Date.now();
+    if (now - touched >= TOUCH_EVERY_MS) {
+      touched = now;
+      ls("kssl_last_active", String(now));
+    }
+  };
   const push = (type, extra) => {
     if (replaying()) return;                     // the player is driving the page: not activity
+    if (type !== "logout" && type !== "leave") touch();
     queue.push({ type, visitor, session: sessionId(), user: user(), ts: new Date().toISOString(), ...route, ...extra });
     if (queue.length >= 90) flush();
   };
@@ -128,7 +154,12 @@ function start() {
   document.addEventListener("click", (e) => {
     if (!e.isTrusted) return;
     const el = e.target && e.target.closest && e.target.closest(CLICKABLE);
-    if (!el) return;
+    if (!el) {                                   // a "dead" click: on something that does nothing (a sign of confusion)
+      const t = e.target && e.target.nodeType === 1 ? e.target : null;
+      const lab = t ? labelOf(t) : null;         // a big container's text is not a label: keep short ones only, sel says where
+      push("click", { target: lab && lab.length <= 60 ? lab : null, props: { dead: true, sel: selOf(t), x: r3(e.clientX / innerWidth), y: r3(e.clientY / innerHeight) } });
+      return;
+    }
     push("click", { target: labelOf(el), value: el.getAttribute("data-id") || el.getAttribute("href") || null,
                     props: { kind: el.tagName.toLowerCase() + (el.classList[0] ? "." + el.classList[0] : ""),
                              sel: selOf(el), x: r3(e.clientX / innerWidth), y: r3(e.clientY / innerHeight) } });
@@ -138,7 +169,8 @@ function start() {
   document.addEventListener("input", (e) => {
     if (!e.isTrusted) return;
     const el = e.target;
-    if (!el || el.tagName !== "INPUT" || !/^(text|search)$/i.test(el.type || "text")) return;
+    const textBox = el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && /^(text|search)$/i.test(el.type || "text")));
+    if (!textBox || /password/i.test(el.type || "") || el.autocomplete === "current-password") return;
     clearTimeout(typing);
     typing = setTimeout(() => {
       const v = String(el.value || "").trim();
@@ -207,6 +239,37 @@ function start() {
   setInterval(flush, FLUSH_MS);
   addEventListener("pagehide", () => { endPath(); if (route.pillar || route.view) leave(); flush(true); });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { endPath(); flush(true); } });
+  // login sessions: start on a fresh login, close on logout (the app reloads without a user) or after 2 hours idle
+  const endSession = (reason, at) => {
+    if (!loginSession || ls("kssl_login_session") !== loginSession) return false;   // another tab closed it already
+    ls("kssl_login_session", null);
+    push("logout", { session: loginSession, user: ls("kssl_login_user") || user(), ts: new Date(at || Date.now()).toISOString(),
+                     props: { reason, ...(reason === "idle" ? { idle_ms: Date.now() - (at || Date.now()) } : {}) } });
+    loginSession = null;
+    return true;
+  };
+  const idleCheck = () => {
+    if (!loginSession || !user()) return;
+    const last = Number(ls("kssl_last_active") || 0);
+    if (last && Date.now() - last > LOGIN_IDLE_MS && endSession("idle", last)) {
+      ls("kssl_user", null);                     // auto logout (lib/login.js logout() does the same: clear the user, reload)
+      flush(true);
+      setTimeout(() => location.reload(), 300);
+    }
+  };
+  if (loginSession && !user()) endSession("logout");                     // the user logged out: the app reloaded without one
+  else if (loginSession) idleCheck();                                     // back after a long break (or a closed browser)
+  if (user() && !loginSession) {                                          // a fresh login
+    loginSession = uuid();
+    ls("kssl_login_session", loginSession);
+    ls("kssl_login_user", user());               // the logout event names the user even after the login cleared it
+    touched = 0;
+    push("login", { props: { w: innerWidth, h: innerHeight } });
+  }
+  setInterval(idleCheck, 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") idleCheck(); });
+  document.addEventListener("keydown", (e) => { if (e.isTrusted) touch(); }, true);
+
   if (route.pillar || route.view) pageView();      // otherwise the first route the app sets logs the first view
 }
 
