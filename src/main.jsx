@@ -10,6 +10,11 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
    On in local dev; a build turns it on with VITE_ASK_PARALLAX=1 (off on the VPS until the service runs there). */
 function loadAskParallax() {
   if (!(import.meta.env.DEV || import.meta.env.VITE_ASK_PARALLAX === "1")) return;
+  // not over the loading screen: only once the dataset is in (state/DataProvider announces it)
+  if (!window.__ksslDataReady) {
+    window.addEventListener("kssl:data-ready", loadAskParallax, { once: true });
+    return;
+  }
   const css = Object.assign(document.createElement("link"), { rel: "stylesheet", href: "/parallax-agent/widget.css" });
   const js = Object.assign(document.createElement("script"), { type: "module", src: "/parallax-agent/widget.js" });
   document.head.append(css, js);

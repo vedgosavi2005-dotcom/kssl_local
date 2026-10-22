@@ -66,6 +66,13 @@ export function DataProvider({ children }) {
 
   /* The three self-checks the standalone file ran on load. They assert the derived
      logic against the corpus and log only on failure — a silent console is the pass. */
+  /* the page is ready: things that should appear only with it (the Ask Parallax button, src/main.jsx) wait for this */
+  useEffect(() => {
+    if (!value) return;
+    window.__ksslDataReady = true;
+    window.dispatchEvent(new Event("kssl:data-ready"));
+  }, [value]);
+
   useEffect(() => {
     if (!value) return;
     try {
