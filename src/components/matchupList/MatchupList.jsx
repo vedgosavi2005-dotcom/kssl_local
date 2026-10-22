@@ -23,6 +23,42 @@ const formatCategoryLabel = (str) => {
   return titleCaseHeadline(String(str).replace(/&amp;/g, "&").trim());
 };
 
+/* One side of "Compare any two products": pick a company to narrow the list, then type to search its
+   products. With a company chosen the suggestions are bare product names (short enough to read in the
+   browser's list); with none they carry the maker. */
+const makerOf = (p) => (p.side === "client" ? clientShort() : p.maker || "?");
+function ProductPick({ id, products, value, onChange, label }) {
+  const cur = products.find((p) => p.key === value);
+  const [company, setCompany] = useState(cur ? makerOf(cur) : "");
+  const companies = useMemo(() => [...new Set(products.map(makerOf))].sort((x, y) => x.localeCompare(y)), [products]);
+  const list = useMemo(() => (company ? products.filter((p) => makerOf(p) === company) : products), [products, company]);
+  const { labelOf, keyOf } = useMemo(() => {
+    const labelOf = new Map(), keyOf = new Map();
+    list.forEach((p) => {
+      let l = company ? p.name : `${p.name} — ${makerOf(p)}`;
+      if (keyOf.has(l)) l += ` (${p.cat || p.key})`;
+      labelOf.set(p.key, l); keyOf.set(l, p.key);
+    });
+    return { labelOf, keyOf };
+  }, [list, company]);
+  const [text, setText] = useState(cur ? labelOf.get(cur.key) || "" : "");
+  return (
+    <div className="mu-pick">
+      <select className="mu-fsel" value={company} aria-label={`${label}: company`}
+        onChange={(e) => { setCompany(e.target.value); setText(""); onChange(""); }}>
+        <option value="">All companies</option>
+        {companies.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+      <input className="mu-fsel" list={`mu-cmp-${id}`} value={text} aria-label={`${label}: product`}
+        placeholder={`${label}… type to search ${list.length.toLocaleString()}`}
+        onChange={(e) => { setText(e.target.value); onChange(keyOf.get(e.target.value) || ""); }} />
+      <datalist id={`mu-cmp-${id}`}>
+        {[...labelOf.values()].map((l) => <option key={l} value={l} />)}
+      </datalist>
+    </div>
+  );
+}
+
 /* The competitor-product list: category → KSSL anchor product → the rivals paired
    against it. Groups collapse; the four selects narrow each other, so a combination
    that matches nothing can't be chosen. */
@@ -30,22 +66,10 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
   const { matchups, POS_CATS, CAT_KEY } = data;
   const { searchQuery } = useAppState();
   const [query, setQuery] = useState("");
-  /* "Compare any two products": two type-to-search boxes over the whole catalogue (~4,500 products is
-     too many for a plain select). Each box holds the typed text; a pick is the product whose label matches it. */
-  const labelOf = useMemo(() => {
-    const m = new Map(), used = new Set();
-    products.forEach((p) => {
-      let l = `${p.name} — ${p.side === "client" ? clientShort() : p.maker || "?"}`;
-      if (used.has(l)) l += ` (${p.cat || p.key})`;
-      used.add(l);
-      m.set(p.key, l);
-    });
-    return m;
-  }, [products, data.client]);
-  const keyOf = useMemo(() => new Map([...labelOf].map(([k, l]) => [l, k])), [labelOf]);
-  const [textA, setTextA] = useState(compare ? labelOf.get(compare.a) || "" : "");
-  const [textB, setTextB] = useState(compare ? labelOf.get(compare.b) || "" : "");
-  const pickA = keyOf.get(textA) || "", pickB = keyOf.get(textB) || "";
+  /* "Compare any two products": each side is a company select + a product search over that company's
+     products (or over all ~4,500 when no company is chosen). A pick is a product key. */
+  const [pickA, setPickA] = useState(compare ? compare.a : "");
+  const [pickB, setPickB] = useState(compare ? compare.b : "");
   const [co, setCo] = useState("");
   const [cat, setCat] = useState("");
   const [koel, setKoel] = useState("");
@@ -217,14 +241,9 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
             {/* its own section, headed exactly like "Competitor Products" above */}
             <span className="eyebrow">Compare Any Two Products</span>
             <div className="mu-compare-fields">
-            <input className="mu-fsel" list="mu-cmp-products" value={textA} onChange={(e) => setTextA(e.target.value)}
-              placeholder={`Product A… (type to search ${products.length.toLocaleString()})`} aria-label="First product to compare" />
+            <ProductPick id="a" products={products} value={pickA} onChange={setPickA} label="Product A" />
             <span className="mu-compare-vs">vs</span>
-            <input className="mu-fsel" list="mu-cmp-products" value={textB} onChange={(e) => setTextB(e.target.value)}
-              placeholder="Product B… (type to search)" aria-label="Second product to compare" />
-            <datalist id="mu-cmp-products">
-              {[...labelOf.values()].map((l) => <option key={l} value={l} />)}
-            </datalist>
+            <ProductPick id="b" products={products} value={pickB} onChange={setPickB} label="Product B" />
             <button
               type="button"
               className="mu-compare-btn"

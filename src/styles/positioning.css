@@ -219,3 +219,9 @@
 /* the two section titles on Positioning read a step heavier (semi-bold, not bold) */
 .v-positioning .mu-list-h .eyebrow { font-weight: 600; }
 .mu-compare input.mu-fsel { cursor: text; background-image: none; padding-right: 8px; }
+/* each side: company | product search on one row; sides stacked so the product box gets the column's width */
+.mu-compare .mu-compare-fields { grid-template-columns: minmax(0, 1fr); }
+.mu-compare .mu-compare-vs { text-align: left; }
+.mu-compare .mu-compare-fields .mu-compare-btn { justify-self: start; }
+.mu-pick { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 6px; min-width: 0; }
+.mu-pick .mu-fsel { width: 100%; }
