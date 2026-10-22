@@ -38,6 +38,32 @@ export function specParts(v) {
   return out.map((t) => t.trim().replace(/^•\s*/, "")).filter(Boolean);
 }
 
+/* A product's spec sheet as table rows (owner 22 Oct: "make it a proper clean table").
+   A plain value is one row. A packed value becomes one row per figure:
+   - under a generic label ("Note") or a long caveat label ("Variant-specific ... not published by Otokar"), each
+     figure is labelled by its OWN leading words ("GVW 19,000 kg" -> GVW | 19,000 kg); a caveat label becomes a
+     caption row above them. A figure with no leading words keeps an empty label -- nothing is invented.
+   - under a short real label ("Engine"), the label stays on the first figure and the rest follow beneath it.
+   Rows: { label, value } | { caption }. */
+const SPEC_CAPTION_MIN = 31;
+export function specRows(specs) {
+  const out = [];
+  Object.entries(specs || {}).forEach(([label, val]) => {
+    const parts = specParts(val);
+    if (parts.length <= 1) { out.push({ label, value: val }); return; }
+    const generic = /^note$/i.test(String(label).trim()), caveat = String(label).length >= SPEC_CAPTION_MIN;
+    if (!generic && !caveat) { parts.forEach((t, i) => out.push({ label: i ? "" : label, value: t })); return; }
+    if (caveat) out.push({ caption: label });
+    parts.forEach((t) => {
+      // "L 5,480 x W 2,240 x H 2,100 mm" is one dimension line, not a figure called "L"
+      if (/^L\s+\S.*\bx\s*W\s+\S.*\bx\s*H\s+\S/.test(t)) { out.push({ label: "L × W × H", value: t }); return; }
+      const m = t.match(/^([A-Za-z][A-Za-z /&'.-]{0,28}?)\s+([<>~≈+]?\d.*)$/);
+      out.push(m ? { label: m[1].charAt(0).toUpperCase() + m[1].slice(1), value: m[2] } : { label: "", value: t });
+    });
+  });
+  return out;
+}
+
 export function specValueWithUnit(v, u) {
   if (v == null) return "";
   const s = String(v).trim();

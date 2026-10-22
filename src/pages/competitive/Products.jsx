@@ -8,7 +8,7 @@ import { useData } from "../../state/DataProvider";
 import { companyNews, productNews, namesProduct, feedSplit, NEWS_GROUP_ORDER } from "../../lib/news";
 import { formatLabel, formatSectorName, formatProductName } from "../../lib/profile";
 import { threatOf } from "../../lib/threat";
-import { productSpecs, specValueWithUnit, specParts } from "../../lib/specs";
+import { productSpecs, specValueWithUnit, specRows } from "../../lib/specs";
 import { unescapeEntities } from "../../lib/html";
 import { companyCountries, facetOptionsByName } from "../../lib/countryFacet";
 import Thumb from "../../components/thumb/Thumb.jsx";
@@ -1020,9 +1020,24 @@ export default function Products() {
                     overflow: "hidden",
                   }}
                 >
-                  {Object.entries((selectedProduct && selectedProduct.specs) || {}).map(([label, val], idx, arr) => (
+                  {specRows((selectedProduct && selectedProduct.specs) || {}).map((r, idx, arr) => r.caption ? (
+                    /* a caveat the source attached to the figures below it */
                     <div
-                      key={label}
+                      key={`c${idx}`}
+                      style={{
+                        padding: "10px 18px",
+                        background: "var(--d-bg-1)",
+                        borderBottom: "1px solid var(--d-line)",
+                        fontSize: "12px",
+                        fontStyle: "italic",
+                        color: "var(--d-txt-3)",
+                      }}
+                    >
+                      {r.caption}
+                    </div>
+                  ) : (
+                    <div
+                      key={idx}
                       style={{
                         display: "grid",
                         gridTemplateColumns: "220px 1fr",
@@ -1035,14 +1050,10 @@ export default function Products() {
                       }}
                     >
                       <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600" }}>
-                        {label}
+                        {r.label}
                       </span>
                       <span style={{ color: "#ffffff", fontWeight: "600" }}>
-                        {specParts(val).length > 1 ? (
-                          <ul style={{ margin: 0, paddingLeft: "16px" }}>
-                            {specParts(val).map((t, i) => <li key={i}>{t}</li>)}
-                          </ul>
-                        ) : val}
+                        {r.value}
                       </span>
                     </div>
                   ))}
