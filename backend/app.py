@@ -357,6 +357,66 @@ def track(request: Request, events: list[dict[str, Any]] = Body(...)) -> dict[st
     return {"stored": len(rows), "dropped": len(events) - len(rows)}
 
 
+# ---- page recordings (db/setup/37_activity_recording.sql): src/lib/record.js uploads a few seconds of rrweb events at a time ----
+REC_MAX_GZIP = 8 * 1024 * 1024       # bytes per upload as sent (a full snapshot of a big page is a few MB before gzip)
+REC_MAX_JSON = 64 * 1024 * 1024      # ... and once unzipped (a zip bomb stops here)
+
+
+@app.post("/api/track/rec")
+async def track_rec(request: Request, session: str, visitor: str, user: str | None = None) -> dict[str, Any]:
+    """One chunk of a page recording: the body is a JSON array of rrweb events, gzip-compressed or plain. Stored gzipped."""
+    import datetime as _dt
+    import gzip
+    import zlib
+    sid, vid = _uuid_or_none(session), _uuid_or_none(visitor)
+    if not sid or not vid:
+        raise HTTPException(status_code=400, detail="session and visitor (uuid) are required")
+    body = await request.body()
+    if len(body) > REC_MAX_GZIP:
+        raise HTTPException(status_code=413, detail="recording chunk too large")
+    raw = body
+    if body[:2] == b"\x1f\x8b":
+        d = zlib.decompressobj(wbits=31)
+        raw = d.decompress(body, REC_MAX_JSON)
+        if d.unconsumed_tail:
+            raise HTTPException(status_code=413, detail="recording chunk too large")
+    try:
+        events = json.loads(raw)
+        ts = [e["timestamp"] for e in events if isinstance(e, dict) and isinstance(e.get("timestamp"), (int, float))]
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="body must be a JSON array of rrweb events") from None
+    if not isinstance(events, list) or not events or len(ts) != len(events):
+        raise HTTPException(status_code=400, detail="body must be a JSON array of rrweb events")
+    stamp = lambda ms: _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc)  # noqa: E731
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO activity.recording (site, visitor_id, session_id, user_id, first_ts, last_ts, n_events, bytes, data)
+                       VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)""",
+                    ("review" if REVIEW else "live", vid, sid, (user or "")[:60] or None, stamp(min(ts)), stamp(max(ts)),
+                     len(events), len(raw), psycopg2.Binary(body if raw is not body else gzip.compress(raw))))
+    return {"stored": len(events)}
+
+
+@app.get("/api/review/activity/recording")
+def activity_recording(site: str = "live", session: str = "") -> dict[str, Any]:
+    """The page recording of one visit (rrweb events in time order), or none: older visits and the review site have none."""
+    import gzip
+    _review_only()
+    sid = _uuid_or_none(session)
+    if not sid:
+        raise HTTPException(status_code=400, detail="session (uuid) is required")
+    conn, cur = _activity_cursor(site)
+    try:
+        cur.execute("SELECT to_regclass('activity.recording') IS NOT NULL AS ok")
+        if not cur.fetchone()["ok"]:                     # a DB without 37
+            return {"site": site, "session": sid, "events": []}
+        cur.execute("SELECT data FROM activity.recording WHERE session_id = %s::uuid ORDER BY rec_id", (sid,))
+        events = [e for r in cur.fetchall() for e in json.loads(gzip.decompress(bytes(r["data"])))]
+    finally:
+        conn.close()
+    events.sort(key=lambda e: e["timestamp"])
+    return {"site": site, "session": sid, "events": events}
+
+
 @app.get("/api/review/trace")
 def review_trace(table: str, key: str) -> dict[str, Any]:
     _review_only()
@@ -464,7 +524,7 @@ def activity_events(site: str = "live", session: str = "") -> dict[str, Any]:
     conn, cur = _activity_cursor(site)
     try:
         cur.execute("""SELECT event_id, coalesce(client_ts, received_at) AS ts, event_type AS type, pillar, view, target, value,
-                              duration_ms AS ms, props
+                              duration_ms AS ms, props, session_id::text AS session
                        FROM activity.event WHERE session_id = %s::uuid
                        ORDER BY coalesce(client_ts, received_at), event_id LIMIT %s""", (sid, REPLAY_MAX_EVENTS))
         return json_value({"site": site, "session": sid, "events": cur.fetchall()})

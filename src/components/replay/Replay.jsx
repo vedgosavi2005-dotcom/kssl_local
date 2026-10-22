@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { timeline, hashOf, findTarget, findInput, findScroller, replayUnsafe, captionOf, fmtDur, HOVER_SHOWN_MAX_MS } from "../../lib/replay";
+import Player from "rrweb-player";
+import "rrweb-player/dist/style.css";
 import "../../styles/replay.css";
 
 /* SESSION REPLAY, review site only (owner 22 Oct): pick a person (User 1-5 once the login exists, or a browser seen
@@ -119,7 +121,54 @@ export function ReplayPanel({ onClose, onPlay }) {
 }
 
 /* the player: the control bar, the ghost cursor, the highlight. Plays `events` on this page. */
-export function ReplayPlayer({ events, who, site = "live", onClose }) {
+/* A live visit recorded with its page (lib/record.js, from 23 Oct) plays that recording: the screen exactly as the person saw
+   it, that day's data and UI. A visit without one (older, or the review site) is re-run on today's page (ScriptedPlayer). */
+export function ReplayPlayer(props) {
+  const { events, site = "live" } = props;
+  const [rec, setRec] = useState(null);           // null = still asking; [] = no recording
+  useEffect(() => {
+    let gone = false;
+    const sessions = [...new Set((events || []).map((e) => e.session).filter(Boolean))];
+    Promise.all(sessions.map((session) => get("/api/review/activity/recording", { site, session }).then((d) => d.events)))
+      .then((parts) => !gone && setRec(parts.length && parts.every((p) => p.length) ? parts.flat() : []))
+      .catch(() => !gone && setRec([]));
+    return () => { gone = true; };
+  }, [events, site]);
+  if (rec === null) return <div className="rp-bar"><b>{props.who}</b><span className="rp-cap">loading the recording…</span></div>;
+  return rec.length ? <RecordedPlayer {...props} recording={rec} /> : <ScriptedPlayer {...props} />;
+}
+
+function RecordedPlayer({ recording, who, onClose }) {
+  const host = useRef(null);
+  useEffect(() => {
+    window.__ksslReplay = true;
+    document.body.classList.add("rp-on");
+    const r = host.current.getBoundingClientRect();
+    const player = new Player({ target: host.current, props: {
+      events: [...recording].sort((a, b) => a.timestamp - b.timestamp),
+      width: Math.floor(r.width), height: Math.floor(r.height) - 80,     // 80: the player's own controls
+      autoPlay: true, skipInactive: true, speed: 2, speedOption: [1, 2, 4, 8], mouseTail: false,
+    } });
+    return () => {
+      player.$destroy();
+      window.__ksslReplay = false;
+      document.body.classList.remove("rp-on");
+    };
+  }, [recording]);
+  return (
+    <div className="rp-rec" role="dialog" aria-label="Session recording">
+      <div className="rp-rec-h">
+        <b>{who}</b>
+        <span className="rp-site">recorded page</span>
+        <span className="rp-dim">the screen as this person saw it, with that day's data</span>
+        <button type="button" onClick={onClose} aria-label="Stop the replay">✕</button>
+      </div>
+      <div ref={host} className="rp-rec-stage" />
+    </div>
+  );
+}
+
+function ScriptedPlayer({ events, who, site = "live", onClose }) {
   const [skipIdle, setSkipIdle] = useState(true);
   /* a LIVE visit plays on the live dataset (cards, order and numbering as that person saw them), not on the review copy;
      playback starts once it is in, and closing the player hands the review data back (state/DataProvider) */

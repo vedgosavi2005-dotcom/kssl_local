@@ -40,3 +40,11 @@ body.rp-on .rv-bar, body.rp-on .rv-banner, body.rp-on .rp-panel { display: none 
 .rp-time { font-family: var(--mono, monospace); color: #9a9a96; white-space: nowrap; }
 .rp-skip { display: flex; align-items: center; gap: 4px; color: #9a9a96; white-space: nowrap; }
 .rp-site { font-family: var(--mono, monospace); font-size: 10px; color: #9a9a96; border: 1px solid #3a3a40; padding: 1px 6px; }
+
+/* a recorded visit (rrweb-player inside) */
+.rp-rec { position: fixed; inset: 0; z-index: 2147483001; display: flex; flex-direction: column; background: #0e0e10; color: #e8e8e6; font-size: 12px; }
+.rp-rec-h { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #e0a63a; }
+.rp-rec-h b { color: #e0a63a; }
+.rp-rec-h button { margin-left: auto; background: #26262b; color: #e8e8e6; border: 1px solid #3a3a40; padding: 5px 9px; cursor: pointer; }
+.rp-rec-stage { flex: 1; min-height: 0; display: flex; justify-content: center; }
+.rp-rec-stage .rr-player { background: #0e0e10; box-shadow: none; }

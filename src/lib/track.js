@@ -118,7 +118,9 @@ function start() {
   const push = (type, extra) => {
     if (replaying()) return;                     // the player is driving the page: not activity
     if (type !== "logout" && type !== "leave") touch();
-    queue.push({ type, visitor, session: sessionId(), user: user(), ts: new Date().toISOString(), ...route, ...extra });
+    const session = sessionId();
+    window.__ksslSession = session;              // the page recording (record.js) files its chunks under the same visit
+    queue.push({ type, visitor, session, user: user(), ts: new Date().toISOString(), ...route, ...extra });
     if (queue.length >= 90) flush();
   };
   const flush = (leaving) => {
