@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
+from backend import ops_log
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 MAX_BYTES = 4_000_000
 MIN_W, MIN_H = 200, 120
@@ -72,8 +74,9 @@ def fetch(url: str, limit: int, accept="*/*", retry=True):
     return fetch(url, limit, accept, retry=False)
 
 
-def find_image(page_html: str, base: str):
-    """(image url, how) from the page's own markup, else (None, None)."""
+def find_image(page_html: str, base: str, why: list | None = None):
+    """(image url, how) from the page's own markup, else (None, None). `why` (a list) collects each <img> passed over and why,
+    for the pipeline log."""
     for how, pat in (("og_image", r'<meta[^>]+(?:property|name)=["\']og:image(?::secure_url|:url)?["\'][^>]*content=["\']([^"\']+)'),
                      ("og_image", r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\']og:image["\']'),
                      ("twitter_image", r'<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]*content=["\']([^"\']+)'),
@@ -88,13 +91,20 @@ def find_image(page_html: str, base: str):
     first = None
     for m in re.finditer(r'<img\b[^>]*>', body.group(0) if body else page_html, re.I):
         src = re.search(r'\ssrc=["\']([^"\']+)["\']', m.group(0), re.I)
-        if not src or re.search(r"logo|icon|sprite|avatar|pixel|blank|banner|/ads?/|\.svg|\.gif|data:|mode=img", src.group(1), re.I):
+        junk = src and re.search(r"logo|icon|sprite|avatar|pixel|blank|banner|/ads?/|\.svg|\.gif|data:|mode=img", src.group(1), re.I)
+        if not src or junk:
+            if why is not None:
+                why.append({"img": src.group(1)[:200] if src else None,
+                            "skipped": f"name looks like a {junk.group(0).strip('/.')}" if junk else "no src"})
             continue
         w = re.search(r'\swidth=["\']?(\d+)', m.group(0), re.I)
         url = urljoin(base, htmlmod.unescape(src.group(1)))
         if w and int(w.group(1)) >= 400:
             return url, "article_img"
-        if not first and not (w and int(w.group(1)) < MIN_W):
+        if w and int(w.group(1)) < MIN_W:
+            if why is not None:
+                why.append({"img": url[:200], "skipped": f"declared {w.group(1)} px wide, under {MIN_W}"})
+        elif not first:
             first = url
     return (first, "article_img") if first else (None, None)
 
@@ -172,10 +182,42 @@ def refind_defaults(workers=8) -> dict:
                 cur.execute("""UPDATE media.page_image SET image_id = %s, how = 'article_unique', status = 'ok', error = NULL,
                                checked_at = now() WHERE page_url = %s""", (got[0], page))
             stats[host] = stats.get(host, 0) + bool(got)
+            ops_log.note("image", "article_unique" if got else "site_default_kept",
+                         f"The page's preview image is the site's default picture; took the article image only this page uses ({got[5]}x{got[6]})."
+                         if got else f"The page's preview image is the site's default picture, and no article image is unique to this page "
+                                     f"(checked against {len(pages) - 1} other {host} pages); left without a picture.",
+                         subject=page, tbl="media.page_image", rec_id=page,
+                         detail={"image": got[1] if got else None, "candidates": uniq[page][:4]})
         conn.commit()
         print(f"  {host}: {stats[host]} of {len(pages)} pages now have their own picture", flush=True)
     point_cards(conn)
     return stats
+
+
+HOW_WORDS = {"card_link": "the image link the card already had", "og_image": "the page's preview image (og:image)",
+             "twitter_image": "the page's Twitter preview image", "link_image_src": "the page's <link rel=image_src> image",
+             "article_img": "the article's own <img> (the page has no preview tag)",
+             "article_unique": "the article image no other page of the site uses"}
+
+
+def image_note(status, how, size, shrunk, err, why) -> str:
+    """one sentence for the pipeline log: what the image job did with this page, and why"""
+    where = HOW_WORDS.get(how, how or "")
+    skipped = f" {len(why)} other <img> passed over ({'; '.join(sorted({w['skipped'] for w in why}))})." if why else ""
+    if status == "ok":
+        return f"Stored {where}, {size[0]}x{size[1]}" + (f", shrunk to {shrunk[0]}x{shrunk[1]}" if shrunk else "") + "." + skipped
+    if status == "no_image":
+        return "Page fetched; no preview tag (og:image / twitter:image / image_src) and no usable <img> in the article." + skipped
+    if status == "too_small":
+        dims = f"{size[0]}x{size[1]}" if size else "too small"
+        return f"Found {where}, but it is {dims}, under the {MIN_W}x{MIN_H} minimum (a logo or icon size); not used." + skipped
+    if status == "too_large":
+        return f"Found {where}, but it is over {MAX_BYTES // 1_000_000} MB; not used."
+    if status == "not_image":
+        return f"Found {where}, but the link did not return a picture; not used."
+    if status == "page_failed":
+        return f"Could not fetch the page: {err}."
+    return f"Found {where}, but could not download it: {err}."
 
 
 def check_image(data: bytes):
@@ -191,7 +233,9 @@ def check_image(data: bytes):
         raise ValueError("not_image") from e
     w, h = im.size
     if w < MIN_W or h < MIN_H:
-        raise ValueError("too_small")
+        e = ValueError("too_small")
+        e.size = (w, h)                     # for the pipeline log's note
+        raise e
     return Image.MIME.get(im.format, "image/" + (im.format or "jpeg").lower()), w, h
 
 
@@ -267,23 +311,31 @@ def run(limit=None, workers=8) -> dict:
 
     def one(page, card_img):
         how, img_url, status, err, rec = None, None, "no_image", None, None
+        why, size, shrunk = [], None, None
         try:
             if card_img:
                 img_url, how = card_img, "card_link"
             else:
                 raw, ctype, final = fetch(page, 2_000_000, "text/html,*/*")
-                img_url, how = find_image(raw.decode("utf-8", "replace"), final)
+                img_url, how = find_image(raw.decode("utf-8", "replace"), final, why)
             if img_url:
                 data, ctype, _ = fetch(img_url, MAX_BYTES, "image/*,*/*")
                 ct, w, h = check_image(data)
+                size = (w, h)
                 data, ct, w, h = shrink(data, ct, w, h)
+                shrunk = (w, h) if (w, h) != size else None
                 rec =(str(uuid.uuid5(uuid.NAMESPACE_URL, img_url)), img_url, ct, data, len(data), w, h, hashlib.sha256(data).hexdigest())
                 status = "ok"
         except ValueError as e:
             known = str(e) in ("too_large", "not_image", "too_small")    # check_image reasons; other ValueErrors (bad url) are failures
             status, err = (str(e), None) if known else ("image_failed" if img_url else "page_failed", f"ValueError: {str(e)[:150]}")
+            size = getattr(e, "size", None)
         except Exception as e:  # noqa: BLE001
             status, err = ("image_failed" if img_url else "page_failed"), f"{type(e).__name__}: {str(e)[:150]}"
+        # the pipeline log: what was done with this page, and why (backend/ops_log)
+        ops_log.note("image", how if status == "ok" else status, image_note(status, how, size, shrunk, err, why), subject=page,
+                     tbl="media.page_image", rec_id=page,
+                     detail={"image": img_url, "how": how, "size": size, "stored_size": shrunk, "error": err, "passed_over": why[:12] or None})
         with lock:
             stats[status] = stats.get(status, 0) + 1
             with out.cursor() as c2:
@@ -314,10 +366,17 @@ def point_cards(conn) -> None:
     """Each card's image column -> /api/image/<id> of its page's stored picture (cards whose page has none keep what they had).
     A site-default picture (KNDS's logo behind 69 articles) is marked status 'site_default' and its cards get no image."""
     cur = conn.cursor()
-    cur.execute("""UPDATE media.page_image SET status = 'site_default' WHERE status = 'ok' AND image_id IN
-                   (SELECT image_id FROM media.page_image WHERE status IN ('ok', 'site_default') GROUP BY 1 HAVING count(*) >= %s)""",
+    cur.execute("""UPDATE media.page_image p SET status = 'site_default' WHERE status = 'ok' AND image_id IN
+                   (SELECT image_id FROM media.page_image WHERE status IN ('ok', 'site_default') GROUP BY 1 HAVING count(*) >= %s)
+                   RETURNING page_url, image_id::text,
+                     (SELECT count(*) FROM media.page_image q WHERE q.image_id = p.image_id) AS shared""",
                 (SITE_DEFAULT_PAGES,))
-    print(f"  {cur.rowcount} pages only had the site's default picture", flush=True)
+    marked = cur.fetchall()
+    print(f"  {len(marked)} pages only had the site's default picture", flush=True)
+    for r in marked:
+        ops_log.note("image", "site_default", f"The picture found for this page is also on {r['shared']} other pages of the site "
+                     f"(a logo or template image, not the article's); the card shows no picture.",
+                     subject=r["page_url"], tbl="media.page_image", rec_id=r["page_url"], detail={"image_id": r["image_id"], "pages": r["shared"]})
     for table, (idcol, sql, col) in CARDS.items():
         cur.execute(f"""UPDATE staging.{table} SET {col} = NULL WHERE {col} IN
                         (SELECT DISTINCT '/api/image/' || image_id FROM media.page_image WHERE status = 'site_default')""")
@@ -340,6 +399,7 @@ def report() -> None:
     print(dict(cur.fetchone()))
 
 
+@ops_log.logged("backend.media_images")
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--selftest", action="store_true")

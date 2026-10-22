@@ -139,7 +139,7 @@ def logged(name: str):
     def wrap(fn):
         @functools.wraps(fn)
         def inner(*a, **k):
-            if os.environ.get(STEP_ENV):
+            if os.environ.get(STEP_ENV) or "--selftest" in sys.argv:      # inside the routine already / not a real run
                 return fn(*a, **k)
             rid = start_run("manual", {"argv": sys.argv[1:]})
             status = "failed"
