@@ -19,3 +19,10 @@
 @import "./gap.css";
 @import "./react-root.css";
 @import "./responsive.css";
+
+/* desktop-only notice (src/main.jsx, lib/device.js) */
+.device-gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: #111113; color: #e8e8e6; font-family: system-ui, sans-serif; }
+.device-gate-box { max-width: 420px; text-align: center; line-height: 1.5; }
+.device-gate-box b { display: block; font-size: 22px; margin-bottom: 14px; }
+.device-gate-box p { margin: 0 0 10px; font-size: 16px; }
+.device-gate-sub { color: #9a9a96; font-size: 14px !important; }
