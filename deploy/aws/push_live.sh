@@ -23,9 +23,11 @@ log()    { echo "$(date -u +%FT%TZ) $*"; }
 # ---- 1 + 2: live data -----------------------------------------------------------------------------------------------------
 # ponytail: "changed" = the write counters of the serving / ui tables + the dead-link table. A Postgres crash resets the
 # counters, which only costs one extra (identical) push.
-fp=$( { q kssl_serving <<<"SELECT md5(string_agg(relid::regclass || n_tup_ins || '/' || n_tup_upd || '/' || n_tup_del, ',' ORDER BY relid))
-                             FROM pg_stat_user_tables WHERE schemaname IN ('serving', 'ui')"
-        q kssl_staging <<<"SELECT count(*) || '/' || coalesce(max(checked_at)::text, '') FROM staging.source_link"; } | md5sum | cut -c1-32)
+# (written to a file at top level, not inside $( ): a failing query must stop the run, not hash an empty answer)
+{ q kssl_serving <<<"SELECT md5(string_agg(relid::regclass::text || n_tup_ins || '/' || n_tup_upd || '/' || n_tup_del, ',' ORDER BY relid))
+                     FROM pg_stat_user_tables WHERE schemaname IN ('serving', 'ui')"
+  q kssl_staging <<<"SELECT count(*) || '/' || coalesce(max(checked_at)::text, '') FROM staging.source_link"; } > "$D/live.fp.new"
+fp=$(md5sum < "$D/live.fp.new" | cut -c1-32)
 if [ "${1:-}" = --force ] || [ "$fp" != "$(cat "$D/live.fp" 2>/dev/null)" ]; then
   { echo "SET LOCAL kssl.approve = 'on';"          # the serving guard (db/setup/04): the push is a publish, like Approve
     q kssl_serving <<<"SELECT format('DELETE FROM %I.%I;', schemaname, tablename) FROM pg_tables WHERE schemaname IN ('serving', 'ui') ORDER BY 1"
