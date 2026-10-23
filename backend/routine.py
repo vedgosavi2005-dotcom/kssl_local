@@ -62,6 +62,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("news", "prompt", "news"),
         ("signal_gate", "cmd", ["-m", "backend.signal_gate", "--limit", "600"]),   # cheap pre-check: clearly off-topic articles skip the signal prompt
         ("signal", "prompt", "signal"),
+        ("route_handoff", "cmd", ["-m", "backend.route_handoff"]),   # the routes the signal lane found in the full article (tech / partner / project / geo / demand), free
         ("published_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--write"]),   # cards the harvest left undated: the page's own date (free)
         ("story_dates", "cmd", ["-m", "prompts.story", "--backfill-dates", "--write"]),    # ... and their timeline steps take it
         ("media_images", "cmd", ["-m", "backend.media_images"]),   # new cards' pictures into media.image (free; pages already checked are skipped)
@@ -292,13 +293,12 @@ def run(budget: float, only: set, start: str | None, skip: set, limit: int | Non
         p = subprocess.run([PY, *args], cwd=ROOT, env=ops_log.tag_env(env(), sid, run_id), stdout=logf, stderr=subprocess.STDOUT)
         rec.update(seconds=round(time.time() - t, 1), exit=p.returncode)
         rec["status"] = "ok" if p.returncode == 0 else ("usage limit" if p.returncode == 3 else "FAILED (see log)")
-        tail = None
-        if p.returncode != 0:                      # the step's own part of the log, for the Pipeline log page
-            with open(logf.name, encoding="utf-8", errors="replace") as lf:
-                lf.seek(at)
-                tail = lf.read()[-4000:]
+        with open(logf.name, encoding="utf-8", errors="replace") as lf:   # the step's own part of the log: all of it goes to
+            lf.seek(at)                                                     # ops.step.output (Flow dashboard), its end to error
+            part = lf.read()
+        tail = part[-4000:] if p.returncode != 0 else None
         ops_log.finish_step(sid, {0: "ok", 3: "usage_limit"}.get(p.returncode, "failed"), p.returncode, tail,
-                            f"db/flood_logs/routine_{stamp}.log")
+                            f"db/flood_logs/routine_{stamp}.log", output=part)
         limit_hit = limit_hit or p.returncode == 3
         results.append(rec)
         print(f"{name:24} {rec['status']:18} {rec['seconds']:>7}s  spent so far ${spent_since(conn, t0, t0_here):.2f}", flush=True)
@@ -320,7 +320,7 @@ def _selftest() -> None:
     for a, b in (("attribution", "triage"), ("doc_dates", "triage"), ("triage", "news"), ("news", "signal"), ("matchup_engine", "spec_enrich"),
                  ("spec_enrich", "matchup_compare"), ("client_spec_enrich", "matchup_merge"), ("matchup_merge", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"), ("tender", "tender_category"), ("tender_category", "tender_assessment"),
                  ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine"),
-                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("signal", "media_images"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
+                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("signal", "route_handoff"), ("route_handoff", "moment"), ("signal", "media_images"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
                  ("story_prune", "flood_report"), ("tender_assessment", "source_fill"), ("story_prune", "source_fill"), ("source_fill", "flood_report")):
         assert order[a] < order[b], f"{a} must run before {b}"
     assert all(k in ("cmd", "prompt") for _, k, _ in steps())

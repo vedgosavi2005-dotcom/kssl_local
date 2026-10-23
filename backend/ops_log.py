@@ -96,8 +96,13 @@ def begin_step(name: str, script: str | None, run_id: str | None) -> str:
     return sid
 
 
-def finish_step(step_id: str, status: str, exit_code: int | None = None, error: str | None = None, log_path: str | None = None) -> None:
-    """close the step: seconds, model spend inside it, and rows written per table (from the trigger's events: exact)"""
+OUTPUT_MAX = 2_000_000      # characters of a step's console output kept in ops.step.output (the end, where failures are)
+
+
+def finish_step(step_id: str, status: str, exit_code: int | None = None, error: str | None = None, log_path: str | None = None,
+                output: str | None = None) -> None:
+    """close the step: seconds, model spend inside it, rows written per table (from the trigger's events: exact), and its
+    whole console output (db/setup/39; a separate write, so a DB without that column still closes the step)"""
     _write("""UPDATE ops.step s SET ended_at = clock_timestamp(), status = %s, exit_code = %s, error = %s, log_path = %s,
                      seconds = round(extract(epoch FROM clock_timestamp() - s.started_at)::numeric, 1),
                      cost_usd = (SELECT round(sum(cost_usd)::numeric, 4) FROM staging.prompt_run p
@@ -107,6 +112,25 @@ def finish_step(step_id: str, status: str, exit_code: int | None = None, error: 
                                FROM (SELECT tbl, action, count(*) AS n FROM ops.record_event WHERE step_id = s.step_id GROUP BY 1, 2) x
                                GROUP BY tbl) y)
               WHERE s.step_id = %s""", (status, exit_code, (error or "")[-4000:] or None, log_path, step_id))
+    if output:
+        _write("UPDATE ops.step SET output = %s WHERE step_id = %s", (output[-OUTPUT_MAX:].replace("\x00", ""), step_id))
+
+
+class _Tee:
+    """what a step run in this process prints (stdout + stderr) goes to the console AND to the step's output.
+    ponytail: output of child processes that write to the inherited file descriptor is not seen here; the routine captures
+    those itself (backend/routine.py passes each step's part of its log)."""
+    def __init__(self, stream, buf: list):
+        self._s, self._b = stream, buf
+
+    def write(self, text):
+        self._b.append(text)
+        if len(self._b) > 20000:                         # keep memory flat on a chatty script
+            self._b[:] = ["".join(self._b)[-OUTPUT_MAX:]]
+        return self._s.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
 
 
 @contextmanager
@@ -115,18 +139,27 @@ def step(name: str, script: str | None = None, run_id: str | None = None):
     sid = begin_step(name, script, run_id)
     old = {k: os.environ.get(k) for k in ("PGOPTIONS", STEP_ENV, RUN_ENV)}
     os.environ.update(tag_env(dict(os.environ), sid, run_id))
+    buf: list = []
+    streams = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Tee(sys.stdout, buf), _Tee(sys.stderr, buf)
+    out = lambda: "".join(buf)  # noqa: E731
     try:
         yield sid
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
-        finish_step(sid, "ok" if code == 0 else "failed", code)
+        sys.stdout, sys.stderr = streams
+        finish_step(sid, "ok" if code == 0 else "failed", code, output=out())
         raise
     except BaseException as e:
-        finish_step(sid, "failed", 1, f"{type(e).__name__}: {e}")
+        import traceback
+        sys.stdout, sys.stderr = streams
+        finish_step(sid, "failed", 1, f"{type(e).__name__}: {e}", output=out() + "\n" + traceback.format_exc())
         raise
     else:
-        finish_step(sid, "ok", 0)
+        sys.stdout, sys.stderr = streams
+        finish_step(sid, "ok", 0, output=out())
     finally:
+        sys.stdout, sys.stderr = streams
         for k, v in old.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -158,12 +191,18 @@ def logged(name: str):
 
 
 def note(kind: str, outcome: str, message: str, subject: str | None = None, tbl: str | None = None,
-         rec_id: str | None = None, detail: dict | None = None, script: str | None = None) -> None:
-    """one decision of a script, in plain words, tied to the current step (when there is one) and to what it is about"""
-    _write("""INSERT INTO ops.note (step_id, script, kind, outcome, subject, tbl, rec_id, message, detail)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+         rec_id: str | None = None, detail: dict | None = None, script: str | None = None, level: str = "info") -> None:
+    """one decision of a script, in plain words, tied to the current step (when there is one) and to what it is about.
+    level "warn" / "error" puts it on the Flow dashboard's Errors screen (db/setup/39); "info" is written without the column,
+    so a DB from before 39 still takes it."""
+    cols, args = "", ()
+    if level != "info":
+        cols, args = ", level", (level if level in ("warn", "error") else "warn",)
+    _write(f"""INSERT INTO ops.note (step_id, script, kind, outcome, subject, tbl, rec_id, message, detail{cols})
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s{", %s" if cols else ""})""",
            (os.environ.get(STEP_ENV) or None, script or _caller_module(), kind, outcome, (subject or None) and str(subject)[:1000],
-            tbl, None if rec_id is None else str(rec_id), str(message)[:2000], json.dumps(detail, default=str) if detail else None))
+            tbl, None if rec_id is None else str(rec_id), str(message)[:2000], json.dumps(detail, default=str) if detail else None,
+            *args))
 
 
 def review_event(action: str, tbl: str, rec_id: str, detail: dict | None = None, cur=None) -> None:
@@ -191,6 +230,11 @@ def _selftest() -> None:
     assert e["PGOPTIONS"] == "-c statement_timeout=0 -c kssl.ops_step=abc", e["PGOPTIONS"]
     assert e[STEP_ENV] == "abc" and e[RUN_ENV] == "run1"
     assert tag_env({}, "x", None)["PGOPTIONS"] == "-c kssl.ops_step=x"
+    import io
+    buf, sink = [], io.StringIO()
+    t = _Tee(sink, buf)
+    t.write("a"); t.write("b\n"); t.flush()
+    assert "".join(buf) == "ab\n" == sink.getvalue()
     print("ops_log self-check ok")
 
 

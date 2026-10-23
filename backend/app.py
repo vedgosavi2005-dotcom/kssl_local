@@ -586,6 +586,57 @@ def activity_events(site: str = "live", session: str = "") -> dict[str, Any]:
         conn.close()
 
 
+# ---- Flow dashboard (review site /flow): runs, steps + full output, errors, model calls, data added, coverage --------------
+# (backend/flow_dashboard.py). Reads only; a lock_timeout so the page never queues behind a pipeline step's DDL.
+
+def _flow(fn, *args, serving: bool = False):
+    _review_only()
+    import psycopg2.errors
+    from backend import flow_dashboard
+    with review.session() as (st, sv):
+        for c in (st, sv):
+            c.execute("SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '120s'")
+        try:
+            return json_value(getattr(flow_dashboard, fn)(st, sv, *args) if serving else getattr(flow_dashboard, fn)(st, *args))
+        except psycopg2.errors.LockNotAvailable:
+            raise HTTPException(status_code=503, detail="a pipeline step holds a lock on the log tables; try again in a minute") from None
+
+
+@app.get("/api/review/flow/runs")
+def flow_runs(days: int = 30) -> dict[str, Any]:
+    return _flow("runs", max(1, min(days, 365)))
+
+
+@app.get("/api/review/flow/run")
+def flow_run(id: str) -> dict[str, Any]:  # noqa: A002 -- the query parameter is "id"
+    return _flow("run", id)
+
+
+@app.get("/api/review/flow/output")
+def flow_output(step: str) -> dict[str, Any]:
+    return _flow("output", step)
+
+
+@app.get("/api/review/flow/errors")
+def flow_errors(days: int = 30) -> dict[str, Any]:
+    return _flow("errors", max(1, min(days, 365)))
+
+
+@app.get("/api/review/flow/models")
+def flow_models(days: int = 30) -> dict[str, Any]:
+    return _flow("models", max(1, min(days, 365)))
+
+
+@app.get("/api/review/flow/data")
+def flow_data(days: int = 30) -> dict[str, Any]:
+    return _flow("data", max(1, min(days, 365)), serving=True)
+
+
+@app.get("/api/review/flow/coverage")
+def flow_coverage(days: int = 30) -> dict[str, Any]:
+    return _flow("coverage", max(1, min(days, 365)))
+
+
 # ---- pipeline log (review site only): runs -> steps -> records, and one record's journey (backend/pipeline_log.py) ----------
 
 def _pipeline(fn, *args):

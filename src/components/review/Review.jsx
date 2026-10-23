@@ -109,6 +109,9 @@ export function ReviewProvider({ initial, children }) {
         <button type="button" onClick={() => setPanel({ kind: "analytics" })} title="How people use the site: logins, pages, searches, heat map">
           Analytics
         </button>
+        <a className="rv-flow" href="/flow" target="_blank" rel="noreferrer" title="The data flow's dashboard: every run, step log, error, model call and data added">
+          Flow
+        </a>
       </div>
       {panel?.kind === "pipeline" && <PipelineLog onClose={() => setPanel(null)} />}
       {panel?.kind === "analytics" && (

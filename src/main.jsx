@@ -20,12 +20,15 @@ function loadAskParallax() {
   document.head.append(css, js);
 }
 
-/* Desktop only (lib/device): a phone or tablet gets this notice and never loads the app or its data. */
+/* Desktop only (lib/device): a phone or tablet gets this notice and never loads the app or its data.
+   /flow is the review site's Flow dashboard (pages/flow): its own page, no dataset; on the live site its API answers 404. */
 const startApp = () =>
-  import("./App").then(({ default: App }) => {
-    root.render(<App />);
-    loadAskParallax();
-  });
+  window.location.pathname.replace(/\/+$/, "") === "/flow"
+    ? import("./pages/flow/FlowDashboard").then(({ default: Flow }) => root.render(<Flow />))
+    : import("./App").then(({ default: App }) => {
+      root.render(<App />);
+      loadAskParallax();
+    });
 
 if (isDesktop()) {
   // temporary login (lib/login): the app and its data load only after sign-in
