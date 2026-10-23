@@ -105,6 +105,18 @@ def parse_reply(text: str, n: int) -> tuple[dict, list]:
 
 
 def call(system: str, prompt: str):
+    """call_once, with transient API faults retried like every prompt (prompts/claude_call.is_transient / RETRY_WAITS)."""
+    from prompts import claude_call as cc
+    for wait in (*cc.RETRY_WAITS, None):
+        try:
+            return call_once(system, prompt)
+        except cc.ModelError as e:
+            if wait is None or not cc.is_transient(str(e)):
+                raise
+            time.sleep(wait)
+
+
+def call_once(system: str, prompt: str):
     """One Haiku call at low effort (no long reasoning: output tokens are what costs). Same CLI and result type as prompts/claude_call."""
     import subprocess
     import tempfile

@@ -5,6 +5,7 @@ ModelResult."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import time
@@ -60,8 +61,31 @@ def parse_cli_output(stdout: str) -> ModelResult:
     )
 
 
+# Transient API faults are retried here, not logged as failed runs (owner 2026-10-24: "processing must produce no errors").
+# A usage / credit limit is NOT transient: it is raised at once, so the runner stops cleanly (scripts/flood_run, backend/routine).
+TRANSIENT = re.compile(r"connection closed|connection reset|econnreset|socket hang up|overloaded|5\d\d|internal server error|"
+                       r"bad gateway|service unavailable|timed out|timeout", re.I)
+RETRY_WAITS = (20, 60)          # seconds before the 2nd and 3rd attempt
+
+
+def is_transient(msg: str) -> bool:
+    return bool(TRANSIENT.search(msg or "")) and not re.search(r"usage limit|hit your .*limit|credit balance", msg or "", re.I)
+
+
 def call_model(system: str, prompt: str, model: str, web_search: bool = False) -> ModelResult:
-    """Run one prompt. Raises ModelError on any failure."""
+    """Run one prompt, retrying transient API faults (RETRY_WAITS). Raises ModelError on any other failure, or when retries run out."""
+    for wait in (*RETRY_WAITS, None):
+        try:
+            return _call_once(system, prompt, model, web_search)
+        except ModelError as e:
+            if wait is None or not is_transient(str(e)):
+                raise
+            time.sleep(wait)
+    raise ModelError("unreachable")
+
+
+def _call_once(system: str, prompt: str, model: str, web_search: bool = False) -> ModelResult:
+    """Run one prompt once. Raises ModelError on any failure."""
     # a neutral working directory, so no project CLAUDE.md / settings leak into the call
     cwd = Path(tempfile.gettempdir()) / "kssl_claude_cwd"
     cwd.mkdir(exist_ok=True)
