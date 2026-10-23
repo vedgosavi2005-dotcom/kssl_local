@@ -29,7 +29,7 @@ subject:
              COALESCE(s.title, '') ~* '(howitzer|artillery|gun|ammunition|munition|shell|propellant|explosive|fuze|armou?r|protection|composite|propulsion|engine|forging|barrel|autonomous|unmanned ground|robot|3d|additive|warhead|mortar|vehicle)' AS tdom,
              COALESCE(s.title, '') ~* '(test|trial|unveil|develop|prototype|qualif|demonstrat|first|new |advanced|launch|reveal|fire|firing|certif|integrat|upgrade|introduc|deliver|produc)' AS tev
       FROM staging.source_document s
-      WHERE s.url IS NOT NULL AND length(s.body_text) BETWEEN 600 AND 20000
+      WHERE s.url IS NOT NULL AND length(s.body_text) >= 600   -- no upper limit (2026-10-24: 49 long pages were dropped; the prompt takes the first 12,000 characters anyway)
         AND coalesce(s.published_at::date, s.fetched_at::date) >= current_date - 300   -- 2026-10-24 (owner, routing gap): an undated page counts by its harvest date; before, every undated doc was dropped (Hanwha's K9 upgrade release)
         AND COALESCE(s.title, '') !~* '(latest .* news|updates|archives?\s*-|\| news$|^news$)'
         -- 2026-10-18 credible sources only: no blogs / copy aggregators (indiandefensenews.in is a Blogger blog; the others rehost stories)
@@ -40,7 +40,7 @@ subject:
                         WHEN d.routed THEN 4 ELSE 5 END) AS tier,
              lower(regexp_replace(left(COALESCE(d.headline, ''), 60), '[^A-Za-z0-9]', '', 'g')) AS tkey
       FROM d WHERE (d.routed OR (d.dom AND d.tdom AND d.tev))
-        AND COALESCE(d.headline, '') !~* '(fighter|f-35|f-16|f-22|f-15|aircraft|jet |airliner|bomber|helicopter|submarine|frigate|destroyer|aircraft carrier|warship|satellite|space|missile defen[cs]e|hypersonic|nuclear|ballistic missile)'
+        AND COALESCE(d.headline, '') !~* '\m(fighter|f-35|f-16|f-22|f-15|aircraft|jet|airliner|bomber|helicopter|submarine|frigate|destroyer|aircraft carrier|warship|satellite|space|missile defen[cs]e|hypersonic|nuclear|ballistic missile)\M'   -- whole words (2026-10-24: 'space' matched 'Hanwha Aerospace')
     ), r AS (   -- one document per headline (the same story from two outlets is carded once)
       SELECT c.*, row_number() OVER (PARTITION BY c.tkey ORDER BY c.tier, c.published_date DESC NULLS LAST, c.doc_id) AS rn FROM c
     )

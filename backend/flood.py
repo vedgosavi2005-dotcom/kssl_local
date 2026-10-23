@@ -80,7 +80,8 @@ def cmd_candidates(dry_run: bool) -> None:
     cur = conn.cursor()
     cur.execute("""SELECT doc_id::text AS id, url, source_kind, source_name, source_tier, title, published_at, competitor_ids::text[] AS cids, triage
                    FROM staging.source_document
-                   WHERE triage->'route' ? 'signal' AND cardinality(competitor_ids) > 0 AND length(coalesce(body_text, '')) >= %s
+                   WHERE triage->'route' ?| array['signal', 'moment', 'partnership', 'project']   -- 2026-10-24 gap audit: a page routed only
+                     AND cardinality(competitor_ids) > 0                                          -- partnership / project / moment never became company news AND length(coalesce(body_text, '')) >= %s
                      AND NOT (processed_by ? 'flood_candidate') ORDER BY published_at DESC NULLS LAST""", (MIN_BODY,))
     docs = cur.fetchall()
     rows, ids, skipped = [], [], {"blocked": 0, "no_competitor": 0, "no_title": 0}
