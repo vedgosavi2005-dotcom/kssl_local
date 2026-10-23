@@ -59,6 +59,7 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/34_pipeline_history.sql      # ops.step_history: live steps + steps reconstructed from table timestamps
 "${PSQL[@]}" -d "$STG" < db/setup/39_flow_log.sql             # ops.step.output (full step log) + ops.note.level, for the Flow dashboard
 "${PSQL[@]}" -d "$STG" < db/setup/40_prompt_run_usage_limit.sql  # prompt_run status usage_limit (a limit stop is not a failure)
+"${PSQL[@]}" -d "$STG" < db/setup/41_change_proposal.sql       # staging.change_proposal: changes found in the news, applied only by a reviewer
 "${PSQL[@]}" -d "$STG" < db/setup/38_source_link.sql           # staging.source_link: dead source links -> their archive copy
 build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/08_competitor_text_columns.sql

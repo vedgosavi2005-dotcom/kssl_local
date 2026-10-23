@@ -10,6 +10,7 @@ the same validation, loader, derive rules (signal_label, risk score, label basis
     python -m scripts.simulate_watch_threat article 1    "shortlisted for trials"  -> probability 3: WATCH
     python -m scripts.simulate_watch_threat article 2    "contract signed"         -> probability 5, impact 5: THREAT, same story
     python -m scripts.simulate_watch_threat show         the two signals and the story timeline (label changes included)
+    python -m scripts.simulate_watch_threat changes      dummy facts from an article -> "Changes from news" proposals (non-changes dropped)
     python -m scripts.simulate_watch_threat serve        how to open it in the review site (sandbox API :8611, UI :5181)
     python -m scripts.simulate_watch_threat drop         delete the sandbox
 Reading the review site on the sandbox: the story is ONE card (its latest signal): Watch after article 1, Threat after article 2,
@@ -166,6 +167,33 @@ def show(conn=None) -> None:
     conn.rollback()
 
 
+def changes() -> None:
+    """dummy facts an article might state, through backend/change_proposals.add (what the signal / news prompts' hook calls):
+    real changes become proposals on the review site's "Changes from news"; non-changes are dropped"""
+    from backend import change_proposals
+    url, quote = "https://simulation.kssl.invalid/article-3", "[SIMULATION] Hanwha Aerospace unveiled the KAAV-II amphibious assault vehicle."
+    items = [
+        {"kind": "new_product", "subject": "KAAV-II amphibious assault vehicle (simulation)", "field": "Armoured Vehicles",
+         "value": "Amphibious assault vehicle prototype unveiled for the Korean Marine Corps.", "quote": quote},
+        {"kind": "spec", "subject": "KAAV-II amphibious assault vehicle (simulation)", "field": "Water speed", "value": "12", "unit": "km/h", "quote": quote},
+        {"kind": "spec", "subject": "K9 / K9A1 Thunder", "field": "Range", "value": "over 54 km with extended-range rounds", "quote": quote},
+        {"kind": "spec", "subject": "K9 / K9A1 Thunder", "field": "Burst", "value": "3 rounds in 15 s", "quote": quote},          # same as ours: dropped
+        {"kind": "leadership", "subject": "Jane Simulation", "field": "Chairperson of the Board", "value": "appointed",
+         "effective_date": "2026-11-01", "quote": quote},
+        {"kind": "location", "subject": "Hanwha K9 plant, Rajasthan (simulation)", "field": "facility", "value": "India", "quote": quote},
+        {"kind": "company_fact", "field": "employee_count_text", "subject": "Hanwha Aerospace", "value": "8,100 employees at 30 Sep 2026", "quote": quote},
+        {"kind": "new_product", "subject": "K9 / K9A1 Thunder", "field": "Artillery", "value": "already ours", "quote": quote},  # held: dropped
+    ]
+    conn = psycopg2.connect(dsn(SB["staging"]), cursor_factory=psycopg2.extras.RealDictCursor)
+    guard(conn.dsn)
+    with conn.cursor() as cur:
+        r = change_proposals.add(cur, items, competitor_id=HANWHA, article_url=url, article_date="2026-10-22", source_prompt="simulation")
+    conn.commit()
+    print(f"proposals added: {r['added']}")
+    for d in r["dropped"]:
+        print("  dropped (not a change):", d)
+
+
 def serve() -> None:
     st, sv = dsn(SB["staging"]), dsn(SB["serving"])
     print("Sandbox review site (two terminals, Git Bash, in kssl_local):")
@@ -188,6 +216,8 @@ if __name__ == "__main__":
         article(int(sys.argv[2]))
     elif cmd == "show":
         show()
+    elif cmd == "changes":
+        changes()
     elif cmd == "serve":
         serve()
     elif cmd == "drop":

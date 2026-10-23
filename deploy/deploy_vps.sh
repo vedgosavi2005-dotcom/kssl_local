@@ -35,7 +35,7 @@ done
 # the usage log is not synced (each API logs into its own DB), so the review API's staging DB gets the schema here too.
 # KSSL_LIVE_ONLY=1 (the AWS live server, deploy/aws/deploy.sh): no review API there, its staging DB holds only what the live
 # API reads (source_link, media), so only 38.
-REVIEW_SQL="db/setup/31_user_activity.sql db/setup/32_activity_replay.sql db/setup/33_pipeline_log.sql db/setup/34_pipeline_history.sql db/setup/36_activity_sessions.sql db/setup/37_activity_recording.sql db/setup/39_flow_log.sql"
+REVIEW_SQL="db/setup/31_user_activity.sql db/setup/32_activity_replay.sql db/setup/33_pipeline_log.sql db/setup/34_pipeline_history.sql db/setup/36_activity_sessions.sql db/setup/37_activity_recording.sql db/setup/39_flow_log.sql db/setup/41_change_proposal.sql"
 [ -n "${KSSL_LIVE_ONLY:-}" ] && REVIEW_SQL=""
 for f in $REVIEW_SQL db/setup/38_source_link.sql; do   # 38: dead source links -> archive copy; 33: ops.* for the VPS review site's Approve log; 34: its pipeline-log history view
   if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f (staging)"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_staging"; fi

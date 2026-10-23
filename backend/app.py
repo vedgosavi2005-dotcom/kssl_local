@@ -637,6 +637,42 @@ def flow_coverage(days: int = 30) -> dict[str, Any]:
     return _flow("coverage", max(1, min(days, 365)))
 
 
+# ---- changes found in the news (review site only, backend/change_proposals.py, db/setup/41): list, accept, reject ----------
+
+@app.get("/api/review/changes")
+def changes_list(status: str = "pending") -> dict[str, Any]:
+    _review_only()
+    from backend import change_proposals
+    if status not in ("pending", "accepted", "rejected", "all"):
+        raise HTTPException(status_code=400, detail="status is pending, accepted, rejected or all")
+    with review.session() as (st, sv):
+        st.execute("SELECT to_regclass('staging.change_proposal') IS NOT NULL AS ok")
+        if not st.fetchone()["ok"]:
+            return {"items": [], "note": "db/setup/41_change_proposal.sql is not applied on this database"}
+        return {"items": json_value(change_proposals.pending(st, status))}
+
+
+@app.post("/api/review/changes/{action}")
+def changes_decide(action: str, request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """accept: write the change into the review data (then it shows as NEW / CHANGED for the usual Approve); reject: keep it out"""
+    _review_only()
+    from backend import change_proposals
+    pid = _uuid_or_none(str(body.get("id") or ""))
+    if action not in ("accept", "reject") or not pid:
+        raise HTTPException(status_code=400, detail="POST /api/review/changes/accept|reject with {id}")
+    user = (request.headers.get("x-kssl-user") or "")[:40] or None
+    try:
+        with review.session() as (st, sv):
+            if action == "accept":
+                applied = change_proposals.accept(st, pid, user, (body.get("value") or None))
+            else:
+                change_proposals.reject(st, pid, user, (body.get("note") or None))
+                applied = None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return {"ok": True, "applied": applied}
+
+
 # ---- pipeline log (review site only): runs -> steps -> records, and one record's journey (backend/pipeline_log.py) ----------
 
 def _pipeline(fn, *args):

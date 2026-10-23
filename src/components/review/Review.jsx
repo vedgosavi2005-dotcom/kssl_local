@@ -3,6 +3,7 @@ import "../../styles/review.css";
 import { ReplayPanel, ReplayPlayer } from "../replay/Replay";
 import PipelineLog from "../pipelineLog/PipelineLog";
 import Analytics from "../analytics/Analytics";
+import ChangesPanel, { usePendingChanges } from "./ChangesPanel";
 
 /* The review copy. Same app in Vite mode "review" (`npm run dev:review`, 127.0.0.1:5180) against
    the review backend (KSSL_VIEW=review, :8601), which reads the staging DB and sends a status per
@@ -37,6 +38,7 @@ export function ReviewProvider({ initial, children }) {
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState(null); // {kind: "trace", t, id, n, cols} | {kind: "setup"} | {kind: "list", title, note, items} | {kind: "replay"}
   const [replay, setReplay] = useState(null); // {events, who}: the session replay being played
+  const [changes, setChanges] = usePendingChanges();   // facts from the news waiting for a decision (ChangesPanel)
   if (!REVIEW) return children;
   const apply = (body) => {
     setSt(body.review || {});
@@ -100,6 +102,9 @@ export function ReviewProvider({ initial, children }) {
         <button type="button" onClick={() => setPanel({ kind: "setup" })}>
           Setup tables{pending ? ` · ${pending} to approve` : ""}
         </button>
+        <button type="button" onClick={() => setPanel({ kind: "changes" })} title="New or different facts the news states (new products, specs, leaders, partners, plants): accept or reject">
+          Changes from news{changes ? ` · ${changes}` : ""}
+        </button>
         <button type="button" onClick={() => setPanel({ kind: "replay" })} title="Play back what a user did on the site">
           Session replay
         </button>
@@ -114,6 +119,7 @@ export function ReviewProvider({ initial, children }) {
         </a>
       </div>
       {panel?.kind === "pipeline" && <PipelineLog onClose={() => setPanel(null)} />}
+      {panel?.kind === "changes" && <ChangesPanel onClose={() => setPanel(null)} onCount={setChanges} />}
       {panel?.kind === "analytics" && (
         <Analytics onClose={() => setPanel(null)} onPlay={(events, who, site) => { setPanel(null); setReplay({ events, who, site }); }} />
       )}
