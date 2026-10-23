@@ -30,7 +30,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from html import unescape
-from urllib.request import Request, urlopen
 
 import psycopg2
 
@@ -40,6 +39,18 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 MONTHS = {m: i + 1 for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"])}
 MONTHS.update({k[:3]: v for k, v in MONTHS.items()})
+# 2026-10-24 (owner: "when the page has a date we must capture it"): the month words of the non-English sources we read --
+# Ukrainian and Russian (genitive "09 січня 2021", nominative), German, French
+for _i, _names in enumerate((
+        "січня січень января январь januar janvier", "лютого лютий февраля февраль februar février",
+        "березня березень марта март märz mars", "квітня квітень апреля апрель april avril",
+        "травня травень мая май mai", "червня червень июня июнь juni juin",
+        "липня липень июля июль juli juillet", "серпня серпень августа август august août",
+        "вересня вересень сентября сентябрь september septembre", "жовтня жовтень октября октябрь oktober octobre",
+        "листопада листопад ноября ноябрь november novembre", "грудня грудень декабря декабрь dezember décembre"), 1):
+    for _n in _names.split():
+        MONTHS.setdefault(_n, _i)
+WORD = r"[^\W\d_]{3,12}"      # a month word in any script (str patterns: \w is unicode)
 META_NAMES = ("article:published_time", "og:published_time", "pubdate", "publishdate", "publish-date", "publish_date",
               "date", "dc.date.issued", "dc.date", "citation_publication_date", "parsely-pub-date", "sailthru.date",
               "datepublished", "article.published")
@@ -52,11 +63,11 @@ def parse_date(text):
     if m:
         y, mo, d = map(int, m.groups())
     else:
-        m = re.search(r"([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})", t)          # August 19, 2026
+        m = re.search(r"(%s)\.?\s+(\d{1,2}),?\s+(\d{4})" % WORD, t)          # August 19, 2026
         if m and m.group(1).lower() in MONTHS:
             y, mo, d = int(m.group(3)), MONTHS[m.group(1).lower()], int(m.group(2))
         else:
-            m = re.search(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})", t)      # 19 August 2026
+            m = re.search(r"(\d{1,2})\.?\s+(%s)\.?,?\s+(\d{4})" % WORD, t)      # 19 August 2026, 19. Oktober 2026
             if not (m and m.group(2).lower() in MONTHS):
                 return None
             y, mo, d = int(m.group(3)), MONTHS[m.group(2).lower()], int(m.group(1))
@@ -87,6 +98,10 @@ def from_meta(html):
 
 
 def from_markup(html):
+    for m in re.finditer(r"<\w+\b[^>]*itemprop\s*=\s*[\"']datePublished[\"'][^>]*>", html, re.I):
+        v = re.search(r'(?:content|datetime)\s*=\s*["\']([^"\']+)["\']', m.group(0), re.I)
+        if v and parse_date(v.group(1)):
+            return parse_date(v.group(1))
     for m in re.finditer(r"<time\b[^>]*>", html, re.I):
         tag = m.group(0)
         dt = re.search(r'datetime\s*=\s*["\']([^"\']+)["\']', tag, re.I)
@@ -103,7 +118,7 @@ def from_markup(html):
     return None
 
 
-FULL_DATE = r"(?:[A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{1,2} [A-Za-z]{3,9},? \d{4}|\d{4}-\d{2}-\d{2})"
+FULL_DATE = r"(?:[^\W\d_]{3,12}\.? \d{1,2},? \d{4}|\d{1,2}\.? [^\W\d_]{3,12},? \d{4}|\d{4}-\d{2}-\d{2})"
 
 
 def from_header(html):
@@ -119,6 +134,15 @@ def from_dateline(html):
     """A paragraph that opens with a press-release dateline: "Lucknow, June 03, 2022: ..."."""
     m = re.search(r"<p\b[^>]*>(?:\s|<[^>]+>)*[A-Z][A-Za-z .]{2,30}, (%s)\s*:" % FULL_DATE, html)
     return parse_date(m.group(1)) if m else None
+
+
+def from_pdf(html):
+    """A PDF's own creation date: XMP xmp:CreateDate, else the info dictionary /CreationDate (D:YYYYMMDD...)."""
+    m = re.search(r'xmp:CreateDate\s*=\s*["\'](\d{4}-\d{2}-\d{2})', html) or re.search(r"<xmp:CreateDate>(\d{4}-\d{2}-\d{2})", html)
+    if m:
+        return parse_date(m.group(1))
+    m = re.search(r"/CreationDate\s*\(D:(\d{4})(\d{2})(\d{2})", html)
+    return parse_date("-".join(m.groups())) if m else None
 
 
 def from_url(url):
@@ -138,13 +162,16 @@ def find_date(url):
         html = PAGES[url]
     else:
       try:
-        with urlopen(Request(url, headers={"User-Agent": UA, "Accept-Language": "en"}), timeout=25) as r:
-            html = r.read(1_500_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
+        from backend.media_images import fetch       # one request per site at a time, HOST_GAP apart (2026-10-24: 4,000 pages, few hosts)
+        raw, _ct, _final = fetch(url, 1_500_000, "text/html,application/pdf,*/*")
+        html = raw.decode("utf-8", "replace")
       except Exception as exc:  # noqa: BLE001
         v = from_url(url)
         return (v, "url") if v else (None, f"fetch failed: {type(exc).__name__}")
-    for how, fn in (("json-ld", from_jsonld), ("meta", from_meta), ("markup", from_markup),
-                    ("header", from_header), ("dateline", from_dateline)):
+    rules = [("json-ld", from_jsonld), ("meta", from_meta), ("markup", from_markup), ("header", from_header), ("dateline", from_dateline)]
+    if re.search(r"\.pdf(?:$|[?#])", url, re.I) or html.startswith("%PDF"):
+        rules = [("pdf", from_pdf)]                     # a PDF has no page markup: only its own metadata
+    for how, fn in rules:
         v = fn(html)
         if v:
             return v, how
@@ -166,11 +193,11 @@ def from_issue(html):
 HOW_WORDS = {"json-ld": "the page's structured data (JSON-LD datePublished)", "meta": "a published-time <meta> tag",
              "markup": "a <time> / date element on the page", "header": "a date line just under the article's title",
              "dateline": "the press-release dateline", "url": "the date in the article's web address",
-             "issue-year": "the magazine's issue line (the year only)"}
+             "issue-year": "the magazine's issue line (the year only)", "pdf": "the PDF's own creation date"}
 
 
 def note_date(sid, url, v, how, old=None):
-    tbl = "staging.competitive_signal" if TABLE == "signal" else "staging.competitive_news_article"
+    tbl = {"signal": "staging.competitive_signal", "news": "staging.competitive_news_article", "doc": "staging.source_document"}[TABLE]
     if old is not None:
         msg = f"Stored date {old} replaced by {v}: {HOW_WORDS.get(how, how)} says so (the stored date was off by {abs((old - v).days)} days)."
         outcome = "date_corrected"
@@ -188,6 +215,11 @@ MACHINE = ("json-ld", "meta", "url")     # sources reliable enough to overrule a
 # name -> (rows with a date, rows without one, update one row, label). The issue-year rule is not used for news (no precision column);
 # a corrected news date is copied to source_document.published_at of the same url.
 TABLES = {
+    # 2026-10-24: the stored pages every lane reads (the harvest dates a page from its listing only; 3,900 had none)
+    "doc": ("""SELECT doc_id, url, published_at::date FROM staging.source_document WHERE published_at IS NOT NULL AND url ~ '^https?://'""",
+            """SELECT doc_id, url FROM staging.source_document WHERE published_at IS NULL AND url ~ '^https?://'
+               AND NOT (coalesce(triage, '{}'::jsonb) ? 'date_checked')""",
+            "UPDATE staging.source_document SET published_at = %s WHERE doc_id = %s", "stored pages"),
     "signal": ("""SELECT s.signal_id, d.source_url, s.published_date FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d USING (signal_id)
                   WHERE s.published_date IS NOT NULL AND d.source_url ~ '^https?://'""",
                """SELECT s.signal_id, d.source_url FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d USING (signal_id)
@@ -247,7 +279,8 @@ def main():
     rows = cur.fetchall()
     with ThreadPoolExecutor(8) as pool:
         found = list(pool.map(lambda r: (r[0], r[1], *find_date(r[1])), rows))
-    hits = [(sid, v, "year" if how == "issue-year" else None) for sid, _, v, how in found if v and not (TABLE == "news" and how == "issue-year")]
+    exact = TABLE in ("news", "doc")       # no precision column: the issue-year rule is not used
+    hits = [(sid, v, "year" if how == "issue-year" else None) for sid, _, v, how in found if v and not (exact and how == "issue-year")]
     tally = {}
     for _, url, v, how in found:
         tally[how if v else how.split(":")[0]] = tally.get(how if v else how.split(":")[0], 0) + 1
@@ -257,14 +290,21 @@ def main():
         if TABLE == "news":
             cur.executemany("UPDATE staging.competitive_news_article SET published_date = %s WHERE article_id = %s AND published_date IS NULL",
                             [(v, sid) for sid, v, _ in hits])
+        elif TABLE == "doc":
+            cur.executemany("UPDATE staging.source_document SET published_at = %s WHERE doc_id = %s AND published_at IS NULL",
+                            [(v, sid) for sid, v, _ in hits])
         else:
             cur.executemany("UPDATE staging.competitive_signal SET published_date = %s, published_precision = %s "
                             "WHERE signal_id = %s AND published_date IS NULL", [(v, prec, sid) for sid, v, prec in hits])
         con.commit()      # both tables (news used to skip it, so its dates were never saved)
         print(f"written: {len(hits)}")
+    if args.write and TABLE == "doc":           # checked once: a page with no date marker is not fetched again (unless it failed to load)
+        cur.executemany("UPDATE staging.source_document SET triage = coalesce(triage, '{}'::jsonb) || jsonb_build_object('date_checked', %s::text) "
+                        "WHERE doc_id = %s", [(how, sid) for sid, _, v, how in found if v or not how.startswith("fetch failed")])
+        con.commit()
     if args.write:
         for sid, url, v, how in found:          # every row looked at: the date and where it came from, or why there is none
-            note_date(sid, url, v if (v and not (TABLE == "news" and how == "issue-year")) else None, how)
+            note_date(sid, url, v if (v and not (exact and how == "issue-year")) else None, how)
     con.close()
 
 

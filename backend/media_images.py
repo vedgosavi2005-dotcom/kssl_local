@@ -53,10 +53,12 @@ _host_last: dict[str, float] = {}
 _locks_lock = threading.Lock()
 
 
-def fetch(url: str, limit: int, accept="*/*", retry=True):
+def fetch(url: str, limit: int, accept="*/*", retry=True, referer=None):
     import time
     from urllib.error import HTTPError
     from urllib.parse import urlsplit
+    from urllib.parse import quote
+    url = quote(url.strip(), safe=":/?#[]@!$&'()*+,;=%~")     # spaces / control characters in a site's own links (InvalidURL)
     host = urlsplit(url).hostname or ""
     with _locks_lock:
         lock = _host_lock.setdefault(host, threading.Lock())
@@ -64,14 +66,15 @@ def fetch(url: str, limit: int, accept="*/*", retry=True):
         time.sleep(max(0.0, _host_last.get(host, 0.0) + HOST_GAP - time.monotonic()))
         _host_last[host] = time.monotonic()
         try:
-            with urlopen(Request(url, headers={"User-Agent": UA, "Accept": accept, "Accept-Language": "en"}), timeout=25) as r:
+            headers = {"User-Agent": UA, "Accept": accept, "Accept-Language": "en", **({"Referer": referer} if referer else {})}
+            with urlopen(Request(url, headers=headers), timeout=25) as r:
                 return r.read(limit + 1), r.headers.get_content_type(), r.geturl()
         except HTTPError as e:
             if e.code != 429 or not retry:
                 raise
             wait = e.headers.get("Retry-After", "")
             time.sleep(min(60, int(wait)) if wait.isdigit() else 30)
-    return fetch(url, limit, accept, retry=False)
+    return fetch(url, limit, accept, retry=False, referer=referer)
 
 
 def find_image(page_html: str, base: str, why: list | None = None):
@@ -90,7 +93,8 @@ def find_image(page_html: str, base: str, why: list | None = None):
     body = re.search(r"<article\b.*?</article>", page_html, re.I | re.S)
     first = None
     for m in re.finditer(r'<img\b[^>]*>', body.group(0) if body else page_html, re.I):
-        src = re.search(r'\ssrc=["\']([^"\']+)["\']', m.group(0), re.I)
+        src = img_src(m.group(0))
+        src = re.match(r"(.+)", src) if src else None
         junk = src and re.search(r"logo|icon|sprite|avatar|pixel|blank|banner|/ads?/|\.svg|\.gif|data:|mode=img", src.group(1), re.I)
         if not src or junk:
             if why is not None:
@@ -109,6 +113,16 @@ def find_image(page_html: str, base: str, why: list | None = None):
     return (first, "article_img") if first else (None, None)
 
 
+def img_src(tag: str):
+    """the picture an <img> tag shows: src, else (lazy loading) data-src / data-lazy-src / data-original / the first srcset entry"""
+    for attr in ("src", "data-src", "data-lazy-src", "data-original", "srcset", "data-srcset"):
+        m = re.search(r'\s%s\s*=\s*["\']([^"\']+)["\']' % attr, tag, re.I)
+        v = m.group(1).strip().split(",")[0].strip().split(" ")[0] if m else ""
+        if v and not v.startswith("data:") and not re.search(r"placeholder|lazy|blank|spacer|transparent", v, re.I):
+            return v
+    return None
+
+
 _JUNK = re.compile(r"logo|icon|sprite|avatar|pixel|blank|banner|/ads?/|\.svg|\.gif|data:|mode=img|piwik|ansprechpartner|contact", re.I)
 
 
@@ -118,7 +132,8 @@ def body_images(page_html: str, base: str) -> list[str]:
     m = re.search(r"<article\b.*?</article>", page_html, re.I | re.S) or re.search(r"<h1\b.*", page_html, re.I | re.S)
     wide, rest = [], []
     for t in re.finditer(r"<img\b[^>]*>", m.group(0) if m else page_html, re.I):
-        src = re.search(r'\ssrc=["\']([^"\']+)["\']', t.group(0), re.I)
+        src = img_src(t.group(0))
+        src = re.match(r"(.+)", src) if src else None
         if not src or _JUNK.search(src.group(1)):
             continue
         w = re.search(r'\swidth=["\']?(\d+)', t.group(0), re.I)
@@ -168,7 +183,7 @@ def refind_defaults(workers=8) -> dict:
             got = None
             for img_url in uniq[page][:4]:
                 try:
-                    data, _ct, _ = fetch(img_url, MAX_BYTES, "image/*,*/*")
+                    data, _ct, _ = fetch(img_url, MAX_BYTES, "image/*,*/*", referer=page)
                     ct, w, h = check_image(data)
                     data, ct, w, h = shrink(data, ct, w, h)
                     got = (str(uuid.uuid5(uuid.NAMESPACE_URL, img_url)), img_url, ct, data, len(data), w, h, hashlib.sha256(data).hexdigest())
@@ -329,7 +344,7 @@ def run(limit=None, workers=8, retry=False) -> dict:
             last = None
             for img_url, how in candidates():
                 try:
-                    data, ctype, _ = fetch(img_url, MAX_BYTES, "image/*,*/*")
+                    data, ctype, _ = fetch(img_url, MAX_BYTES, "image/*,*/*", referer=page)
                     ct, w, h = check_image(data)
                 except Exception as e:  # noqa: BLE001 -- this candidate is no good: try the next one
                     last = e

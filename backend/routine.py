@@ -55,6 +55,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("spec_store", "cmd", ["-m", "backend.import_spec_store"]),   # owner's spec store: new / changed pages, checked figures only (no model)
         # 2. attribution (code) and triage (Haiku, batched, logged as prompt_run 'triage_route')
         ("attribution", "cmd", ["-m", "backend.attribute_documents"]),
+        ("doc_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--table", "doc", "--write"]),   # a page's own date when the listing gave none (free; each page checked once)
         ("triage", "cmd", ["-m", "backend.triage_routes"] + (["--since", WINDOW["since"]] if WINDOW.get("since") else [])),   # a windowed run re-triages it
         ("news_candidates", "cmd", ["-m", "backend.flood", "candidates"]),
         # 3. competitive pillar
@@ -316,7 +317,7 @@ def _selftest() -> None:
     names = [s[0] for s in steps()]
     assert len(names) == len(set(names)), "step names must be unique"
     order = {n: i for i, n in enumerate(names)}
-    for a, b in (("attribution", "triage"), ("triage", "news"), ("news", "signal"), ("matchup_engine", "spec_enrich"),
+    for a, b in (("attribution", "triage"), ("doc_dates", "triage"), ("triage", "news"), ("news", "signal"), ("matchup_engine", "spec_enrich"),
                  ("spec_enrich", "matchup_compare"), ("client_spec_enrich", "matchup_merge"), ("matchup_merge", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"), ("tender", "tender_category"), ("tender_category", "tender_assessment"),
                  ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine"),
                  ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("signal", "media_images"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
