@@ -57,6 +57,7 @@ build "$STG" db/setup/03_staging_db.sql
 "${PSQL[@]}" -d "$STG" < db/setup/37_activity_recording.sql    # activity.recording: page recordings (rrweb) for exact replay
 "${PSQL[@]}" -d "$STG" < db/setup/33_pipeline_log.sql          # ops.*: pipeline log (runs, steps, every row written, script notes)
 "${PSQL[@]}" -d "$STG" < db/setup/34_pipeline_history.sql      # ops.step_history: live steps + steps reconstructed from table timestamps
+"${PSQL[@]}" -d "$STG" < db/setup/38_source_link.sql           # staging.source_link: dead source links -> their archive copy
 build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/08_competitor_text_columns.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/11_foundations.sql              # same DDL on the serving schemas (Approve copies by column name); no seed rows here

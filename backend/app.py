@@ -93,7 +93,8 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
                     WHERE table_schema = %s AND table_type = 'BASE TABLE'
                       AND table_name NOT IN ('fact_source', 'review_decision',
                                              -- raw layer / bookkeeping: prompt inputs, never displayed
-                                             'tender_raw', 'source_document', 'news_candidate', 'prompt_run', 'spec_dictionary')
+                                             'tender_raw', 'source_document', 'news_candidate', 'prompt_run', 'spec_dictionary',
+                                             'source_link')
                     ORDER BY table_name
                     """,
                     (source,),
@@ -159,6 +160,35 @@ def health():
         return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
 
 
+def archive_links() -> dict[str, str]:
+    """{dead source url: its Internet Archive copy} (staging.source_link, db/setup/38, scripts/check_source_links.py). A
+    publisher that takes an article down leaves a 404 behind; the page we read is still at the archive."""
+    dsn = review.staging_dsn()
+    if not dsn:
+        return {}
+    try:
+        with psycopg2.connect(dsn, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('staging.source_link')")
+            if not cur.fetchone()[0]:
+                return {}
+            cur.execute("SELECT url, archive_url FROM staging.source_link WHERE status IN (404, 410) AND archive_url IS NOT NULL")
+            return dict(cur.fetchall())
+    except psycopg2.Error:
+        return {}
+
+
+def swap_links(o: Any, links: dict[str, str]) -> Any:
+    """every string in o that is a dead url becomes its archive copy, in place (~40 ms over the whole dataset)"""
+    items = o.items() if isinstance(o, dict) else enumerate(o) if isinstance(o, list) else ()
+    for k, v in items:
+        if isinstance(v, str):
+            if v in links:
+                o[k] = links[v]
+        elif isinstance(v, (dict, list)):
+            swap_links(v, links)
+    return o
+
+
 @app.get("/api/dataset")
 def dataset():
     try:
@@ -168,7 +198,7 @@ def dataset():
         if REVIEW:
             with review.session() as (st, sv):
                 payload["review"] = review.statuses(st, sv)
-        return payload
+        return swap_links(payload, archive_links())
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={"error": f"PostgreSQL dataset unavailable: {exc}"})
 
@@ -446,7 +476,7 @@ def review_trace(table: str, key: str) -> dict[str, Any]:
     _review_only()
     try:
         with review.session() as (st, sv):
-            return json_value(review.trace(st, sv, table, key))
+            return swap_links(json_value(review.trace(st, sv, table, key)), archive_links())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
