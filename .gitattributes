@@ -1,0 +1,4 @@
+# shell scripts and server configs run on Linux (VPS / AWS): never CRLF, even when checked out on Windows
+*.sh text eol=lf
+deploy/aws/Caddyfile text eol=lf
+*.yml text eol=lf
