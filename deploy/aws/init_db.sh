@@ -44,7 +44,8 @@ echo "== connect VPS1 to AWS"
 KSSL_AWS_HOST="$AH" bash deploy/aws/link_vps1.sh
 
 echo "== live database (VPS1 kssl_serving -> AWS)"
-"${VPS[@]}" "docker exec kssl2-db pg_dump -U kssl_admin -d kssl_serving -Fc --no-owner --no-privileges \
+# holds the push lock: the cron push (installed above) skips while the first copy is still being restored
+"${VPS[@]}" "exec 9>/opt/kssl-v2/aws/push.lock; flock 9; docker exec kssl2-db pg_dump -U kssl_admin -d kssl_serving -Fc --no-owner --no-privileges \
     --exclude-table-data='activity.*' --exclude-table-data='parallax_agent.*' \
   | ssh -i /opt/kssl-v2/aws/id_aws -o BatchMode=yes -o ServerAliveInterval=15 $AU@$AH \
       'docker exec -i kssl2-db pg_restore -U kssl_admin -d kssl_serving --no-owner --no-privileges --exit-on-error'"
