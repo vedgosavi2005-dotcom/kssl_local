@@ -286,7 +286,7 @@ def _selftest() -> None:
     print("media_images self-check ok")
 
 
-def run(limit=None, workers=8) -> dict:
+def run(limit=None, workers=8, retry=False) -> dict:
     import psycopg2.extras
     from prompts.run import connect
     conn = connect()
@@ -301,7 +301,7 @@ def run(limit=None, workers=8) -> dict:
     cur.execute(PRODUCT_NEWS)
     for r in cur.fetchall():
         pages.setdefault(r["page"], None)
-    cur.execute("SELECT page_url FROM media.page_image")
+    cur.execute("SELECT page_url FROM media.page_image" + (" WHERE status IN ('ok', 'site_default')" if retry else ""))   # --retry: pages left without a picture again
     done = {r["page_url"] for r in cur.fetchall()}
     todo = [(p, img) for p, img in pages.items() if p not in done][: limit or None]
     print(f"{len(pages)} pages behind the cards; {len(done)} already checked; {len(todo)} to do", flush=True)
@@ -312,20 +312,36 @@ def run(limit=None, workers=8) -> dict:
     def one(page, card_img):
         how, img_url, status, err, rec = None, None, "no_image", None, None
         why, size, shrunk = [], None, None
-        try:
+        def candidates():
+            """the card's own link, then the page's preview tag, then the article's own photos (owner 2026-10-23: a PIB page's
+            og:image did not return a picture while the press release has two photos)"""
             if card_img:
-                img_url, how = card_img, "card_link"
-            else:
-                raw, ctype, final = fetch(page, 2_000_000, "text/html,*/*")
-                img_url, how = find_image(raw.decode("utf-8", "replace"), final, why)
-            if img_url:
-                data, ctype, _ = fetch(img_url, MAX_BYTES, "image/*,*/*")
-                ct, w, h = check_image(data)
+                yield card_img, "card_link"
+            raw, _ct, final = fetch(page, 2_000_000, "text/html,*/*")
+            text = raw.decode("utf-8", "replace")
+            first = find_image(text, final, why)
+            if first[0]:
+                yield first
+            for u in body_images(text, final)[:4]:
+                if u != first[0]:
+                    yield u, "article_img"
+        try:
+            last = None
+            for img_url, how in candidates():
+                try:
+                    data, ctype, _ = fetch(img_url, MAX_BYTES, "image/*,*/*")
+                    ct, w, h = check_image(data)
+                except Exception as e:  # noqa: BLE001 -- this candidate is no good: try the next one
+                    last = e
+                    continue
                 size = (w, h)
                 data, ct, w, h = shrink(data, ct, w, h)
                 shrunk = (w, h) if (w, h) != size else None
-                rec =(str(uuid.uuid5(uuid.NAMESPACE_URL, img_url)), img_url, ct, data, len(data), w, h, hashlib.sha256(data).hexdigest())
-                status = "ok"
+                rec = (str(uuid.uuid5(uuid.NAMESPACE_URL, img_url)), img_url, ct, data, len(data), w, h, hashlib.sha256(data).hexdigest())
+                status, last = "ok", None
+                break
+            if last is not None:
+                raise last
         except ValueError as e:
             known = str(e) in ("too_large", "not_image", "too_small")    # check_image reasons; other ValueErrors (bad url) are failures
             status, err = (str(e), None) if known else ("image_failed" if img_url else "page_failed", f"ValueError: {str(e)[:150]}")
@@ -407,6 +423,7 @@ def main(argv=None) -> int:
     ap.add_argument("--point", action="store_true", help="only re-point the cards at the stored pictures (no fetching)")
     ap.add_argument("--refind-defaults", action="store_true", help="pages that only had the site's default picture: take the article's own")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--retry", action="store_true", help="check again the pages that ended without a picture (not_image, too_small, failed...)")
     ap.add_argument("--workers", type=int, default=8)
     a = ap.parse_args(argv)
     if a.selftest:
@@ -419,7 +436,7 @@ def main(argv=None) -> int:
         from prompts.run import connect
         point_cards(connect())
     else:
-        run(a.limit, a.workers)
+        run(a.limit, a.workers, a.retry)
     return 0
 
 

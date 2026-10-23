@@ -58,6 +58,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("signal", "prompt", "signal"),
         ("published_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--write"]),   # cards the harvest left undated: the page's own date (free)
         ("story_dates", "cmd", ["-m", "prompts.story", "--backfill-dates", "--write"]),    # ... and their timeline steps take it
+        ("media_images", "cmd", ["-m", "backend.media_images"]),   # new cards' pictures into media.image (free; pages already checked are skipped)
         ("moment", "prompt", "moment"),
         ("partnership", "prompt", "partnership"), ("project", "prompt", "project"), ("product_program", "prompt", "product_program"),
         ("client_product_program", "prompt", "client_product_program"), ("geo", "prompt", "geo"),
@@ -134,7 +135,8 @@ def pending_count(conn, pid: str):
             conn.rollback()
 
 
-def spent_since(conn, t0: datetime) -> float:
+def spent_since(conn, t0: datetime, t0_here: datetime | None = None) -> float:
+    """Spend since t0 (the DB's clock: prompt_run) / t0_here (this machine's clock: the matchup engine's own call log)."""
     with conn.cursor() as cur:
         cur.execute("SELECT coalesce(sum(cost_usd), 0) AS c FROM staging.prompt_run WHERE started_at >= %s", (t0,))
         c = float(cur.fetchone()["c"])
@@ -147,7 +149,7 @@ def spent_since(conn, t0: datetime) -> float:
             except ValueError:
                 continue
             at = r.get("at") or r.get("ts") or ""
-            if at and at >= t0.isoformat()[:19]:
+            if at and at >= (t0_here or t0).isoformat()[:19]:
                 c += float(r.get("cost_usd") or 0)
     return c
 
@@ -243,12 +245,16 @@ def check(conn=None) -> tuple[list[str], list[str]]:
 
 # ---- the run ------------------------------------------------------------------------------------------------------
 
-def run(budget: float, only: set, start: str | None, skip: set) -> int:
+def run(budget: float, only: set, start: str | None, skip: set, limit: int | None = None) -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     LOGS.mkdir(parents=True, exist_ok=True)
     logf = (LOGS / f"routine_{stamp}.log").open("w", encoding="utf-8")
-    t0 = datetime.now(timezone.utc)
     conn = connect()
+    with conn.cursor() as cur:     # the DB's clock, not this machine's: spend is counted from prompt_run.started_at, which the DB stamps
+        cur.execute("SELECT now() AS t")      # (the local Docker VM ran 5.5 h off real UTC on 2026-10-23: a run counted earlier runs' spend)
+        t0 = cur.fetchone()["t"]
+    conn.rollback()
+    t0_here = datetime.now(timezone.utc)
     results, limit_hit, started = [], False, start is None
     # the pipeline log (backend/ops_log, db/setup/33): this run, each step, and every row each step writes
     from backend import ops_log
@@ -261,7 +267,7 @@ def run(budget: float, only: set, start: str | None, skip: set) -> int:
         rec = {"step": name, "kind": kind}
         if kind == "prompt":
             why = off_routine(what)
-            spent = spent_since(conn, t0)
+            spent = spent_since(conn, t0, t0_here)
             if why or limit_hit or spent >= budget:
                 rec["status"] = "skipped: " + (why or ("usage limit" if limit_hit else f"budget ${budget:.0f} reached"))
                 results.append(rec)
@@ -269,7 +275,7 @@ def run(budget: float, only: set, start: str | None, skip: set) -> int:
                 print(f"{name:24} {rec['status']}", flush=True)
                 continue
             cap = min(CAP.get(what, DEFAULT_CAP), budget - spent)
-            args = ["-m", "scripts.flood_run", what, "--workers", str(WORKERS.get(what, 3)), "--max-cost", f"{cap:.2f}"]
+            args = ["-m", "scripts.flood_run", what, "--workers", str(WORKERS.get(what, 3)), "--max-cost", f"{cap:.2f}"] + (["--limit", str(limit)] if limit else [])
         else:
             args = what
         t = time.time()
@@ -289,8 +295,8 @@ def run(budget: float, only: set, start: str | None, skip: set) -> int:
                             f"db/flood_logs/routine_{stamp}.log")
         limit_hit = limit_hit or p.returncode == 3
         results.append(rec)
-        print(f"{name:24} {rec['status']:18} {rec['seconds']:>7}s  spent so far ${spent_since(conn, t0):.2f}", flush=True)
-    total = spent_since(conn, t0)
+        print(f"{name:24} {rec['status']:18} {rec['seconds']:>7}s  spent so far ${spent_since(conn, t0, t0_here):.2f}", flush=True)
+    total = spent_since(conn, t0, t0_here)
     conn.close()
     logf.close()
     failed = any(r.get("status", "").startswith("FAILED") for r in results)
@@ -308,7 +314,7 @@ def _selftest() -> None:
     for a, b in (("attribution", "triage"), ("triage", "news"), ("news", "signal"), ("matchup_engine", "spec_enrich"),
                  ("spec_enrich", "matchup_compare"), ("client_spec_enrich", "matchup_merge"), ("matchup_merge", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"), ("tender", "tender_category"), ("tender_category", "tender_assessment"),
                  ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine"),
-                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
+                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("signal", "media_images"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"),
                  ("story_prune", "flood_report"), ("tender_assessment", "source_fill"), ("story_prune", "source_fill"), ("source_fill", "flood_report")):
         assert order[a] < order[b], f"{a} must run before {b}"
     assert all(k in ("cmd", "prompt") for _, k, _ in steps())
@@ -324,6 +330,7 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="", help="comma-separated step names")
     ap.add_argument("--from-step")
     ap.add_argument("--skip", default="")
+    ap.add_argument("--limit", type=int, help="at most N subjects per prompt step (newest first, as the prompt orders them)")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -336,7 +343,7 @@ def main(argv=None) -> int:
     if a.check:
         return cmd_check()
     split = lambda s: {x.strip() for x in s.split(",") if x.strip()}
-    return run(a.budget, split(a.only), a.from_step, split(a.skip))
+    return run(a.budget, split(a.only), a.from_step, split(a.skip), a.limit)
 
 
 if __name__ == "__main__":
