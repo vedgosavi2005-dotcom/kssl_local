@@ -15,6 +15,7 @@ web_search: true                 # the competitor's partners are mostly not in t
 # Inputs: the best-scored harvested documents of the competitor (deal score of the triage, or routed to partnership) first, then
 # headlines, then web search for gaps. A subject placeholder inside a documents query is bound as a SQL parameter.
 
+marks_read: partnership              # lane name in source_document.processed_by (owner 2026-10-24: read every new routed page)
 subject:
   key: competitor_id
   query: |
@@ -25,6 +26,7 @@ subject:
              c.display_name
   documents:
     - from: sql                  # 1. the best-scored harvested documents: full text
+      mark_read: true            # pages included here count as read by this lane (prompts/run.py marks them after a good run)
       query: |
         SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
                round(coalesce((d.triage->'info'->>'deal')::numeric, 0), 2) AS deal_score,
@@ -32,8 +34,18 @@ subject:
                left(d.body_text, 2200) AS text
         FROM staging.source_document d
         WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
-        ORDER BY (CASE WHEN d.triage->'route' ? 'partnership' THEN 1 ELSE 0 END) DESC,
+        ORDER BY (d.triage->'route' ? 'partnership' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'partnership')) DESC,                       -- this lane's unread routed pages first, newest first (owner 2026-10-24)
+                 CASE WHEN (d.triage->'route' ? 'partnership' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'partnership')) THEN coalesce(d.published_at, d.fetched_at) END DESC NULLS LAST, CASE WHEN (d.triage->'route' ? 'partnership' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'partnership')) THEN d.doc_id END,
+                 (CASE WHEN d.triage->'route' ? 'partnership' THEN 1 ELSE 0 END) DESC,
                  coalesce((d.triage->'info'->>'deal')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 8
+    - from: sql                  # every OTHER unread page routed to this lane: its opening (the full-text block above took the first 8)
+      mark_read: true
+      query: |
+        SELECT 'ROUTED (opening)' AS doc, d.published_at, d.title, d.source_name, d.url, left(d.body_text, 600) AS opening
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
+          AND (d.triage->'route' ? 'partnership' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'partnership'))
+        ORDER BY coalesce(d.published_at, d.fetched_at) DESC NULLS LAST, d.doc_id LIMIT 40 OFFSET 8
     - from: sql                  # 2. the next documents: only the deal sentences the triage picked out
       query: |
         SELECT 'DEAL SENTENCES' AS doc, d.published_at, d.title, d.url,

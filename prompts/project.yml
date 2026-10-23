@@ -15,6 +15,7 @@ web_search: true                 # programme facts are rarely in the news rows
 #  - inputs: the best-scored harvested documents (deal score of the triage, or routed to project), then news leads, then web search
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
+marks_read: project              # lane name in source_document.processed_by (owner 2026-10-24: read every new routed page)
 subject:
   key: competitor_id
   query: |
@@ -30,6 +31,7 @@ subject:
              c.display_name
   documents:
     - from: sql                  # 1. best-scored harvested documents: full text
+      mark_read: true            # pages included here count as read by this lane (prompts/run.py marks them after a good run)
       query: |
         SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
                round(coalesce((d.triage->'info'->>'deal')::numeric, 0), 2) AS deal_score,
@@ -37,8 +39,18 @@ subject:
                left(d.body_text, 2200) AS text
         FROM staging.source_document d
         WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
-        ORDER BY (CASE WHEN d.triage->'route' ? 'project' THEN 1 ELSE 0 END) DESC,
+        ORDER BY (d.triage->'route' ? 'project' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'project')) DESC,                       -- this lane's unread routed pages first, newest first (owner 2026-10-24)
+                 CASE WHEN (d.triage->'route' ? 'project' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'project')) THEN coalesce(d.published_at, d.fetched_at) END DESC NULLS LAST, CASE WHEN (d.triage->'route' ? 'project' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'project')) THEN d.doc_id END,
+                 (CASE WHEN d.triage->'route' ? 'project' THEN 1 ELSE 0 END) DESC,
                  coalesce((d.triage->'info'->>'deal')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 8
+    - from: sql                  # every OTHER unread page routed to this lane: its opening (the full-text block above took the first 8)
+      mark_read: true
+      query: |
+        SELECT 'ROUTED (opening)' AS doc, d.published_at, d.title, d.source_name, d.url, left(d.body_text, 600) AS opening
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.body_text, '') <> ''
+          AND (d.triage->'route' ? 'project' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'project'))
+        ORDER BY coalesce(d.published_at, d.fetched_at) DESC NULLS LAST, d.doc_id LIMIT 40 OFFSET 8
     - from: sql                  # 2. news leads (headlines)
       query: |
         SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url

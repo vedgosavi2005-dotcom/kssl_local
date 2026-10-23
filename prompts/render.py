@@ -548,12 +548,14 @@ def bind_subject(query: str, subject: dict) -> tuple[str, dict]:
     return SUBJECT_BARE.sub(sub, SUBJECT_QUOTED.sub(sub, q)), args
 
 
-def sql_document(cur, query: str, subject: dict, cap: int = 24_000) -> str:
-    """Rows of `query` as text, one per line: col: value | col: value."""
+def sql_document(cur, query: str, subject: dict, cap: int = 24_000, read: list | None = None) -> str:
+    """Rows of `query` as text, one per line: col: value | col: value. `read` (a list) collects each row's url (mark_read blocks)."""
     q, args = bind_subject(query, {k: v for k, v in subject.items() if not k.startswith("_")})
     rows = _one(cur, q, args) if args else _one(cur, q.replace("%%", "%"), None)
     if not rows:
         return NONE_ON_RECORD
+    if read is not None:
+        read += [str(r["url"]) for r in rows if r.get("url")]
     return "\n".join(" | ".join(f"{k}: {_s(v)}" for k, v in r.items() if v is not None) for r in rows)[:cap]
 
 
@@ -582,7 +584,7 @@ def documents(cur, spec: dict, subject: dict) -> tuple[str, list[str]]:
             parts.append(f"[SOURCE {url}]\n{text}")
             got_article = True
         elif src == "sql":
-            parts.append(f"[ROWS]\n{sql_document(cur, d['query'], subject, d.get('cap', 24_000))}")
+            parts.append(f"[ROWS]\n{sql_document(cur, d['query'], subject, d.get('cap', 24_000), subject.setdefault('_read_urls', []) if d.get('mark_read') else None)}")
         elif src == "source_document":              # the raw layer's stored text (prompts/raw_docs.py); [] = nothing usable, the next entry is tried
             from prompts import raw_docs
             blocks = raw_docs.resolve(cur, d, subject)

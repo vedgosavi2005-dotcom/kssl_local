@@ -335,6 +335,11 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
                     o.status = "rejected"
                     o.error = "; ".join((valid.rejected + r.dropped)[:3]) or "no record could be loaded"
         if o.status in ("loaded", "skipped"):
+            if spec.get("marks_read") and subject.get("_read_urls"):     # owner 2026-10-24: the next run starts from the pages not read yet
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE staging.source_document SET processed_by = coalesce(processed_by, '{}'::jsonb) || jsonb_build_object(%s, now()::text) "
+                                "WHERE url = ANY(%s)", (spec["marks_read"], list(set(subject["_read_urls"]))))
+                o.details["read_pages"] = len(set(subject["_read_urls"]))
             if o.status == "loaded":
                 _requalify(conn, o)
             conn.commit()

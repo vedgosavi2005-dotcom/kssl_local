@@ -21,6 +21,7 @@ cadence: weekly                  # one run per competitor; the runner re-runs a 
 #  - "deeper analysis by view" only for views that have stored rows for this competitor (VIEWS WITH ROWS).
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
+marks_read: moment              # lane name in source_document.processed_by (owner 2026-10-24: read every new routed page)
 subject:
   key: competitor_id
   query: |
@@ -37,6 +38,7 @@ subject:
              c.display_name
   documents:
     - from: sql                  # 1. the competitor's stored signals and the steps of their stories
+      mark_read: true            # pages included here count as read by this lane (prompts/run.py marks them after a good run)
       query: |
         SELECT 'SIGNAL' AS doc, s.title AS signal_title, coalesce(s.event_date, s.published_date) AS event_date, s.classification AS label, s.probability, s.impact, s.impact_dimension,
                d.glance_move, d.glance_where, d.glance_third_party, left(d.what_article_says, 450) AS what_it_says, d.source_url,
@@ -54,9 +56,19 @@ subject:
         FROM staging.source_document d
         WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 120
           AND coalesce(d.body_text, '') <> ''
-        ORDER BY (CASE WHEN d.triage->'route' ? 'moment' THEN 1 ELSE 0 END) DESC,
+        ORDER BY (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment')) DESC,                       -- this lane's unread routed pages first, newest first (owner 2026-10-24)
+                 CASE WHEN (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment')) THEN coalesce(d.published_at, d.fetched_at) END DESC NULLS LAST, CASE WHEN (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment')) THEN d.doc_id END,
+                 (CASE WHEN d.triage->'route' ? 'moment' THEN 1 ELSE 0 END) DESC,
                  greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0)) DESC,
                  d.published_at DESC NULLS LAST LIMIT 9
+    - from: sql                  # every OTHER unread page routed to this lane: its opening (the full-text block above took the first 8)
+      mark_read: true
+      query: |
+        SELECT 'ROUTED (opening)' AS doc, d.published_at, d.title, d.source_name, d.url, left(d.body_text, 600) AS opening
+        FROM staging.source_document d
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 120 AND coalesce(d.body_text, '') <> ''
+          AND (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment'))
+        ORDER BY coalesce(d.published_at, d.fetched_at) DESC NULLS LAST, d.doc_id LIMIT 40 OFFSET 9
     - from: sql                  # 3. which views have stored rows for this competitor
       query: |
         SELECT 'VIEWS WITH ROWS' AS doc,

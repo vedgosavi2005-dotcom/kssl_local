@@ -15,6 +15,7 @@ web_search: true
 #  - the client (KSSL) is a subject too, so its own footprint has the same shape; it runs FIRST.
 # A subject placeholder inside a documents query is bound as a SQL parameter, never pasted into the text.
 
+marks_read: geo              # lane name in source_document.processed_by (owner 2026-10-24: read every new routed page)
 subject:
   key: subject_id
   query: |
@@ -27,6 +28,7 @@ subject:
     ORDER BY company_role, display_name
   documents:
     - from: sql                  # 1. best-scored harvested documents (sales / geography score of the triage; for the client: documents that name it)
+      mark_read: true            # pages included here count as read by this lane (prompts/run.py marks them after a good run)
       query: |
         SELECT 'DOCUMENT' AS doc, d.published_at, d.title, d.source_name, d.url,
                round(coalesce((d.triage->'info'->>'sales_geo')::numeric, 0), 2) AS geo_score, d.triage->'countries' AS countries,
@@ -35,8 +37,18 @@ subject:
         WHERE ('{{subject.company_role}}' = 'competitor' AND '{{subject.subject_id}}' = ANY(d.competitor_ids::text[])
                OR '{{subject.company_role}}' = 'client' AND d.mentions_client)
           AND coalesce(d.body_text, '') <> ''
-        ORDER BY (CASE WHEN d.triage->'route' ? 'geo' THEN 1 ELSE 0 END) DESC,
+        ORDER BY (d.triage->'route' ? 'geo' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'geo')) DESC,                       -- this lane's unread routed pages first, newest first (owner 2026-10-24)
+                 CASE WHEN (d.triage->'route' ? 'geo' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'geo')) THEN coalesce(d.published_at, d.fetched_at) END DESC NULLS LAST, CASE WHEN (d.triage->'route' ? 'geo' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'geo')) THEN d.doc_id END,
+                 (CASE WHEN d.triage->'route' ? 'geo' THEN 1 ELSE 0 END) DESC,
                  coalesce((d.triage->'info'->>'sales_geo')::numeric, 0) DESC, d.published_at DESC NULLS LAST LIMIT 8
+    - from: sql                  # every OTHER unread page routed to this lane: its opening (the full-text block above took the first 8)
+      mark_read: true
+      query: |
+        SELECT 'ROUTED (opening)' AS doc, d.published_at, d.title, d.source_name, d.url, left(d.body_text, 600) AS opening
+        FROM staging.source_document d
+        WHERE '{{subject.company_role}}' = 'competitor' AND '{{subject.subject_id}}' = ANY(d.competitor_ids::text[]) AND coalesce(d.body_text, '') <> ''
+          AND (d.triage->'route' ? 'geo' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'geo'))
+        ORDER BY coalesce(d.published_at, d.fetched_at) DESC NULLS LAST, d.doc_id LIMIT 40 OFFSET 8
     - from: sql                  # 2. the next documents: only the sales / geography sentences the triage picked out
       query: |
         SELECT 'GEO SENTENCES' AS doc, d.published_at, d.title, d.url,
