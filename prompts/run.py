@@ -209,6 +209,17 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
             o.details["fetched_urls"] = urls
             o.details["render_seconds"] = round(time.monotonic() - t0, 1)
             conn.rollback()
+        except render.DocumentError as e:
+            # a source page that cannot be read (paywall, block, removed, empty) is a fact about the source, not a pipeline error
+            # (owner 2026-10-24: no errors): the subject is skipped before any model call, and the Flow dashboard shows it as a warning
+            conn.rollback()
+            o.status, o.skip_reason = "skipped", f"unreadable source: {e}"[:300]
+            o.seconds = round(time.monotonic() - t0, 1)
+            from backend import ops_log
+            ops_log.note("document", "unreadable", f"Skipped before the model call: the article page cannot be read ({e}). Nothing was spent.",
+                         subject=str(subject.get("article_url") or subject.get("url") or key), tbl=f"prompt:{spec['id']}", rec_id=str(key),
+                         level="warn")
+            return o
         except (render.PromptError, psycopg2.Error) as e:
             conn.rollback()
             o.error = f"{type(e).__name__}: {e}"
@@ -259,6 +270,25 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
             o.status, o.error = "failed", f"validate: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
             o.seconds = round(time.monotonic() - t0, 1)
             return o
+    if (not handler and reply is None and valid is not None and not valid.recs and not valid.skip_reason and valid.rejected):
+        # REPAIR ROUND (owner 2026-10-24: no errors): every record broke a rule (a title 3 characters too long, 2 key points of the 3
+        # required). Ask once more with the validator's own words, instead of logging a rejected run.
+        fix = ("\n\nYOUR PREVIOUS REPLY WAS REJECTED by the checker, for these reasons:\n- " + "\n- ".join(str(x)[:300] for x in valid.rejected[:8])
+               + "\nReply again with the complete JSON, fixing exactly these points: shorten what is too long, split a long sentence, add the"
+                 " missing items from the article (or give a skip_reason if the article does not support them). Change nothing else.")
+        try:
+            res = call_model(o.system, o.task + fix, spec["model"], spec["web_search"])
+            o.tokens_in += res.tokens_in
+            o.tokens_out += res.tokens_out
+            o.cost = (o.cost or 0) + (res.cost_usd or 0)
+            o.details.setdefault("calls", []).append(call_log("repair", res))
+            env2 = loader.parse_envelope(res.text)
+            valid2 = loader.validate(env2, spec["id"], output, enums)
+            o.details["repair"] = {"before": valid.rejected[:8], "after": valid2.rejected[:8], "fixed": bool(valid2.recs or valid2.skip_reason)}
+            if valid2.recs or valid2.skip_reason:
+                o.raw, env, valid = res.text, env2, valid2
+        except (ModelError, loader.NotJson, loader.EnvelopeError) as e:
+            o.details["repair"] = {"before": valid.rejected[:8], "error": str(e)[:200]}
     if handler:
         return _handled(conn, subject, env, o, dry_run, t0, handler)
     t_load = time.monotonic()
