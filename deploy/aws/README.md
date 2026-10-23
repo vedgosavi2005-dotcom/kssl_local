@@ -87,7 +87,7 @@ All steps run from this PC, in Git Bash, inside `kssl_local`.
 
 ## How the push stays safe
 
-- **All or nothing:** every serving and ui table is copied in one transaction, from one `pg_dump` snapshot. If anything fails, AWS keeps its previous data. The live API keeps answering during the push, and readers see either the old or the new data, never a mix.
+- **All or nothing:** every serving and ui table is emptied (`TRUNCATE`) and refilled in one transaction, from one `pg_dump` snapshot. If anything fails, AWS keeps its previous data. Live API requests wait the few seconds the push takes. `TRUNCATE` keeps the rows in VPS1's order, so tied items (cards, tenders) show in the same order on both sites, which session replay needs.
 - **Only on change:** the push runs only when VPS1's live tables or dead-link table changed. Pictures (about 460 MB) go only when the set of images differs.
 - **AWS's usage log stays on AWS:** the push never touches AWS's activity tables. New AWS visits are copied to VPS1, so the review site's analytics and replays include them. VPS1 gives the copied rows new ids, and the last AWS id it pulled is stored in `/opt/kssl-v2/aws/*.last`.
 - **The guard still holds:** on AWS, serving tables are still protected by the Approve-only guard. Only the push lifts it, and only for its own transaction.

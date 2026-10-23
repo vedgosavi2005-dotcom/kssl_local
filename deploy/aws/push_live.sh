@@ -2,7 +2,7 @@
 # Runs ON VPS1 every 5 minutes (cron, installed by deploy/aws/link_vps1.sh): keeps the AWS live site equal to VPS1's live data.
 # VPS1 is the only place anything is written; AWS is a read-only copy of it, except the AWS site's own usage log.
 #  1. live data: when VPS1's serving / ui tables changed since the last push, every serving + ui table is copied to AWS in ONE
-#     transaction (one pg_dump snapshot). On any error AWS keeps its previous data. AWS's activity schema is never touched.
+#     transaction (one pg_dump snapshot, TRUNCATE + COPY). On any error AWS keeps its previous data. AWS's activity schema is never touched.
 #  2. the two staging tables the live API reads (backend/app.py): staging.source_link (dead link -> archive copy) with every
 #     push, and media (card pictures, ~460 MB) only when VPS1's image set differs from AWS's.
 #  3. pulls the AWS site's new usage-log rows (activity.event / activity.recording) into VPS1's serving DB, so the review site's
@@ -30,7 +30,10 @@ log()    { echo "$(date -u +%FT%TZ) $*"; }
 fp=$(md5sum < "$D/live.fp.new" | cut -c1-32)
 if [ "${1:-}" = --force ] || [ "$fp" != "$(cat "$D/live.fp" 2>/dev/null)" ]; then
   { echo "SET LOCAL kssl.approve = 'on';"          # the serving guard (db/setup/04): the push is a publish, like Approve
-    q kssl_serving <<<"SELECT format('DELETE FROM %I.%I;', schemaname, tablename) FROM pg_tables WHERE schemaname IN ('serving', 'ui') ORDER BY 1"
+    # TRUNCATE, not DELETE: the API reads tables without ORDER BY, so ties (e.g. tenders with the same dates) show in storage
+    # order; refilled empty tables store the rows in VPS1's order, where DELETE + COPY reuses freed space and scrambles it.
+    # ponytail: readers wait for the push (seconds); a deterministic ORDER BY in backend/app.py would remove the need.
+    q kssl_serving <<<"SELECT 'TRUNCATE ' || string_agg(format('%I.%I', schemaname, tablename), ', ') || ';' FROM pg_tables WHERE schemaname IN ('serving', 'ui')"
     docker exec kssl2-db pg_dump -U kssl_admin -d kssl_serving --data-only -n serving -n ui --no-owner --no-privileges
   } | aws_tx kssl_serving
   { echo "DELETE FROM staging.source_link;"
