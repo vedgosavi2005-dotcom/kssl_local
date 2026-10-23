@@ -21,7 +21,7 @@ pub=$("${VPS[@]}" 'set -e; mkdir -p /opt/kssl-v2/aws && chmod 700 /opt/kssl-v2/a
 printf '%s\n' "$pub" | "${AWS[@]}" 'k=~/.ssh/authorized_keys; read -r p; grep -qxF "$p" $k || echo "$p" >> $k'
 
 echo "== push script + cron on VPS1"
-"${VPS[@]}" 'cat > /opt/kssl-v2/aws/push_live.sh && chmod 700 /opt/kssl-v2/aws/push_live.sh' < deploy/aws/push_live.sh
+"${VPS[@]}" 'f=/opt/kssl-v2/aws/push_live.sh; cat > $f.new && chmod 700 $f.new && mv $f.new $f' < deploy/aws/push_live.sh   # mv: a cron run mid-copy never reads a half-written script
 printf 'KSSL_AWS_HOST=%s\nKSSL_AWS_USER=%s\n' "$AH" "$AU" | "${VPS[@]}" 'cat > /opt/kssl-v2/aws/push.env'
 "${VPS[@]}" '( crontab -l 2>/dev/null | grep -v "# kssl-aws-push" || true
   echo "*/5 * * * * bash /opt/kssl-v2/aws/push_live.sh >> /opt/kssl-v2/aws/push.log 2>&1 # kssl-aws-push" ) | crontab -
