@@ -33,9 +33,10 @@ SELECT format('CREATE ROLE kssl_app LOGIN PASSWORD %L', :'pw') WHERE NOT EXISTS 
 SELECT 'CREATE DATABASE kssl_serving' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'kssl_serving') \gexec
 SELECT 'CREATE DATABASE kssl_staging' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'kssl_staging') \gexec
 SQL
-n=$($P -d kssl_serving -Atc "SELECT count(*) FROM pg_tables WHERE schemaname IN ('serving', 'ui')")
+# </dev/null: docker exec -i would otherwise read the rest of this script from bash's stdin
+n=$($P -d kssl_serving -Atc "SELECT count(*) FROM pg_tables WHERE schemaname IN ('serving', 'ui')" </dev/null)
 [ "$n" = 0 ] || { echo "kssl_serving on this server already holds $n tables: refusing to overwrite it"; exit 1; }
-$P -d kssl_staging -c "CREATE SCHEMA IF NOT EXISTS staging; CREATE SCHEMA IF NOT EXISTS media;"
+$P -d kssl_staging -c "CREATE SCHEMA IF NOT EXISTS staging; CREATE SCHEMA IF NOT EXISTS media;" </dev/null
 REMOTE
 git show "$REF:db/setup/38_source_link.sql" | "${AWS[@]}" 'docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -U kssl_admin -d kssl_staging'
 
