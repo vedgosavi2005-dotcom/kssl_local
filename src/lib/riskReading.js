@@ -1,5 +1,5 @@
 /* THE RISK ASSESSMENT IN PLAIN WORDS (owner 22 Oct: "the six parameters are very hard to understand; add plain-English reasoning
-   for each score, and an analytical reading of why it is a threat or a watch"). Review site only (labelBasis is review-only).
+   for each score, and an analytical reading of why it is a threat or a watch"). Both sites since 24 Oct (labelBasis goes live).
 
    Nothing here is new judgement: every sentence is the reason the signal prompt itself wrote for that score (staged as a
    'judgement' row in fact_source, shipped as labelBasis.reasons), stripped of its leading code ("5: ", "lt_1y: ", "adverse: ").

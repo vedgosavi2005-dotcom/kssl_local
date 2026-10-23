@@ -112,11 +112,11 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
                 if cur.fetchone()["v"]:
                     cur.execute("SELECT * FROM staging.signal_prompt_stats")
                     database["serving"]["signal_prompt_stats"] = [{k: json_value(v) for k, v in dict(r).items()} for r in cur.fetchall()]
-                # the one-sentence reason the signal prompt gave for each judgement (probability, impact per dimension, market,
-                # product match, timing): the review drawer explains every risk check with it (owner 22 Oct)
-                cur.execute("""SELECT row_id, column_name, quote FROM staging.fact_source
-                               WHERE table_name = 'competitive_signal' AND source_tier = 'judgement' AND quote IS NOT NULL""")
-                database["serving"]["signal_reasons"] = [dict(r) for r in cur.fetchall()]
+            # the one-sentence reason the signal prompt gave for each judgement (probability, impact per dimension, market,
+            # product match, timing): the drawer explains every risk check with it (owner 22 Oct); live too since 24 Oct
+            cur.execute(f"""SELECT row_id, column_name, quote FROM {SOURCE_SCHEMA['serving']}.fact_source
+                            WHERE table_name = 'competitive_signal' AND source_tier = 'judgement' AND quote IS NOT NULL""")
+            database["serving"]["signal_reasons"] = [dict(r) for r in cur.fetchall()]
     return database
 
 

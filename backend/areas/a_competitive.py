@@ -252,6 +252,41 @@ def evidence_parts(rows):
 GLANCE = (("glance_who", "Who"), ("glance_move", "Move"), ("glance_where", "Where"),
           ("glance_impact", "Impact on {client}"), ("glance_third_party", "Third party"), ("glance_when", "When"))
 
+# At a glance in plain words (owner 2026-10-24: "Capacity" / "Orders · high" had to be interpreted; say what happened).
+# The database keeps the codes (signal.yml's move list, derive.glance_impact's "Dimension · level"); only the display changes.
+GLANCE_MOVE = {"order": "Won an order", "contract": "Signed a contract", "selection": "Was selected by the buyer",
+               "delivery": "Delivered equipment", "induction": "Equipment entered service", "trial": "Tested or trialled a product",
+               "launch": "Launched a new product", "jv": "Formed a joint venture", "mou": "Signed an agreement to cooperate (MoU)",
+               "acquisition": "Bought a company", "capacity": "Added production capacity", "export approval": "Got export approval",
+               "policy": "Government policy change", "supply deal": "Agreed a supply deal", "cancellation": "Deal cancelled or lost"}
+GLANCE_LEVEL = {"high": "Big", "medium": "Some", "low": "Small"}
+GLANCE_HITS = {"orders": "{c}'s orders", "market standing": "{c}'s market standing", "supply chain": "{c}'s supply chain",
+               "technology": "{c}'s technology edge", "partnerships": "{c}'s partnerships", "policy": "{c} through policy",
+               "funding": "{c}'s funding"}
+GLANCE_DATE = re.compile(r"\b(\d{1,2} [A-Z][a-z]{2,8} \d{4}|[A-Z][a-z]{2,8} \d{4}|\d{4}-\d{2}-\d{2})\b")
+
+
+def glance_value(col, value, client, published=None):
+    """One At-a-glance value as the drawer shows it; None drops the row."""
+    v = str(value or "").strip()
+    if col == "glance_move":
+        return GLANCE_MOVE.get(v.lower(), v) or None
+    if col == "glance_impact":                              # "Orders · high" -> "Big effect on KSSL's orders"
+        word, _, level = v.partition(" · ")
+        hits = GLANCE_HITS.get(word.lower())
+        if not level:                                       # derive.glance_impact without a dimension: "High"
+            return f"{GLANCE_LEVEL.get(word.lower(), word)} effect" if v else None
+        return f"{GLANCE_LEVEL.get(level, level.capitalize())} effect on {hits.format(c=client or 'us') if hits else word.lower()}"
+    if col == "glance_when":                                # the date only (owner 2026-10-24): no "· next step", no "(published)"
+        m = GLANCE_DATE.search(v)
+        d = m.group(1) if m else published
+        if d and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)):   # the card date is ISO: show it like the prompt's "9 Oct 2026"
+            from datetime import date
+            d = date.fromisoformat(str(d))
+            d = f"{d.day} {d:%b %Y}"
+        return d or None
+    return v or None
+
 
 def visible_database(database: dict) -> dict:
     """The tables the dataset is built from, with every competitor that does not qualify taken out (user decision 2026-10-18: the UI
@@ -366,8 +401,9 @@ def signal_v2(database, row, det, labels, steps_by, stories, news_by, products):
     return {
         "v2": True,
         # the client is named from client_account, never typed (no client row: the label carries no name)
-        "glance": [[name.format(client=client) if client else name.replace(" on {client}", ""), det.get(col)]
-                   for col, name in GLANCE if det and det.get(col)],
+        "glance": [[name.format(client=client) if client else name.replace(" on {client}", ""), val]
+                   for col, name in GLANCE if det
+                   for val in [glance_value(col, det.get(col), client, published_text(row))] if val],
         "productNews": [{"product": (products.get(text(n.get("product_id"))) or {}).get("product_name"),
                          "productId": text(n.get("product_id")) or None,
                          "type": lab("news_type", n.get("news_type"), "competitive_product_news"),
@@ -383,11 +419,10 @@ def _review() -> bool:
 
 
 def label_basis(row, reasons=None):
-    """Review site only (owner 2026-10-21): the scores behind threat / watch -- the probability x impact point for the risk grid,
-    the impact score per dimension, and each threat test with what it needs, what the signal got and pass / fail
-    (prompts/derive.signal_label_tests: the same rule as the label). The live site never ships this (decision 2026-10-17)."""
-    if os.environ.get("KSSL_VIEW", "").strip().lower() != "review":
-        return {}
+    """The scores behind threat / watch -- the probability x impact point for the risk grid, the impact score per dimension, and
+    each threat test with what it needs, what the signal got and pass / fail (prompts/derive.signal_label_tests: the same rule as
+    the label). Both sites since 2026-10-24 (owner: risk assessment, why threat / watch and the analytical reading go live; it was
+    review-only from 2026-10-17). Prompt cost (prompt_stats) stays review-only."""
     from prompts.derive import DIMENSION_WORD, IMPACT_DIMENSIONS
     b = row.get("label_basis") or {}
     if isinstance(b, str):
@@ -447,7 +482,7 @@ def build_signals(database, competitors, details):
     products = {text(r.get("product_id")): r for r in table(database, "serving", "competitive_product")}
     stats_by = by_key(table(database, "serving", "signal_prompt_stats"), "signal_id")    # review only (backend/app.py)
     reported = {text(r.get("signal_id")): published_text(r) for r in table(database, "serving", "competitive_signal") if r.get("published_date")}
-    reasons_by = {}                                   # review only: signal id -> {judgement column: the prompt's reason}
+    reasons_by = {}                                   # signal id -> {judgement column: the prompt's reason} (backend/app.py)
     for r in table(database, "serving", "signal_reasons"):
         reasons_by.setdefault(text(r.get("row_id")), {})[r.get("column_name")] = r.get("quote")
     cards = []
@@ -482,7 +517,7 @@ def build_signals(database, competitors, details):
             "image": row.get("thumbnail_url"),
             # ponytail: risk = probability x impact (1-25), the old sort key; riskScore (0-100, rule s3) supersedes it
             "risk": row["probability"] * row["impact"] if row.get("probability") is not None and row.get("impact") is not None else None,
-            **({"riskScore": row.get("risk_score")} if _review() else {}),      # rule s3 sort key: review site only (owner 2026-10-21)
+            "riskScore": row.get("risk_score"),      # rule s3 sort key (0-100); both sites since 2026-10-24
             # the threat tie-breaks after risk: sooner effect, then in a client market (the matrix itself is backend-only)
             "timeToEffect": row.get("time_to_effect"),
             "inClientMarket": row.get("in_client_market"),

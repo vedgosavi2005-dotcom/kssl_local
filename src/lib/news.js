@@ -246,11 +246,23 @@ function mentions(article, name) {
   return t.every((x) => hay.includes(x));
 }
 
-/* The company's articles that actually name this product. Returns [] rather than
-   falling back to the company feed — an article about a different platform is not
-   news about this one, and presenting it as such is the bug we removed. */
-export function productNews(data, compId, productName) {
-  return companyNews(data, compId).filter((a) => namesProduct(a, productName));
+/* The company's articles that actually name this product, plus the news the pipeline LINKED to it by id
+   (competitive_product_news, the product's `news`). Returns [] rather than falling back to the company feed — an
+   article about a different platform is not news about this one, and presenting it as such is the bug we removed.
+   Owner 24 Oct: a signal's "Product news" row opened the product, whose page lacked that very news (the linked row is
+   about the product even when the article text uses another name: "XM1776" vs "K9 Mobile Howitzer"). */
+export function productNews(data, compId, productName, linked) {
+  const feed = companyNews(data, compId);
+  const ids = new Set((linked || []).map((r) => r && r.url).filter(Boolean));
+  const out = feed.filter((a) => namesProduct(a, productName) || (a.url && ids.has(a.url)));
+  const have = new Set(out.map((a) => a.url).filter(Boolean));
+  const byUrl = detailIndex(data);
+  (linked || []).forEach((r, i) => {
+    if (!r || !r.title || (r.url && have.has(r.url))) return;
+    if (r.url) have.add(r.url);
+    out.push(shape({ ...r, id: `pn-${r.id || i}` }, byUrl, feed.length + i));
+  });
+  return out.sort((x, y) => String(y.date || "").localeCompare(String(x.date || "")));
 }
 
 /* Does this article name the product? Matched on the DESIGNATOR -- the name before " - " and without brackets:
@@ -454,6 +466,13 @@ export function newsSelfCheck() {
     productNews(data, "saab", "system").length === 0);
   t("a long catalogue name matches on its designator",
     productNews(data, "saab", "Carl-Gustaf M4 - Recoilless Rifle (Man-portable)").length === 1);
+  // linked by id (competitive_product_news): kept even when the text names the product otherwise, never twice
+  const feedUrl = n[1].url;
+  t("a linked feed article joins the product news", productNews(data, "saab", "Gripen", [{ id: "x", title: "t", url: feedUrl }]).length === 1);
+  t("a linked row outside the feed is shown",
+    productNews(data, "saab", "Gripen", [{ id: "y", title: "Gripen E delivered", url: "https://x.example/g", date: "2026-10-01" }])[0].title === "Gripen E delivered");
+  t("a linked row already named is not doubled",
+    productNews(data, "saab", "Carl-Gustaf M4", [{ id: "z", title: "dup", url: n.find((a) => /carl/i.test(a.title || "") || /carl/i.test(a.fullText || "") || /carl/i.test(a.excerpt || "")).url }]).length === 1);
   t("market filter matches the country named in the story",
     marketNews(data, "saab", "Brazil").length === 1);
   t("market filter is empty rather than wrong",

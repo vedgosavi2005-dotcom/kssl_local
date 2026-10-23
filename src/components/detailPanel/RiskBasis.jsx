@@ -2,7 +2,7 @@ import "../../styles/risk.css";
 import { reasonFor, dimensionReason, analyticalReading } from "../../lib/riskReading";
 
 /* Why a signal is watch or threat, from details[id].labelBasis, and what its prompts cost, from details[id].promptStats
-   (review API only; the live API ships neither, so the live drawer keeps "no risk scores"). A threat is exactly every test
+   (labelBasis on both sites since 24 Oct; promptStats from the review API only). A threat is exactly every test
    passing (prompts/derive.signal_label_tests, rule s3: question / answer / need are plain English, basis says where the
    answer came from). */
 const SCORES = [1, 2, 3, 4, 5];

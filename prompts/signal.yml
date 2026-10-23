@@ -171,7 +171,8 @@ task: |
                     Capacity | Export approval | Policy | Supply deal | Cancellation
        glance_where: the country or buyer, max 40 characters
        glance_third_party: the customer or partner as the article names them, max 60 characters; empty if none
-       glance_when: the event date, then the next stated step, max 60 characters, e.g. "9 Oct 2026 · deliveries 2028-2030"
+       glance_when: the event date only, e.g. "9 Oct 2026" (or "Oct 2026" / "2026" when that is all the article states); no next
+                   step, no note (owner 24 Oct; text-only change, version kept: the API shows only the date of older rows too)
      (The impact field of the glance is built by code from your scores. Do not write it.)
    - impact_eyebrow: JUDGEMENT. 2-5 words: the highest-scoring impact dimension and its level (high = 4-5, medium = 3,
      low = 1-2), e.g. "Orders and revenue · high". It must agree with your scores.
@@ -250,7 +251,7 @@ task: |
     "children": {
      "competitive_signal_detail": [{"drawer_title": "Veland picks Nordvik's NV-155 over {{client.name}}'s MArG 155/52: 24 guns, deliveries from 2028",
        "glance_who": "Nordvik Defence", "glance_move": "Contract", "glance_where": "Veland", "glance_third_party": "Veland Ministry of Defence",
-       "glance_when": "9 Oct 2026 · deliveries 2028-2030", "impact_eyebrow": "Orders and revenue · high",
+       "glance_when": "9 Oct 2026", "impact_eyebrow": "Orders and revenue · high",
        "what_article_says": "Veland's Ministry of Defence signed a contract on 9 October for 24 NV-155 truck-mounted 155 mm guns. The value is EUR 310 million. Deliveries run from 2028 to 2030. Nordvik will assemble the trucks at a local firm, Veland Motor Works.",
        "why_it_matters": "{{client.name}} offered the MArG 155/52 in this competition in 2025. The buyer chose a gun of the same class. The article gives no reason for the choice. Nordvik now has a reference customer in a market {{client.name}} targets.",
        "_sources": {"what_article_says": [{"url": "https://example-defence-news.test/veland-nv155", "quote": "signed a contract on 9 October for 24 NV-155 systems"}]},

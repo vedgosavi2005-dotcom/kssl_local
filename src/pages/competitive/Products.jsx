@@ -569,6 +569,7 @@ export default function Products() {
             specSources: Array.isArray(obj.sources) ? obj.sources : (obj.source_url ? [obj.source_url] : []),
             tier: obj.tier || null,
             reason: "",
+            news: Array.isArray(obj.news) ? obj.news : [],   // competitive_product_news rows linked to this product by id
             image: isVisible("product-images") ? obj.image || null : null,
             imageSource: isVisible("product-images") ? obj.imageSource || null : null,
           });
@@ -633,7 +634,7 @@ export default function Products() {
     if (!selectedProduct) return [];
     /* only articles that name this product (owner 22 Oct). The old fallbacks -- company articles sharing a
        category word, then the company's six latest -- showed news about other products as this one's. */
-    return productNews(data, selectedCompany.cid, selectedProduct.name);
+    return productNews(data, selectedCompany.cid, selectedProduct.name, selectedProduct.news);
   }, [data, selectedProduct, selectedCompany]);
 
   /* LIVE WEB MENTIONS for the selected product -- Google News RSS, anchored to the maker,
