@@ -30,6 +30,28 @@ LOGS = ROOT / "db" / "flood_logs"
 PY = sys.executable
 CAP = {"tender_assessment": 15, "tender": 15, "signal": 15, "news": 8, "spec_enrich": 8, "tech_article": 10}   # USD per run of a prompt step
 DEFAULT_CAP = 6
+# BUDGET PER PILLAR (owner 2026-10-24): with one total, the competitive steps (first in order) used it up and Market / Technology
+# got "budget reached". --pillar-budget competitive=60,market=40,technology=25,shared=15 gives each pillar its own share; inside a
+# pillar the per-step CAP no longer applies (a flood runs every prompt: the pillar share is the limit). 'shared' = triage, signal gate.
+PILLAR = {**{p: "competitive" for p in ("news", "signal", "moment", "partnership", "project", "product_program", "client_product_program", "geo",
+                                         "geo_analysis", "synthesis", "field_synthesis", "product_category", "spec_enrich", "client_spec_enrich",
+                                         "matchup", "product_status", "client_partner_research")},
+          **{p: "market" for p in ("tender", "tender_category", "tender_assessment", "opportunity", "global_requirement", "segment_assessment",
+                                    "top_opportunity")},
+          **{p: "technology" for p in ("tech_article", "innovation_discovery", "innovation_detail", "patent_classification")},
+          **{p: "shared" for p in ("triage_route", "signal_gate")}}
+
+
+def spent_by_pillar(conn, t0) -> dict:
+    """model spend since t0 per pillar (prompt_run, the DB's clock); a prompt id not in PILLAR counts as shared"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT prompt_id, coalesce(sum(cost_usd), 0) AS c FROM staging.prompt_run WHERE started_at >= %s GROUP BY 1", (t0,))
+        out: dict = {}
+        for r in cur.fetchall():
+            k = PILLAR.get(r["prompt_id"], "shared")
+            out[k] = out.get(k, 0.0) + float(r["c"])
+    conn.rollback()
+    return out
 WORKERS = {"global_requirement": 1, "opportunity": 1}    # these de-duplicate against rows already on record: run one at a time
 
 
@@ -65,6 +87,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("route_handoff", "cmd", ["-m", "backend.route_handoff"]),   # the routes the signal lane found in the full article (tech / partner / project / geo / demand), free
         ("published_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--write"]),   # cards the harvest left undated: the page's own date (free)
         ("story_dates", "cmd", ["-m", "prompts.story", "--backfill-dates", "--write"]),    # ... and their timeline steps take it
+        ("threat_level", "cmd", ["-m", "backend.threat_level"]),   # each competitor's Threat read from its signals of the last 90 days (free)
         ("media_images", "cmd", ["-m", "backend.media_images"]),   # new cards' pictures into media.image (free; pages already checked are skipped)
         ("moment", "prompt", "moment"),
         ("partnership", "prompt", "partnership"), ("project", "prompt", "project"), ("product_program", "prompt", "product_program"),
@@ -253,7 +276,8 @@ def check(conn=None) -> tuple[list[str], list[str]]:
 
 # ---- the run ------------------------------------------------------------------------------------------------------
 
-def run(budget: float, only: set, start: str | None, skip: set, limit: int | None = None) -> int:
+def run(budget: float, only: set, start: str | None, skip: set, limit: int | None = None, pillar_budget: dict | None = None,
+        flood: bool = False) -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     LOGS.mkdir(parents=True, exist_ok=True)
     logf = (LOGS / f"routine_{stamp}.log").open("w", encoding="utf-8")
@@ -266,7 +290,9 @@ def run(budget: float, only: set, start: str | None, skip: set, limit: int | Non
     results, limit_hit, started = [], False, start is None
     # the pipeline log (backend/ops_log, db/setup/33): this run, each step, and every row each step writes
     from backend import ops_log
-    run_id = ops_log.start_run("routine", {"budget": budget, "only": sorted(only), "from_step": start, "skip": sorted(skip),
+    if flood:                     # every prompt runs this time: an entity subject done within its cadence period is due again (prompts/run.pending)
+        os.environ["KSSL_FLOOD_ALL"] = "1"
+    run_id = ops_log.start_run("routine", {"budget": budget, "pillar_budget": pillar_budget, "flood": flood, "only": sorted(only), "from_step": start, "skip": sorted(skip),
                                            "log": f"db/flood_logs/routine_{stamp}.log"})
     for name, kind, what in steps():
         started = started or name == start
@@ -276,13 +302,16 @@ def run(budget: float, only: set, start: str | None, skip: set, limit: int | Non
         if kind == "prompt":
             why = off_routine(what)
             spent = spent_since(conn, t0, t0_here)
-            if why or limit_hit or spent >= budget:
-                rec["status"] = "skipped: " + (why or ("usage limit" if limit_hit else f"budget ${budget:.0f} reached"))
+            pillar = PILLAR.get(what, "shared")
+            p_left = (pillar_budget[pillar] - spent_by_pillar(conn, t0).get(pillar, 0.0)) if pillar_budget and pillar in pillar_budget else None
+            if why or limit_hit or spent >= budget or (p_left is not None and p_left <= 0):
+                rec["status"] = "skipped: " + (why or ("usage limit" if limit_hit else f"budget ${budget:.0f} reached" if spent >= budget
+                                                      else f"{pillar} budget ${pillar_budget[pillar]:.0f} reached"))
                 results.append(rec)
                 ops_log.finish_step(ops_log.begin_step(name, f"prompt {what}", run_id), "skipped", error=rec["status"])
                 print(f"{name:24} {rec['status']}", flush=True)
                 continue
-            cap = min(CAP.get(what, DEFAULT_CAP), budget - spent)
+            cap = min(p_left, budget - spent) if p_left is not None else min(CAP.get(what, DEFAULT_CAP), budget - spent)
             args = ["-m", "scripts.flood_run", what, "--workers", str(WORKERS.get(what, 3)), "--max-cost", f"{cap:.2f}"] + (["--limit", str(limit)] if limit else [])
         else:
             args = what
@@ -321,10 +350,12 @@ def _selftest() -> None:
     for a, b in (("attribution", "triage"), ("doc_dates", "triage"), ("triage", "news"), ("news", "signal"), ("matchup_engine", "spec_enrich"),
                  ("spec_enrich", "matchup_compare"), ("client_spec_enrich", "matchup_merge"), ("matchup_merge", "matchup_compare"), ("matchup_compare", "matchup"), ("tender", "tender_assessment"), ("tender", "tender_category"), ("tender_category", "tender_assessment"),
                  ("market_rollups", "top_opportunity"), ("fx_rates", "market_rollups"), ("geo", "geo_code"), ("partnership", "synthesis"), ("tech_rollups", "flood_report"), ("product_category", "matchup_engine"),
-                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("signal", "route_handoff"), ("route_handoff", "moment"), ("signal", "media_images"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"), ("tech_article", "innovation_discovery"),
+                 ("signal_gate", "signal"), ("news", "signal_gate"), ("signal", "published_dates"), ("signal", "route_handoff"), ("signal", "threat_level"), ("route_handoff", "moment"), ("signal", "media_images"), ("published_dates", "story_dates"), ("signal", "moment"), ("tech_article", "story_prune"), ("tech_article", "innovation_discovery"),
                  ("story_prune", "flood_report"), ("tender_assessment", "source_fill"), ("story_prune", "source_fill"), ("source_fill", "flood_report")):
         assert order[a] < order[b], f"{a} must run before {b}"
     assert all(k in ("cmd", "prompt") for _, k, _ in steps())
+    missing = [w for _, k, w in steps() if k == "prompt" and w not in PILLAR]
+    assert not missing, f"prompts with no pillar for the budget: {missing}"
     print("routine self-check ok")
 
 
@@ -337,6 +368,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="", help="comma-separated step names")
     ap.add_argument("--from-step")
     ap.add_argument("--skip", default="")
+    ap.add_argument("--pillar-budget", default="", help="per pillar USD, e.g. competitive=60,market=40,technology=25,shared=15 (replaces per-step caps)")
+    ap.add_argument("--flood", action="store_true", help="every prompt runs: entity subjects are due whatever their cadence (owner 2026-10-24)")
     ap.add_argument("--since", help="harvest window start YYYY-MM-DD (default: each harvester's rolling window)")
     ap.add_argument("--until", help="harvest window end YYYY-MM-DD (default: today)")
     ap.add_argument("--limit", type=int, help="at most N subjects per prompt step (newest first, as the prompt orders them)")
@@ -353,7 +386,8 @@ def main(argv=None) -> int:
         return cmd_check()
     WINDOW.update({k: v for k, v in (("since", a.since), ("until", a.until)) if v})
     split = lambda s: {x.strip() for x in s.split(",") if x.strip()}
-    return run(a.budget, split(a.only), a.from_step, split(a.skip), a.limit)
+    pb = {k.strip(): float(v) for k, v in (x.split("=") for x in a.pillar_budget.split(",") if "=" in x)}
+    return run(a.budget, split(a.only), a.from_step, split(a.skip), a.limit, pb or None, a.flood)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+import os
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
@@ -140,6 +141,8 @@ def pending(cur, spec: dict, subs: list[dict]) -> list[dict]:
                 (spec["id"], spec["version"], any_version))
     now = datetime.now(timezone.utc)
     period = CADENCE.get(spec.get("cadence")) if recurring(spec) else None
+    if period is not None and os.environ.get("KSSL_FLOOD_ALL") == "1" and spec["subject"]["key"] not in ("run_key", "batch_key"):
+        period = timedelta(0)      # a flood runs every prompt (owner 2026-10-24); a fingerprint / batch key re-runs only when its inputs change
     last_done, last_failed = {}, {}
     for r in cur.fetchall():
         d = last_done if r["status"] in DONE else last_failed

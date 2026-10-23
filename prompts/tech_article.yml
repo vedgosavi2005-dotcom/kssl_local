@@ -40,7 +40,7 @@ subject:
                         WHEN d.routed THEN 4 ELSE 5 END) AS tier,
              lower(regexp_replace(left(COALESCE(d.headline, ''), 60), '[^A-Za-z0-9]', '', 'g')) AS tkey
       FROM d WHERE (d.routed OR (d.dom AND d.tdom AND d.tev))
-        AND COALESCE(d.headline, '') !~* '\m(fighter|f-35|f-16|f-22|f-15|aircraft|jet|airliner|bomber|helicopter|submarine|frigate|destroyer|aircraft carrier|warship|satellite|space|missile defen[cs]e|hypersonic|nuclear|ballistic missile)\M'   -- whole words (2026-10-24: 'space' matched 'Hanwha Aerospace')
+        AND COALESCE(d.headline, '') !~* '\m(fighter|f-35|f-16|f-22|f-15|aircraft|jet|airliner|bomber|helicopter|submarine|frigate|destroyer|aircraft carrier|warship|satellite|space|nuclear)\M'   -- missile defence / hypersonic / ballistic missiles are in scope (owner 2026-10-24: 'Missiles & Air Defence' is a UI category)   -- whole words (2026-10-24: 'space' matched 'Hanwha Aerospace')
     ), r AS (   -- one document per headline (the same story from two outlets is carded once)
       SELECT c.*, row_number() OVER (PARTITION BY c.tkey ORDER BY c.tier, c.published_date DESC NULLS LAST, c.doc_id) AS rn FROM c
     )
