@@ -220,18 +220,20 @@ function ModelsTab({ days }) {
       {d ? (
         <div className="fl-kpis">
           <span><b>{money(tot("cost"))}</b> spend</span><span><b>{num(tot("calls"))}</b> calls</span>
-          <span><b className={tot("failed") ? "fl-bad" : "fl-good"}>{num(tot("failed"))}</b> failed</span>
+          <span><b className={tot("failed_open") ? "fl-bad" : "fl-good"}>{num(tot("failed_open"))}</b> still failing</span>
+          <span><b>{num(tot("failed"))}</b> failed calls (incl. fixed by a later run)</span>
+          <span><b>{num(tot("usage_limit"))}</b> stopped at the usage limit</span>
           <span><b>{num(tot("retried"))}</b> retried</span><span><b>{num(tot("tokens_in"))}</b> tokens in · <b>{num(tot("tokens_out"))}</b> out</span>
         </div>
       ) : null}
       {!d ? <p className="fl-dim">Loading…</p> : (
         <>
           <table className="fl-tab">
-            <thead><tr><th>Prompt</th><th>Calls</th><th>Loaded</th><th>Skipped</th><th>Rejected</th><th>Failed</th><th>Retried</th><th>Tokens in / out</th><th>Spend</th><th>Avg</th><th>Rows loaded</th><th>Models</th><th>Last call</th></tr></thead>
+            <thead><tr><th>Prompt</th><th>Calls</th><th>Loaded</th><th>Skipped</th><th>Rejected</th><th>Failed</th><th>Still failing</th><th>Usage limit</th><th>Retried</th><th>Tokens in / out</th><th>Spend</th><th>Avg</th><th>Rows loaded</th><th>Models</th><th>Last call</th></tr></thead>
             <tbody>{d.prompts.map((p) => (
-              <tr key={p.prompt_id} className={p.failed ? "error" : ""}>
+              <tr key={p.prompt_id} className={p.failed_open ? "error" : ""}>
                 <td><b>{p.prompt_id}</b></td><td>{num(p.calls)}</td><td>{num(p.loaded)}</td><td>{num(p.skipped)}</td><td>{num(p.rejected)}</td>
-                <td>{p.failed ? <b className="fl-bad">{num(p.failed)}</b> : 0}</td><td>{num(p.retried)}</td>
+                <td>{num(p.failed)}</td><td>{p.failed_open ? <b className="fl-bad">{num(p.failed_open)}</b> : 0}</td><td>{num(p.usage_limit)}</td><td>{num(p.retried)}</td>
                 <td>{num(p.tokens_in)} / {num(p.tokens_out)}</td><td>{money(p.cost)}</td><td>{p.avg_seconds == null ? "—" : `${p.avg_seconds} s`}</td><td>{num(p.rows_loaded)}</td>
                 <td className="fl-dim">{(p.models || []).join(", ")}</td><td>{when(p.last_call)}</td>
               </tr>

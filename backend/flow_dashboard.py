@@ -217,12 +217,16 @@ def models(st, days: int = 30) -> dict[str, Any]:
         SELECT prompt_id, count(*) AS calls,
                count(*) FILTER (WHERE status = 'loaded') AS loaded, count(*) FILTER (WHERE status = 'skipped') AS skipped,
                count(*) FILTER (WHERE status = 'rejected') AS rejected, count(*) FILTER (WHERE status = 'failed') AS failed,
+               count(*) FILTER (WHERE status = 'failed' AND NOT EXISTS (      -- still failing: no later run of that subject got through
+                   SELECT 1 FROM staging.prompt_run l WHERE l.prompt_id = p.prompt_id AND l.subject_key = p.subject_key
+                     AND l.status IN ('loaded', 'skipped', 'rejected') AND l.started_at > p.started_at)) AS failed_open,
+               count(*) FILTER (WHERE status = 'usage_limit') AS usage_limit,
                count(*) FILTER (WHERE coalesce(attempts, 1) > 1) AS retried,
                coalesce(sum(tokens_in), 0) AS tokens_in, coalesce(sum(tokens_out), 0) AS tokens_out,
                round(coalesce(sum(cost_usd), 0)::numeric, 4) AS cost, round(avg(seconds)::numeric, 1) AS avg_seconds,
                coalesce(sum(rows_loaded), 0) AS rows_loaded, array_agg(DISTINCT model) FILTER (WHERE model IS NOT NULL) AS models,
                max(started_at) AS last_call
-        FROM staging.prompt_run WHERE started_at >= now() - make_interval(days => %s)
+        FROM staging.prompt_run p WHERE started_at >= now() - make_interval(days => %s)
         GROUP BY 1 ORDER BY cost DESC""", (days,))
     for p in prompts:
         p["pillar"] = pillar(p["prompt_id"].replace("tech_article", "technology_").replace("signal", "competitive_signal"))
