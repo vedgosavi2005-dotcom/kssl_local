@@ -488,6 +488,9 @@
 .pj-h { display: block; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--l-txt-3); margin-bottom: 6px; }
 .pj-rival { font-size: 12.5px; line-height: 1.5; color: var(--l-txt-2); padding: 6px 0; border-bottom: 1px solid var(--l-line); }
 .pj-rival b { color: var(--l-txt); }
+.pj-stance { margin-right: 6px; font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; color: var(--l-txt-3); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; white-space: nowrap; }
+.pj-stance.threat { color: var(--threat-badge, #f0593c); }
+.pj-stance.watch { color: var(--watch-badge, #e0a020); }
 .pj-inc { margin-left: 6px; font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; color: var(--threat-badge, #f0593c); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; }
 .pj-prod { color: var(--l-txt-3); }
 

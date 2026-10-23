@@ -298,8 +298,12 @@ export default function DetailPanel({ detail, onClose, badge }) {
           <div className="ctx-sec">
             <span className="eyebrow">Timeline</span>
             <ol className="pj-time">
-              {detail.story.steps.filter((s) => !LABEL_CHANGE.test(String(s.type || ""))).map((s, i) => {
+              {detail.story.steps.filter((s) => !LABEL_CHANGE.test(String(s.type || ""))).map((s, i, all) => {
                 const later = /^planned$/i.test(String(s.type || "")) || (/^\d{4}-\d{2}-\d{2}/.test(String(s.date || "")) && new Date(s.date) > new Date());
+                /* the stance after this step, shown where the story starts and wherever it moved (owner 24 Oct: a watch that
+                   later turns into a threat must be visible) -- a tag on the step, not a step of its own */
+                const prev = all.slice(0, i).reverse().find((x) => x.label);
+                const moved = s.label && (!prev || String(prev.label).toLowerCase() !== String(s.label).toLowerCase());
                 return (
                   <li className={later ? "next" : ""} key={`s-${i}`}>
                     <span className="pj-d">
@@ -310,6 +314,7 @@ export default function DetailPanel({ detail, onClose, badge }) {
                       ) : null}
                     </span>
                     <span className="pj-e">
+                      {moved ? <span className={`pj-stance ${String(s.label).toLowerCase()}`}>{prev ? `${prev.label} → ${s.label}` : s.label}</span> : null}
                       {s.current ? <b>{s.line}</b> : s.line}
                       {later ? " (expected)" : ""}
                       {s.changed ? <span className="pj-note"> {s.changed}</span> : null}
