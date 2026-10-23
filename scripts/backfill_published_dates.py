@@ -264,6 +264,7 @@ def main():
     ap.add_argument("--fix-wrong", action="store_true", help="replace stored dates the page's own machine date contradicts (> 3 days)")
     ap.add_argument("--pages", help="JSON {url: {html}} from scripts/browser_pages.mjs, for sites that block plain requests")
     ap.add_argument("--table", choices=sorted(TABLES), default="signal")
+    ap.add_argument("--copy-only", action="store_true", help="news / signal: only take the date of the stored page of the same url (no fetching)")
     args = ap.parse_args()
     global TABLE
     TABLE = args.table
@@ -276,6 +277,16 @@ def main():
     cur = con.cursor()
     if args.fix_wrong:
         return fix_wrong(con, cur, args.write)
+    if TABLE in ("news", "signal") and args.write:      # first, free: the stored page of the same url already has its date (--table doc)
+        cur.execute({"news": """UPDATE staging.competitive_news_article n SET published_date = d.published_at::date FROM staging.source_document d
+                                WHERE n.published_date IS NULL AND d.url = n.article_url AND d.published_at IS NOT NULL""",
+                     "signal": """UPDATE staging.competitive_signal s SET published_date = d.published_at::date, published_precision = NULL
+                                  FROM staging.competitive_signal_detail sd, staging.source_document d
+                                  WHERE sd.signal_id = s.signal_id AND s.published_date IS NULL AND d.url = sd.source_url AND d.published_at IS NOT NULL"""}[TABLE])
+        print(f"dated from the stored page of the same url: {cur.rowcount}")
+        con.commit()
+        if args.copy_only:
+            return con.close()
     cur.execute(TABLES[TABLE][1])
     rows = cur.fetchall()
     con.rollback()      # never hold a transaction across the page fetches below (it blocked ops.install_triggers and every read behind it)

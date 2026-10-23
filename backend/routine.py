@@ -86,6 +86,7 @@ def steps() -> list[tuple[str, str, object]]:
         ("signal", "prompt", "signal"),
         ("route_handoff", "cmd", ["-m", "backend.route_handoff"]),   # the routes the signal lane found in the full article (tech / partner / project / geo / demand), free
         ("published_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--write"]),   # cards the harvest left undated: the page's own date (free)
+        ("news_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--table", "news", "--write", "--copy-only"]),   # news rows take their stored page's date (free)
         ("story_dates", "cmd", ["-m", "prompts.story", "--backfill-dates", "--write"]),    # ... and their timeline steps take it
         ("threat_level", "cmd", ["-m", "backend.threat_level"]),   # each competitor's Threat read from its signals of the last 90 days (free)
         ("media_images", "cmd", ["-m", "backend.media_images"]),   # new cards' pictures into media.image (free; pages already checked are skipped)
