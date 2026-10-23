@@ -32,14 +32,18 @@ echo "== serving schema"
 for f in db/setup/08_competitor_text_columns.sql db/setup/11_foundations.sql db/setup/09_ui_port_tables.sql db/setup/15_signal_published_date.sql db/setup/21_fx_rate.sql db/setup/16_signal_rule_s2.sql db/setup/18_tender_notice_merge.sql db/setup/20_matchup_advantage_kind.sql db/setup/22_product_description_status.sql db/setup/23_signal_risk_v3.sql db/setup/25_leader_record_text.sql db/setup/26_competitor_short_details.sql db/setup/27_tender_translation.sql db/setup/30_evidence_dates.sql db/setup/31_user_activity.sql db/setup/32_activity_replay.sql db/setup/35_glance_who_wider.sql db/setup/36_activity_sessions.sql db/setup/37_activity_recording.sql; do
   if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_serving"; else echo "   skip $f (not committed in $REF)"; fi
 done
-# the usage log is not synced (each API logs into its own DB), so the review API's staging DB gets the schema here too
-for f in db/setup/31_user_activity.sql db/setup/32_activity_replay.sql db/setup/33_pipeline_log.sql db/setup/34_pipeline_history.sql db/setup/36_activity_sessions.sql db/setup/37_activity_recording.sql db/setup/38_source_link.sql; do   # 38: dead source links -> archive copy; 33: ops.* for the VPS review site's Approve log; 34: its pipeline-log history view
+# the usage log is not synced (each API logs into its own DB), so the review API's staging DB gets the schema here too.
+# KSSL_LIVE_ONLY=1 (the AWS live server, deploy/aws/deploy.sh): no review API there, its staging DB holds only what the live
+# API reads (source_link, media), so only 38.
+REVIEW_SQL="db/setup/31_user_activity.sql db/setup/32_activity_replay.sql db/setup/33_pipeline_log.sql db/setup/34_pipeline_history.sql db/setup/36_activity_sessions.sql db/setup/37_activity_recording.sql"
+[ -n "${KSSL_LIVE_ONLY:-}" ] && REVIEW_SQL=""
+for f in $REVIEW_SQL db/setup/38_source_link.sql; do   # 38: dead source links -> archive copy; 33: ops.* for the VPS review site's Approve log; 34: its pipeline-log history view
   if git cat-file -e "$REF:$f" 2>/dev/null; then echo "   $f (staging)"; git show "$REF:$f" | "${SSH[@]}" "$PSQL_VPS -d kssl_staging"; fi
 done
 for db in kssl_serving kssl_staging; do
   "${SSH[@]}" "$PSQL_VPS -d $db" <<'SQL'
 DO $$ DECLARE s text; BEGIN
-  FOR s IN SELECT nspname FROM pg_namespace WHERE nspname IN ('ui','serving','staging','staging_ui','activity','ops') LOOP
+  FOR s IN SELECT nspname FROM pg_namespace WHERE nspname IN ('ui','serving','staging','staging_ui','activity','ops','media') LOOP
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO kssl_app', s);
     EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO kssl_app', s);
     EXECUTE format('GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO kssl_app', s);
@@ -48,5 +52,5 @@ SQL
 done
 
 echo "== health"
-"${SSH[@]}" 'for c in kssl2-api kssl2-api-review; do
+"${SSH[@]}" 'for c in $(docker ps --format "{{.Names}}" | grep -E "^kssl2-api(-review)?$"); do
   docker exec $c python -c "import urllib.request,sys; print(sys.argv[1], urllib.request.urlopen(\"http://127.0.0.1:8600/api/health\").status)" $c; done'
