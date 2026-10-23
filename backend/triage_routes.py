@@ -28,16 +28,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 MODEL = "claude-haiku-5-5"
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"   # v2 (owner 2026-10-24, routing gap): ~2,000 characters per document, every route that fits (v1: 400 chars, 4 routes)
 ROUTES = ["signal", "moment", "partnership", "project", "geo", "tech", "opportunity", "global_requirement", "spec", "none"]
-BATCH = 60
-HEAD_CHARS = 400
-MAX_ROUTES = 4
+BATCH = 30
+HEAD_CHARS = 2000
+MAX_ROUTES = len(ROUTES) - 1
 
 SYSTEM = """You sort defence-industry documents for a competitive-intelligence team. The client is KSSL (Kalyani Strategic Systems, an Indian
 maker of artillery, ammunition, armoured vehicles, barrels and forgings, small arms). For each numbered document you see its source, date,
-headline and the first words of the text. Decide which analysis routes should read the full document. A document can have up to four routes,
-strongest first. Use only what is shown; if the opening is not enough to tell, choose the routes the headline supports.
+headline and the opening of the text. Decide which analysis routes should read the full document. Give a document EVERY route it supports,
+strongest first (one event often feeds several: a K9 upgrade unveiled with a partner is signal, tech, partnership and project). Use only what is shown; if the opening is not enough to tell, choose the routes the headline supports.
 
 Routes
  signal             a defence company does something concrete: wins or signs a contract or order, is selected, delivers or inducts equipment, trials
@@ -130,11 +130,11 @@ def _selftest() -> None:
     assert g[1] == (["signal", "geo"], "A contract.") and g[2] == (["tech"], None) and g[3] == (["none"], "x | y") and 4 not in g and 9 not in g, g
     assert len(p) == 3, p
     assert parse_reply("sorry", 1) == ({}, [])
-    assert parse_reply("1|a,signal,moment,geo,tech,spec|r", 1)[0][1][0] == ["signal", "moment", "geo", "tech"]
+    assert parse_reply("1|a,signal,moment,geo,tech,spec|r", 1)[0][1][0] == ["signal", "moment", "geo", "tech", "spec"]   # v2: no cap
     pr = build_prompt([{"source": "Wire", "date": "2026-10-01", "title": "Nordvik wins order", "snippet": "text", "who": "Nordvik"},
                        {"source": "Blog", "date": None, "title": "t", "snippet": "s"}])
     assert "1. (Wire; 2026-10-01) [tracked: Nordvik] Nordvik wins order" in pr and "2. (Blog; undated) t" in pr
-    assert clean_snippet("a  b\n c" * 200).startswith("a b c") and len(clean_snippet("x" * 900)) == HEAD_CHARS
+    assert clean_snippet("a  b\n c" * 200).startswith("a b c") and len(clean_snippet("x" * (HEAD_CHARS + 500))) == HEAD_CHARS
     print("triage_routes self-check ok")
 
 
@@ -152,10 +152,13 @@ ORDER_SQL = """CASE WHEN source_kind = 'dc_corpus' AND triage->>'queue' IN ('P0'
                     WHEN source_kind = 'newsroom' THEN 2 WHEN source_kind = 'gov' THEN 3 WHEN source_kind = 'trade_press' THEN 4 ELSE 5 END"""
 
 
-def pending(cur, limit):
+def pending(cur, limit, since=None):
+    """documents with no route; with `since`, also those from that date on that an older triage version routed (re-triage)"""
+    again = (f" OR (coalesce(published_at::date, fetched_at::date) >= '{since}'::date"
+             f" AND coalesce(triage->>'route_version', '1') <> '{PROMPT_VERSION}')") if since else ""
     cur.execute(f"""SELECT doc_id::text AS id, source_kind, source_name, title, published_at, competitor_ids::text[] AS cids,
                            left(body_text, 6000) AS body
-                    FROM staging.source_document WHERE NOT (coalesce(triage, '{{}}'::jsonb) ? 'route')
+                    FROM staging.source_document WHERE (NOT (coalesce(triage, '{{}}'::jsonb) ? 'route'){again})
                     ORDER BY {ORDER_SQL}, published_at DESC NULLS LAST, doc_id
                     {'LIMIT ' + str(int(limit)) if limit else ''}""")
     return cur.fetchall()
@@ -171,7 +174,7 @@ def log_run(conn, key, res, status, error, n, details):
     conn.commit()
 
 
-def run(limit=None, workers=6, dry_run=False) -> dict:
+def run(limit=None, workers=6, dry_run=False, since=None) -> dict:
     import psycopg2.extras
     from backend import attribute_documents as ad
     from prompts.claude_call import ModelError
@@ -186,7 +189,7 @@ def run(limit=None, workers=6, dry_run=False) -> dict:
     bcur.close()
     conn.rollback()
     cur = conn.cursor()
-    rows = pending(cur, limit)
+    rows = pending(cur, limit, since)
     conn.rollback()
     docs = []
     for r in rows:
@@ -223,7 +226,8 @@ def run(limit=None, workers=6, dry_run=False) -> dict:
                 log_run(out_conn, key, res, "failed", str(e)[:300], 0, {"docs": len(batch)})
             return bi, 0
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        upd = [(psycopg2.extras.Json({"route": got[i][0], "route_reason": got[i][1], "route_model": MODEL, "route_at": now}), batch[i - 1]["id"])
+        upd = [(psycopg2.extras.Json({"route": got[i][0], "route_reason": got[i][1], "route_model": MODEL, "route_at": now,
+                                      "route_version": PROMPT_VERSION}), batch[i - 1]["id"])
                for i in sorted(got)]
         with lock:
             if upd and not dry_run:
@@ -271,6 +275,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m backend.triage_routes", description=__doc__.split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--since", help="YYYY-MM-DD: also re-triage documents from this date that an older triage version routed")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--report", action="store_true")
@@ -282,7 +287,7 @@ def main(argv=None) -> int:
     elif a.report:
         report()
     else:
-        print(run(a.limit, a.workers, a.dry_run))
+        print(run(a.limit, a.workers, a.dry_run, a.since))
     return 0
 
 

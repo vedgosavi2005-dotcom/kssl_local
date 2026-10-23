@@ -29,7 +29,8 @@ subject:
              COALESCE(s.title, '') ~* '(howitzer|artillery|gun|ammunition|munition|shell|propellant|explosive|fuze|armou?r|protection|composite|propulsion|engine|forging|barrel|autonomous|unmanned ground|robot|3d|additive|warhead|mortar|vehicle)' AS tdom,
              COALESCE(s.title, '') ~* '(test|trial|unveil|develop|prototype|qualif|demonstrat|first|new |advanced|launch|reveal|fire|firing|certif|integrat|upgrade|introduc|deliver|produc)' AS tev
       FROM staging.source_document s
-      WHERE s.url IS NOT NULL AND length(s.body_text) BETWEEN 600 AND 20000 AND s.published_at >= current_date - 300
+      WHERE s.url IS NOT NULL AND length(s.body_text) BETWEEN 600 AND 20000
+        AND coalesce(s.published_at::date, s.fetched_at::date) >= current_date - 300   -- 2026-10-24 (owner, routing gap): an undated page counts by its harvest date; before, every undated doc was dropped (Hanwha's K9 upgrade release)
         AND COALESCE(s.title, '') !~* '(latest .* news|updates|archives?\s*-|\| news$|^news$)'
         -- 2026-10-18 credible sources only: no blogs / copy aggregators (indiandefensenews.in is a Blogger blog; the others rehost stories)
         AND s.url !~* '^https?://([a-z0-9-]+\.)*(indiandefensenews\.in|thedefensenews\.com|militaryleak\.com|globaldefensecorp\.com|opex360\.com|blogspot\.com|wordpress\.com|medium\.com|substack\.com|idrw\.org|ajaishukla\.com|wikipedia\.org)(/|$)'

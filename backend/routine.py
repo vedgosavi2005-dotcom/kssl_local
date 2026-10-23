@@ -37,20 +37,25 @@ def _d(days: int) -> str:
     return (date.today() - timedelta(days=days)).isoformat()
 
 
+WINDOW: dict = {}     # --since / --until: the harvest window of this run instead of the rolling one (owner 2026-10-24: a 3-month flood)
+
+
 def steps() -> list[tuple[str, str, object]]:
     """(name, kind, what): kind 'cmd' = a python module with args (free unless noted), 'prompt' = a prompt id (prompts/<id>.yml)."""
+    since = lambda days: WINDOW.get("since") or _d(days)  # noqa: E731
+    until = WINDOW.get("until") or date.today().isoformat()
     return [
         # 1. harvest (free): newest first, short rolling windows (each harvester is idempotent: ON CONFLICT on the url / notice id)
-        ("harvest_sites", "cmd", ["-m", "backend.harvest_sites", "--from", _d(14), "--to", date.today().isoformat()]),
-        ("google_news", "cmd", ["-m", "backend.news", "--competitor", "all", "--from", _d(7), "--to", date.today().isoformat()]),
-        ("dc_corpus", "cmd", ["-m", "backend.import_dc_corpus", "--from", _d(30)]),
-        ("tenders_harvest", "cmd", ["-m", "backend.harvest_tenders", "--api", "all", "--from", _d(30)]),
+        ("harvest_sites", "cmd", ["-m", "backend.harvest_sites", "--from", since(14), "--to", until]),
+        ("google_news", "cmd", ["-m", "backend.news", "--competitor", "all", "--from", since(7), "--to", until]),
+        ("dc_corpus", "cmd", ["-m", "backend.import_dc_corpus", "--from", since(30)]),
+        ("tenders_harvest", "cmd", ["-m", "backend.harvest_tenders", "--api", "all", "--from", since(30), "--to", until]),
         ("tenders_stage", "cmd", ["-m", "backend.harvest_tenders", "--stage"]),
         ("spec_harvest", "cmd", ["-m", "backend.harvest_specs", "--routine", "30"]),
         ("spec_store", "cmd", ["-m", "backend.import_spec_store"]),   # owner's spec store: new / changed pages, checked figures only (no model)
         # 2. attribution (code) and triage (Haiku, batched, logged as prompt_run 'triage_route')
         ("attribution", "cmd", ["-m", "backend.attribute_documents"]),
-        ("triage", "cmd", ["-m", "backend.triage_routes"]),
+        ("triage", "cmd", ["-m", "backend.triage_routes"] + (["--since", WINDOW["since"]] if WINDOW.get("since") else [])),   # a windowed run re-triages it
         ("news_candidates", "cmd", ["-m", "backend.flood", "candidates"]),
         # 3. competitive pillar
         ("news", "prompt", "news"),
@@ -330,6 +335,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="", help="comma-separated step names")
     ap.add_argument("--from-step")
     ap.add_argument("--skip", default="")
+    ap.add_argument("--since", help="harvest window start YYYY-MM-DD (default: each harvester's rolling window)")
+    ap.add_argument("--until", help="harvest window end YYYY-MM-DD (default: today)")
     ap.add_argument("--limit", type=int, help="at most N subjects per prompt step (newest first, as the prompt orders them)")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
@@ -342,6 +349,7 @@ def main(argv=None) -> int:
         return cmd_plan()
     if a.check:
         return cmd_check()
+    WINDOW.update({k: v for k, v in (("since", a.since), ("until", a.until)) if v})
     split = lambda s: {x.strip() for x in s.split(",") if x.strip()}
     return run(a.budget, split(a.only), a.from_step, split(a.skip), a.limit)
 
