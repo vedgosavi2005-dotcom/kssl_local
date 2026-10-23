@@ -44,6 +44,6 @@ case "$TARGET" in
     envval() { sed -n "s/^$1=//p" .env | tail -1 | tr -d "\"'\r"; }
     H="${KSSL_VPS_HOST:-$(envval KSSL_VPS_HOST)}"; U="${KSSL_VPS_SSH_USER:-$(envval KSSL_VPS_SSH_USER)}"
     [ -n "$H" ] && [ -n "$U" ] || { echo "set KSSL_VPS_HOST and KSSL_VPS_SSH_USER in .env"; exit 1; }
-    printf '%s' "${SCRIPT//__USER__/kssl_admin}" | ssh -i "$HOME/.ssh/kssl_vps" -o ConnectTimeout=20 -o BatchMode=yes "$U@$H" 'docker exec -i kssl2-db bash -s' ;;
+    printf '%s' "${SCRIPT//__USER__/kssl_admin}" | ssh -i "${KSSL_SSH_KEY:-$HOME/.ssh/kssl_vps}" -o ConnectTimeout=20 -o BatchMode=yes "$U@$H" 'docker exec -i kssl2-db bash -s' ;;
   *) echo "usage: bash db/publish_all.sh local|vps"; exit 1 ;;
 esac

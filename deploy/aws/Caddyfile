@@ -1,0 +1,15 @@
+# The two sites (deploy/aws/docker-compose.override.yml). Caddy gets and renews the HTTPS certificates itself once the DNS
+# names point at this server and ports 80 / 443 are open.
+{$LIVE_HOST} {
+	encode gzip
+	reverse_proxy web:5178
+}
+
+# Review site: password-protected (the review API has Approve / Unpublish; it must never be public).
+{$REVIEW_HOST} {
+	basic_auth {
+		{$REVIEW_USER} {$REVIEW_PASSWORD_HASH}
+	}
+	encode gzip
+	reverse_proxy web-review:5180
+}

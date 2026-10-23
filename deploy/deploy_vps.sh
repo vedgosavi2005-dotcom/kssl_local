@@ -16,7 +16,7 @@ envval() { [ -f "$ENV_FILE" ] && sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 | tr -
 VPS_HOST="${KSSL_VPS_HOST:-$(envval KSSL_VPS_HOST)}"      # host and user live in the gitignored .env (the repo is public)
 VPS_USER="${KSSL_VPS_SSH_USER:-$(envval KSSL_VPS_SSH_USER)}"
 [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] || { echo "set KSSL_VPS_HOST and KSSL_VPS_SSH_USER in .env"; exit 1; }
-SSH=(ssh -i "$HOME/.ssh/kssl_vps" -o ConnectTimeout=20 -o BatchMode=yes "$VPS_USER@$VPS_HOST")
+SSH=(ssh -i "${KSSL_SSH_KEY:-$HOME/.ssh/kssl_vps}" -o ConnectTimeout=20 -o BatchMode=yes "$VPS_USER@$VPS_HOST")
 PSQL_VPS="docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -U kssl_admin"
 
 echo "== shipping $(git rev-parse --short "$REF") ($REF)"

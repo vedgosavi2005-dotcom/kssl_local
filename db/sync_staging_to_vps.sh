@@ -50,7 +50,7 @@ if [[ "$TARGET" == local:* ]]; then
   docker exec kssl-pg psql -U kssl -d "$db" -Atc "select 'tables: ' || count(*) from pg_tables where schemaname in ('staging','staging_ui','media')"
 else
   [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] || { echo "set KSSL_VPS_HOST and KSSL_VPS_SSH_USER in .env"; exit 1; }
-  SSH=(ssh -i "$HOME/.ssh/kssl_vps" -o ConnectTimeout=20 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$VPS_USER@$VPS_HOST")
+  SSH=(ssh -i "${KSSL_SSH_KEY:-$HOME/.ssh/kssl_vps}" -o ConnectTimeout=20 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$VPS_USER@$VPS_HOST")
   # media (~400 MB of images) goes only when the VPS image set differs: a full copy over a slow link was cut twice (2026-10-22)
   IMGQ="select coalesce(md5(string_agg(image_id::text, ',' order by image_id)), 'none') from media.image"
   here=$(docker exec kssl-pg psql -U kssl -d kssl_staging -Atc "$IMGQ")

@@ -1,0 +1,24 @@
+# AWS (Lightsail) only: Caddy in front of the two sites, with automatic HTTPS (Let's Encrypt). On the old VPS the host's own
+# Traefik did this (the traefik labels in docker-compose.yml are simply unused here). deploy/aws/bootstrap.sh links this file
+# as deploy/docker-compose.override.yml, so the usual `docker compose up -d` (deploy/deploy_vps.sh) picks it up.
+# Needs in deploy/.env: LIVE_HOST, REVIEW_HOST, REVIEW_USER, REVIEW_PASSWORD_HASH (see deploy/aws/README.md).
+services:
+  caddy:
+    image: caddy:2.8.4
+    container_name: kssl2-caddy
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      LIVE_HOST: ${LIVE_HOST}
+      REVIEW_HOST: ${REVIEW_HOST}
+      REVIEW_USER: ${REVIEW_USER}
+      REVIEW_PASSWORD_HASH: ${REVIEW_PASSWORD_HASH}
+    volumes:
+      - ./aws/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # certificates: kept across restarts so Let's Encrypt is not asked again
+      - caddy_config:/config
+    depends_on: [web, web-review]
+
+volumes:
+  caddy_data:
+  caddy_config:
