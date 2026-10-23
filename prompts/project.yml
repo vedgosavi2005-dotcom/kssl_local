@@ -43,9 +43,9 @@ subject:
       query: |
         SELECT 'NEWS' AS doc, n.published_date, n.headline, n.publisher, n.article_url
         FROM staging.competitive_news_article n
-        WHERE n.competitor_id = '{{subject.competitor_id}}' AND n.published_date >= current_date - 730
+        WHERE n.competitor_id = '{{subject.competitor_id}}' AND coalesce(n.published_date, (SELECT min(c.found_at)::date FROM staging.news_candidate c WHERE c.article_url = n.article_url), (SELECT min(d.fetched_at)::date FROM staging.source_document d WHERE d.url = n.article_url)) >= current_date - 730   -- 2026-10-24 (owner): an undated row counts by its harvest date (it was dropped)
           AND COALESCE(n.category, '') NOT IN ('Stock & market', 'Non-defence business')
-        ORDER BY n.published_date DESC LIMIT 50
+        ORDER BY n.published_date DESC NULLS LAST LIMIT 50
     - from: sql                  # 3. the client's stored specs, only for kssl_platform / kssl_advantage
       query: |
         SELECT 'CLIENT SPEC' AS doc, p.product_name, s.spec_name, s.value_text, s.value_numeric, s.unit

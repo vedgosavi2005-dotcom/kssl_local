@@ -236,6 +236,7 @@ TABLE = "signal"
 def fix_wrong(con, cur, write):
     cur.execute(TABLES[TABLE][0])
     rows = cur.fetchall()
+    con.rollback()      # no transaction open during the page fetches
     if TABLE == "news":      # ~3,800 dated news rows: checked against the date in their own URL only (no page fetch)
         found = [(r, (from_url(r[1]), "url")) for r in rows]
     else:
@@ -277,6 +278,7 @@ def main():
         return fix_wrong(con, cur, args.write)
     cur.execute(TABLES[TABLE][1])
     rows = cur.fetchall()
+    con.rollback()      # never hold a transaction across the page fetches below (it blocked ops.install_triggers and every read behind it)
     with ThreadPoolExecutor(8) as pool:
         found = list(pool.map(lambda r: (r[0], r[1], *find_date(r[1])), rows))
     exact = TABLE in ("news", "doc")       # no precision column: the issue-year rule is not used

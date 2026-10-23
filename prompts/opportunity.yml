@@ -26,7 +26,7 @@ subject:
   query: |
     SELECT d.doc_id, d.title AS headline, d.url AS article_url, d.source_name AS publisher, d.published_at AS published_date, d.source_kind
     FROM staging.source_document d
-    WHERE (d.triage->'route') @> '"opportunity"'::jsonb AND d.published_at >= current_date - 270
+    WHERE (d.triage->'route') @> '"opportunity"'::jsonb AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 270   -- 2026-10-24 (owner): an undated row counts by its harvest date (it was dropped)
       AND length(coalesce(d.body_text, '')) >= 400 AND d.source_tier IN ('primary', 'listed', 'independent')
     ORDER BY (d.source_kind IN ('gov', 'newsroom')) DESC, d.published_at DESC NULLS LAST, d.doc_id
   documents:

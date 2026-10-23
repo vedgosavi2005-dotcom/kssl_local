@@ -28,7 +28,7 @@ subject:
     FROM staging.source_document d
     WHERE ((d.triage->'route') @> '"global_requirement"'::jsonb
            OR (d.source_kind = 'gov' AND (d.triage->'route') @> '"opportunity"'::jsonb))
-      AND d.published_at >= current_date - 1095 AND length(coalesce(d.body_text, '')) >= 400
+      AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 1095 AND length(coalesce(d.body_text, '')) >= 400   -- 2026-10-24 (owner): an undated row counts by its harvest date (it was dropped)
       AND d.source_tier IN ('primary', 'listed', 'independent')
     ORDER BY ((d.triage->'route') @> '"global_requirement"'::jsonb) DESC, d.published_at DESC NULLS LAST, d.doc_id
   documents:

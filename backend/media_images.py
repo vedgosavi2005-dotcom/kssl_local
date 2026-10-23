@@ -165,6 +165,7 @@ def refind_defaults(workers=8) -> dict:
     by_host: dict[str, list[str]] = {}
     for r in cur.fetchall():
         by_host.setdefault(urlsplit(r["page_url"]).netloc, []).append(r["page_url"])
+    conn.rollback()     # no transaction open during the page fetches
     html: dict[str, list[str]] = {}
 
     def get(page):
@@ -196,6 +197,7 @@ def refind_defaults(workers=8) -> dict:
                             (got[0], got[1], got[2], psycopg2.Binary(got[3]), got[4], got[5], got[6], got[7]))
                 cur.execute("""UPDATE media.page_image SET image_id = %s, how = 'article_unique', status = 'ok', error = NULL,
                                checked_at = now() WHERE page_url = %s""", (got[0], page))
+                conn.commit()           # per page: no transaction left open across the next page's downloads
             stats[host] = stats.get(host, 0) + bool(got)
             ops_log.note("image", "article_unique" if got else "site_default_kept",
                          f"The page's preview image is the site's default picture; took the article image only this page uses ({got[5]}x{got[6]})."
@@ -318,6 +320,7 @@ def run(limit=None, workers=8, retry=False) -> dict:
         pages.setdefault(r["page"], None)
     cur.execute("SELECT page_url FROM media.page_image" + (" WHERE status IN ('ok', 'site_default')" if retry else ""))   # --retry: pages left without a picture again
     done = {r["page_url"] for r in cur.fetchall()}
+    conn.rollback()     # never hold a transaction across the page fetches below
     todo = [(p, img) for p, img in pages.items() if p not in done][: limit or None]
     print(f"{len(pages)} pages behind the cards; {len(done)} already checked; {len(todo)} to do", flush=True)
     lock = threading.Lock()

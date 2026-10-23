@@ -29,7 +29,7 @@ subject:
     WHERE c.qualifies IS TRUE        -- the UI shows only qualifying competitors (backend/areas/a_competitive.visible_database)
       AND (EXISTS (SELECT 1 FROM staging.competitive_signal s WHERE s.company_id = c.competitor_id AND coalesce(s.event_date, s.published_date) >= current_date - 120)
        OR EXISTS (SELECT 1 FROM staging.source_document d
-                   WHERE c.competitor_id = ANY(d.competitor_ids) AND coalesce(d.published_at, current_date) >= current_date - 120
+                   WHERE c.competitor_id = ANY(d.competitor_ids) AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 120
                      AND coalesce(d.body_text, '') <> ''
                      AND (coalesce((d.triage->'info'->>'deal')::numeric, 0) >= 0.6 OR coalesce((d.triage->'info'->>'sales_geo')::numeric, 0) >= 0.6
                           OR d.triage->'route' ? 'moment')))
@@ -52,7 +52,7 @@ subject:
                round(greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0)), 2) AS score,
                left(d.body_text, 1800) AS text
         FROM staging.source_document d
-        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at, current_date) >= current_date - 120
+        WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 120
           AND coalesce(d.body_text, '') <> ''
         ORDER BY (CASE WHEN d.triage->'route' ? 'moment' THEN 1 ELSE 0 END) DESC,
                  greatest(coalesce((d.triage->'info'->>'deal')::numeric, 0), coalesce((d.triage->'info'->>'sales_geo')::numeric, 0)) DESC,
