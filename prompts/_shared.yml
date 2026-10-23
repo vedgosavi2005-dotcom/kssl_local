@@ -78,3 +78,4 @@ context_blocks:
   # --- blocks that depend on the subject (rendered per run by render.build_prompt, not in render.context_blocks)
   stories:             "story.stories_block: the subject competitor's open stories of the last 365 days, at most 15: `T<8 hex>: pillar:party:subject:country:family - last step (date)`; the prompt answers with story_ref = a handle or new"
   competitor_catalogue: "competitive_product (+ product_class) of the subject competitor: `category > sub_type: product name`, names exactly as stored so ref_product resolves; 8 KB cap"
+  competitor_facts: "competitive_competitor company facts + competitive_leader names and roles of the subject competitor: what a change proposal is compared with (owner 2026-10-24)"

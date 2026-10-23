@@ -59,7 +59,8 @@ subject:                         # one run per competitor AND calendar month wit
                         AND abs(s.published_date - c.published_date) <= 21)
         ORDER BY owner, published_date
 
-context: [client, competitors]
+context: [client, competitors, competitor_catalogue, competitor_facts]
+proposes_changes: true          # the reply's "changes" list -> backend/change_proposals.add (review: Changes from news; owner 2026-10-24)
 
 task: |
   TASK news — for {{subject.name}}: group the news articles found in one month into stories, categorise
@@ -139,9 +140,24 @@ task: |
                 "_reason": {"category": "...", "relevant": "...", "candidates": "..."}}}
   skip_reason only when there are no new articles.
 
+  CHANGES (a separate list, "changes", beside "records"; an empty list is the normal case). From the HEADLINES only, list facts a
+  headline STATES that are NEW versus RIVAL PRODUCTS and RIVAL RECORD below; a reviewer accepts or rejects each one.
+  One item per fact: {"handle": "C...", "kind", "subject", "field", "value", "quote"} -- "quote" is the headline, word for word.
+   - new_product: a product of {{subject.name}} that RIVAL PRODUCTS does not list (subject = its name, field = one of the categories,
+     value = what the headline says it is)
+   - leadership: a person appointed to or leaving a role (subject = the person, field = the role, value = appointed | left)
+   - partner: a company it now works with (subject = the partner, field = partner type, value = what the tie is)
+   - location: a new plant or site (subject = the site or country, field = facility | footprint, value = the country)
+  Nothing a headline only hints at; no specs or company figures from headlines.
+
   CLIENT: {{context.client}}
   COMPETITORS:
   {{context.competitors}}
+
+  RIVAL PRODUCTS (this competitor's catalogue):
+  {{context.competitor_catalogue}}
+  RIVAL RECORD (leaders and company facts on record):
+  {{context.competitor_facts}}
 
   DOCUMENTS (new articles, then stored stories):
   {{documents}}

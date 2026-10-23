@@ -49,7 +49,8 @@ subject:                         # one run per row; key = what makes a run uniqu
     - from: url                  # ... else the runner fetches the article text
       field: article_url
 
-context: [client, client_portfolio, client_capabilities, client_markets, client_partners, competitors_extended, categories, stories, competitor_catalogue]
+context: [client, client_portfolio, client_capabilities, client_markets, client_partners, competitors_extended, categories, stories, competitor_catalogue, competitor_facts]
+proposes_changes: true          # the reply's "changes" list -> backend/change_proposals.add (review: Changes from news; owner 2026-10-24)
 
 task: |
   TASK signal — decide whether one news article is a competitive signal for {{client.name}}. If it is, fill one signal card:
@@ -235,6 +236,21 @@ task: |
    Before: "The platform leverages robust, state-of-the-art propulsion for unprecedented mobility."
    After:  "The vehicle has a 1,000 horsepower engine. The article gives no range or speed."
 
+  CHANGES (a separate list, "changes", beside "records"; an empty list is the normal case). List only facts the article STATES that
+  are NEW or DIFFERENT from what RIVAL PRODUCTS and RIVAL RECORD hold for this competitor; a reviewer accepts or rejects each one.
+  One item per fact: {"kind", "subject", "field", "value", "unit", "effective_date", "quote"} -- "quote" is the article's own sentence.
+   - new_product: a product of this competitor that RIVAL PRODUCTS does not list. subject = its name, field = one of CATEGORIES,
+     value = one line on what it is.
+   - spec: a figure for a named product (this competitor's). subject = product name, field = the spec label ("Range", "Calibre",
+     "Combat weight", "Crew"), value = the figure, unit = its unit.
+   - leadership: a person appointed to or leaving a role. subject = the person, field = the role, value = appointed | left,
+     effective_date when stated.
+   - partner: a company it now works with. subject = the partner, field = partner type (JV, supplier, licence, teaming...),
+     value = what the tie is.
+   - location: a plant, site or country presence. subject = the site (or the country), field = facility | footprint, value = the country.
+   - company_fact: field = employee_count_text | revenue_text | headquarters | starting_year_text | industry_sector, value = the fact.
+  Never guess, never restate what the records already hold, no forecasts or plans as facts.
+
   EXAMPLE of the shape and register only. Every name and figure in it is fictional; do not reuse any of them.
   {"prompt_id": "signal", "subject": "Nordvik Defence: Veland orders 24 NV-155 guns", "skip_reason": null, "records": [
    {"table": "competitive_signal", "values": {"ref_competitor": "Nordvik Defence",
@@ -266,6 +282,8 @@ task: |
      "product_variant": null, "kssl_relevance": "Same class as the MArG 155/52; chosen over it in Veland.",
      "_reason": {"kssl_relevance": "Both are wheeled self-propelled 155 mm guns and {{client.name}} offered in Veland."},
      "_sources": {"event_date": [{"url": "https://example-defence-news.test/veland-nv155", "quote": "signed a contract on 9 October"}]}}}],
+   "changes": [{"kind": "leadership", "subject": "Ilse Varga", "field": "Chief Executive Officer", "value": "appointed",
+                "effective_date": "2026-11-01", "quote": "Nordvik Defence named Ilse Varga chief executive from 1 November."}],
    "not_found": [], "conflicts": []}
 
   STORIES (open stories of this competitor; answer story_ref with a handle or new):
@@ -273,6 +291,9 @@ task: |
 
   RIVAL PRODUCTS (this competitor's catalogue, "category > sub_type: product name"):
   {{context.competitor_catalogue}}
+
+  RIVAL RECORD (this competitor's leaders and company facts on record):
+  {{context.competitor_facts}}
 
   CLIENT: {{context.client}}
   CLIENT PORTFOLIO ("category > sub_type: product (calibre; weight class; key specs)"):

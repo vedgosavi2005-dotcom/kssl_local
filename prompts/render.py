@@ -607,7 +607,20 @@ def documents(cur, spec: dict, subject: dict) -> tuple[str, list[str]]:
 # ---- blocks that depend on the subject (the competitor of the article) ------------------------------------------------------------
 
 CATALOGUE_MAX_CHARS = 8_000                         # competitor_catalogue: one competitor's product names
-SUBJECT_BLOCKS = ("stories", "competitor_catalogue")
+SUBJECT_BLOCKS = ("stories", "competitor_catalogue", "competitor_facts")
+
+
+def block_competitor_facts(cur, competitor_id) -> str:
+    """the competitor's leaders and company facts on record, so a prompt proposes only what is NEW or DIFFERENT (change_proposals)"""
+    if not competitor_id:
+        return NONE_ON_RECORD
+    c = _one(cur, """SELECT headquarters, industry_sector, starting_year_text, employee_count_text, revenue_text
+                     FROM staging.competitive_competitor WHERE competitor_id = %s""", (str(competitor_id),))
+    lead = _one(cur, """SELECT full_name, role_title FROM staging.competitive_leader WHERE competitor_id = %s ORDER BY role_title, full_name""",
+                (str(competitor_id),))
+    lines = [f"{k}: {v}" for k, v in (c[0] if c else {}).items() if v]
+    lines += [f"leader: {r['full_name']} - {r['role_title'] or 'role not stated'}" for r in lead or []]
+    return "\n".join(lines) or NONE_ON_RECORD
 
 
 def block_competitor_catalogue(cur, competitor_id) -> str:
@@ -641,6 +654,8 @@ def subject_block(cur, name: str, subject: dict) -> str:
         return story.stories_block(cur, competitor_id=cid, pillar="competitive")
     if name == "competitor_catalogue":
         return block_competitor_catalogue(cur, cid)
+    if name == "competitor_facts":
+        return block_competitor_facts(cur, cid)
     raise PromptError(f"unknown subject block {name}")
 
 

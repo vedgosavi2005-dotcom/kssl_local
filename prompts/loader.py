@@ -1238,7 +1238,8 @@ def _selftest() -> None:
     assert "{{" not in rendered and "KSSL" in rendered and '"prompt_id"' in rendered
     t = render.load_prompt("signal")
     assert t["model"] and t["version"] and render.required_context(t) == ["client", "client_portfolio", "client_capabilities", "client_markets", "client_partners",
-                                                                        "competitors_extended", "categories", "stories", "competitor_catalogue"]
+                                                                        "competitors_extended", "categories", "stories", "competitor_catalogue",
+                                                                        "competitor_facts"]
     html_doc = ("<html><head><title>T</title></head><body><nav>menu menu menu menu</nav><article><p>" + "Sentence one is here. " * 30
                 + "</p><p>" + "Another paragraph follows. " * 20 + "</p></article><footer>footer text</footer></body></html>")
     title, text = render.page_text(html_doc)

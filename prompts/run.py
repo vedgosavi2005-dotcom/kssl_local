@@ -293,7 +293,7 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
         except (ModelError, loader.NotJson, loader.EnvelopeError) as e:
             o.details["repair"] = {"before": valid.rejected[:8], "error": str(e)[:200]}
     if handler:
-        return _handled(conn, subject, env, o, dry_run, t0, handler)
+        return _handled(conn, subject, env, o, dry_run, t0, handler, spec or {})
     t_load = time.monotonic()
     valid.warnings += quote_check(valid, o.task)
     o.details.update(warnings=valid.warnings, rejected=valid.rejected, not_found=valid.not_found, conflicts=valid.conflicts)
@@ -340,6 +340,8 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
                     cur.execute("UPDATE staging.source_document SET processed_by = coalesce(processed_by, '{}'::jsonb) || jsonb_build_object(%s, now()::text) "
                                 "WHERE url = ANY(%s)", (spec["marks_read"], list(set(subject["_read_urls"]))))
                 o.details["read_pages"] = len(set(subject["_read_urls"]))
+            if spec.get("proposes_changes") and isinstance(env, dict) and env.get("changes"):
+                _propose_changes(conn, spec, subject, env["changes"], o)
             if o.status == "loaded":
                 _requalify(conn, o)
             conn.commit()
@@ -351,6 +353,29 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
     o.details["load_seconds"] = round(time.monotonic() - t_load, 1)
     o.seconds = round(time.monotonic() - t0, 1)
     return o
+
+
+def _propose_changes(conn, spec: dict, subject: dict, items, o: Outcome) -> None:
+    """the reply's "changes" -> review proposals (backend/change_proposals: only real changes are kept). A news batch names each item's
+    article (item.article_url); a signal run has one article. In the run's transaction: a run that rolls back proposes nothing."""
+    from backend import change_proposals
+    if not isinstance(items, list):
+        return
+    by_url: dict = {}
+    for it in items:
+        if isinstance(it, dict):
+            by_url.setdefault(it.get("article_url") or subject.get("article_url"), []).append(it)
+    added, dropped = 0, []
+    with conn.cursor() as cur:
+        for url, its in by_url.items():
+            if not url or not subject.get("competitor_id"):
+                dropped += [f"no article / competitor: {i}" for i in its]
+                continue
+            r = change_proposals.add(cur, its, competitor_id=str(subject["competitor_id"]), article_url=url,
+                                     article_date=its[0].get("article_date") or subject.get("published_date"), source_prompt=spec["id"], source_row_id=str(subject["_key"]))
+            added += r["added"]
+            dropped += r["dropped"]
+    o.details["changes"] = {"proposed": added, "dropped": dropped[:10]}
 
 
 def _requalify(conn, o: Outcome) -> None:
@@ -368,8 +393,9 @@ def _requalify(conn, o: Outcome) -> None:
         o.details["qualified_competitors"] = f"{before} -> {after}"
 
 
-def _handled(conn, subject: dict, env: dict, o: Outcome, dry_run: bool, t0: float, handler: str = "news_merge") -> Outcome:
+def _handled(conn, subject: dict, env: dict, o: Outcome, dry_run: bool, t0: float, handler: str = "news_merge", spec: dict | None = None) -> Outcome:
     """Handler prompts (news -> prompts/news_merge.py): same outcome mapping as the loader path."""
+    spec = spec or {}
     try:
         with conn.cursor() as cur:
             if handler == "news_merge":
@@ -386,6 +412,18 @@ def _handled(conn, subject: dict, env: dict, o: Outcome, dry_run: bool, t0: floa
         else:
             o.status, o.error = "rejected", "; ".join(r.warnings[:3]) or "no story could be applied"
         if o.status in ("loaded", "skipped"):
+            if spec.get("proposes_changes") and isinstance(env, dict) and isinstance(env.get("changes"), list) and env["changes"]:
+                with conn.cursor() as cur:          # news names the article by its C handle: the candidate's url and date
+                    for it in env["changes"]:
+                        h = str((it or {}).get("handle") or "").lstrip("Cc")
+                        if isinstance(it, dict) and len(h) >= 6:
+                            cur.execute("""SELECT article_url, published_date FROM staging.news_candidate
+                                           WHERE candidate_id::text LIKE %s AND competitor_id = %s::uuid LIMIT 1""",
+                                        (h + "%", str(subject.get("competitor_id"))))
+                            row = cur.fetchone()
+                            if row:
+                                it["article_url"], it["article_date"] = row["article_url"], row["published_date"]
+                _propose_changes(conn, spec, subject, [i for i in env["changes"] if isinstance(i, dict) and i.get("article_url")], o)
             if o.status == "loaded":
                 _requalify(conn, o)
             conn.commit()
