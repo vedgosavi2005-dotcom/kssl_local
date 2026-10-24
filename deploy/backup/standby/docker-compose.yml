@@ -1,0 +1,27 @@
+# The DC standby: a live, read-only copy of VPS1's kssl2-db, seconds behind (streaming replication through an SSH tunnel).
+# Installed into ~/kssl2-backup/standby by deploy/backup/install.sh, which also writes ./.env (VPS1_SSH) and ./tunnel_key and
+# seeds the data volume once with pg_basebackup. On VPS1 the tunnel key may only forward to 127.0.0.1:5460 (kssl2-db).
+# Read it on the DC at 127.0.0.1:5471. Promote it only by the switchover steps in ../README.md.
+name: kssl2-standby
+services:
+  tunnel:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes: ["./tunnel_key:/run/tunnel_key:ro"]
+    command:
+      - sh
+      - -c
+      - >-
+        apk add -q --no-cache openssh-client && install -m 600 /run/tunnel_key /k &&
+        while :; do ssh -i /k -N -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30
+        -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -L 0.0.0.0:5460:127.0.0.1:5460 ${VPS1_SSH}; sleep 15; done
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    depends_on: [tunnel]
+    ports: ["127.0.0.1:5471:5432"]
+    volumes: ["data:/var/lib/postgresql/data"]
+    environment:
+      POSTGRES_PASSWORD: unused   # the data directory comes from pg_basebackup; the image only needs the variable set
+volumes:
+  data: {}
