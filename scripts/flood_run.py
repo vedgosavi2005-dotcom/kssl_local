@@ -11,6 +11,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("prompt"); ap.add_argument("--workers", type=int, default=6); ap.add_argument("--limit", type=int)
     ap.add_argument("--max-cost", type=float, default=50.0); ap.add_argument("--rerun", action="store_true")
+    ap.add_argument("--cards", type=int, help="stop after N new cards or 5N runs")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -30,12 +31,15 @@ def main() -> int:
     with conn.cursor() as cur:
         client = render.client_row(cur); blocks = render.context_blocks(cur, client)
     conn.rollback(); conn.close()
-    lock = threading.Lock(); st = {"cost": 0.0, "n": 0, "ok": 0, "skip": 0, "bad": 0, "limit_hit": False}
+    lock = threading.Lock(); st = {"cost": 0.0, "n": 0, "ok": 0, "skip": 0, "bad": 0, "limit_hit": False, "cards": 0}
+    # owner 2026-10-24 "10-15 cards per section, then stop": N new cards (as each run's load reports them), or 5N runs, whichever first
+    # ponytail: 5N is the cap for a prompt that makes few or no cards (enrichment, synthesis); raise it if a section comes up short
+    enough = lambda: a.cards and (st["cards"] >= a.cards or st["n"] >= 5 * a.cards)     # noqa: E731
     local = threading.local()
 
     def work(s):
         with lock:
-            if st["cost"] >= a.max_cost or st["limit_hit"]:
+            if st["cost"] >= a.max_cost or st["limit_hit"] or enough():
                 return
         if not hasattr(local, "conn"):
             local.conn = run.connect()
@@ -48,6 +52,7 @@ def main() -> int:
         run.log_run(local.conn, spec, s["_key"], o)
         with lock:
             st["cost"] += o.cost or 0; st["n"] += 1
+            st["cards"] += len({(t, i) for t, i, c in (o.loaded or []) if c})
             st["ok" if o.status == "loaded" else "skip" if o.status == "skipped" else "bad"] += 1
             print(run.line(a.prompt, s, o), flush=True)
             if st["n"] % 25 == 0:

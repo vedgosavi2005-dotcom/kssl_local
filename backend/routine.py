@@ -278,7 +278,7 @@ def check(conn=None) -> tuple[list[str], list[str]]:
 # ---- the run ------------------------------------------------------------------------------------------------------
 
 def run(budget: float, only: set, start: str | None, skip: set, limit: int | None = None, pillar_budget: dict | None = None,
-        flood: bool = False) -> int:
+        flood: bool = False, cards: int | None = None) -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     LOGS.mkdir(parents=True, exist_ok=True)
     logf = (LOGS / f"routine_{stamp}.log").open("w", encoding="utf-8")
@@ -315,7 +315,7 @@ def run(budget: float, only: set, start: str | None, skip: set, limit: int | Non
                 print(f"{name:24} {rec['status']}", flush=True)
                 continue
             cap = min(p_left, budget - spent) if p_left is not None else min(CAP.get(what, DEFAULT_CAP), budget - spent)
-            args = ["-m", "scripts.flood_run", what, "--workers", str(WORKERS.get(what, 3)), "--max-cost", f"{cap:.2f}"] + (["--limit", str(limit)] if limit else [])
+            args = ["-m", "scripts.flood_run", what, "--workers", str(WORKERS.get(what, 3)), "--max-cost", f"{cap:.2f}"] + (["--limit", str(limit)] if limit else []) + (["--cards", str(cards)] if cards else [])
         else:
             args = what
         t = time.time()
@@ -375,6 +375,7 @@ def main(argv=None) -> int:
     ap.add_argument("--flood", action="store_true", help="every prompt runs: entity subjects are due whatever their cadence (owner 2026-10-24)")
     ap.add_argument("--since", help="harvest window start YYYY-MM-DD (default: each harvester's rolling window)")
     ap.add_argument("--until", help="harvest window end YYYY-MM-DD (default: today)")
+    ap.add_argument("--cards", type=int, help="each prompt step stops after N new cards or 5N runs")
     ap.add_argument("--limit", type=int, help="at most N subjects per prompt step (newest first, as the prompt orders them)")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
@@ -390,7 +391,7 @@ def main(argv=None) -> int:
     WINDOW.update({k: v for k, v in (("since", a.since), ("until", a.until)) if v})
     split = lambda s: {x.strip() for x in s.split(",") if x.strip()}
     pb = {k.strip(): float(v) for k, v in (x.split("=") for x in a.pillar_budget.split(",") if "=" in x)}
-    return run(a.budget, split(a.only), a.from_step, split(a.skip), a.limit, pb or None, a.flood)
+    return run(a.budget, split(a.only), a.from_step, split(a.skip), a.limit, pb or None, a.flood, a.cards)
 
 
 if __name__ == "__main__":
