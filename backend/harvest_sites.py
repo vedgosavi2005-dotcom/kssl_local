@@ -146,7 +146,7 @@ SITES: list[Site] = [
     S("hal-india.co.in", "https://hal-india.co.in/", "newsroom", "P3", "Hindustan Aeronautics", **NC),
     S("irrpl.in", "", "newsroom", "P3", "IRRPL", skip="no newsroom (per user list)", **NC),
     S("jcblgroup.com", "https://www.jcblgroup.com/", "newsroom", "P3", "JCBL", **NC),
-    S("leonardo.com", "https://www.leonardo.com/en/press-release-list", "newsroom", "P3", "Leonardo"),
+    S("leonardo.com", "https://www.leonardo.com/en/media-hub/press-releases", "newsroom", "P3", "Leonardo"),
     S("news.lockheedmartin.com", "https://news.lockheedmartin.com/", "newsroom", "P3", "Lockheed Martin"),
     S("mku.com", "https://mku.com/media/", "newsroom", "P3", "MKU", **NC),
     S("rafael.co.il", "https://www.rafael.co.il/press/", "newsroom", "P3", "Rafael", walled=WALL),
@@ -725,6 +725,7 @@ class Ctx:
         self.conn_factory = conn_factory
         self.db_lock = threading.Lock()
         self.conn = None
+        self.out = None                               # --to-file: rows go to this JSON-lines file instead of the DB
         self.known: set[str] = set()
         self.delay_locks: dict[str, list] = {}
         self.net_fail: dict[str, list] = {}           # host -> [network failures, answered requests]
@@ -822,6 +823,9 @@ class Ctx:
     def store(self, row: dict) -> bool:
         """INSERT .. ON CONFLICT DO NOTHING -> True when a new row was written."""
         if self.dry:
+            if self.out:
+                with self.db_lock:
+                    self.out.write(json.dumps(row, default=str) + "\n")
             return True
         with self.db_lock:
             with self.conn.cursor() as cur:
@@ -862,6 +866,7 @@ class Stats:
     found: int = 0
     in_window: int = 0
     stored: int = 0
+    undated: int = 0                 # stored with no publication date on the page
     already: int = 0
     skipped: collections.Counter = field(default_factory=collections.Counter)
     dates: list = field(default_factory=list)
@@ -1320,9 +1325,9 @@ def process_cand(site: Site, c: Cand, ctx: Ctx, st: Stats, lock: threading.Lock)
         d, dsrc = c.date, "sitemap-lastmod"
     elif pg.date:                          # <time>, URL or text date: weaker than a declared listing / feed date
         d, dsrc = pg.date, pg.date_src
-    if d is None:
-        return skip("no publication date")
-    if not in_window(d, ctx.win):
+    if d is None:                          # owner 2026-10-24: a page with no date on it is still taken, undated (doc_dates retries later)
+        dsrc = "none"
+    elif not in_window(d, ctx.win):
         return skip("outside date window")
     body = pg.body
     title = choose_title(pg.title, c.title, c.method)
@@ -1332,6 +1337,8 @@ def process_cand(site: Site, c: Cand, ctx: Ctx, st: Stats, lock: threading.Lock)
     notes = []
     if dsrc in ("listing-inferred", "sitemap-lastmod", "text"):
         notes.append(f"date from {dsrc}")
+    if dsrc == "none":
+        notes.append("no publication date on the page")
     if len(body) < 150:
         notes.append("short body")
     triage = {"harvester": HARVESTER, "site": site.domain, "method": c.method, "notes": "; ".join(notes) or None,
@@ -1352,7 +1359,8 @@ def process_cand(site: Site, c: Cand, ctx: Ctx, st: Stats, lock: threading.Lock)
         st.consec_out = 0
         if ok:
             st.stored += 1
-            st.dates.append(d)
+            st.undated += d is None
+            st.dates += [d] if d else []
         else:
             st.already += 1
 
@@ -1362,22 +1370,25 @@ def store_listing_only(site, c, ctx, st, lock, skip, note="pdf: body not extract
     if c.date is None and c.title:
         c.date = find_date(c.title)
         c.reliable = c.date is not None
-    if not (c.date and c.reliable and c.title):
-        return skip("pdf/image without listing date/title")
-    if not in_window(c.date, ctx.win):
+    if not c.title:
+        return skip("pdf/image without listing title")
+    d = c.date if c.date and c.reliable else None          # no date on the listing: kept undated (owner 2026-10-24)
+    if d and not in_window(d, ctx.win):
         return skip("outside date window")
-    triage = {"harvester": HARVESTER, "site": site.domain, "method": c.method, "notes": note, "date_source": "listing"}
+    triage = {"harvester": HARVESTER, "site": site.domain, "method": c.method, "notes": note if d else note + "; no publication date",
+              "date_source": "listing" if d else "none"}
     if site.non_competitor:
         triage.update({"non_competitor": True, "company": site.name})
     row = {"doc_id": str(uuid.uuid5(uuid.NAMESPACE_URL, c.url)), "url": c.url, "source_kind": site.kind,
            "source_name": site.name, "source_tier": tier_for(site, c.url), "feed_url": c.feed_url or site.url,
-           "title": c.title[:500], "published_at": c.date, "language": None, "body_text": None, "triage": triage}
+           "title": c.title[:500], "published_at": d, "language": None, "body_text": None, "triage": triage}
     ok = ctx.store(row)
     with lock:
         st.consec_out = 0
         if ok:
             st.stored += 1
-            st.dates.append(c.date)
+            st.undated += d is None
+            st.dates += [d] if d else []
         else:
             st.already += 1
 
@@ -1583,7 +1594,32 @@ def select_sites(a) -> list[Site]:
     return sites
 
 
+def load_file(path: str) -> int:
+    """Rows a --to-file run wrote on another host (owner 2026-10-24: sites that time out from here are harvested from the VPS).
+    The file is untrusted: only the known columns are taken, doc_id is recomputed from the url, then the normal INSERT."""
+    keys = ("url", "source_kind", "source_name", "source_tier", "feed_url", "title", "published_at", "language", "body_text", "triage")
+    ctx = Ctx(WINDOW, False)
+    ctx.connect()
+    n = new = 0
+    for line in open(path, encoding="utf-8"):
+        r = json.loads(line)
+        row = {k: r.get(k) for k in keys}
+        if not (isinstance(row["url"], str) and row["url"].startswith(("https://", "http://")) and isinstance(row["triage"], dict)
+                and all(row[k] is None or isinstance(row[k], (str, int)) for k in keys if k != "triage")):
+            continue
+        row["doc_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, row["url"]))
+        row["published_at"] = date.fromisoformat(row["published_at"][:10]) if row["published_at"] else None
+        row["triage"]["fetched_from"] = "vps"
+        n += 1
+        new += ctx.store(row)
+    ctx.close()
+    print(f"{path}: {n} rows read, {new} new in staging.source_document")
+    return 0
+
+
 def run(a) -> int:
+    if a.load_file:
+        return load_file(a.load_file)
     if a.normalize_urls:
         ctx = Ctx(WINDOW, False)
         ctx.connect()
@@ -1593,7 +1629,8 @@ def run(a) -> int:
         return 0
     win = (date.fromisoformat(a.frm), date.fromisoformat(a.to))
     sites = select_sites(a)
-    ctx = Ctx(win, a.dry_run or a.probe, workers=2)
+    ctx = Ctx(win, a.dry_run or a.probe or bool(a.to_file), workers=2)
+    ctx.out = open(a.to_file, "w", encoding="utf-8") if a.to_file and not a.probe else None
     news.GATE = news._HostGate(per_host=2, gap=0.4)
     ctx.connect()
     print(f"window {win[0]} .. {win[1]}; {len(sites)} site(s); {'DRY RUN' if ctx.dry else 'writing staging.source_document'}",
@@ -1607,7 +1644,7 @@ def run(a) -> int:
             results.append(st)
             d = st.dates
             print(f"[{len(results)}/{len(sites)}] {s.domain}: {st.status} {'+'.join(st.methods)} found={st.found} "
-                  f"inwin={st.in_window} stored={st.stored} had={st.already} "
+                  f"inwin={st.in_window} stored={st.stored} (undated {st.undated}) had={st.already} "
                   f"{(min(d).isoformat() + '..' + max(d).isoformat()) if d else ''} {st.note[:120]} "
                   f"{dict(st.skipped.most_common(3))} ({st.secs:.0f}s)", flush=True)
         return st
@@ -1618,6 +1655,8 @@ def run(a) -> int:
     if not (ctx.dry or a.probe):
         db_totals = db_summary(ctx, sites)
     ctx.close()
+    if ctx.out:
+        ctx.out.close()
     if not (ctx.dry or a.probe):
         results, db_totals = merge_state(results, db_totals)
     order = {s.domain: i for i, s in enumerate(SITES)}
@@ -1650,8 +1689,8 @@ def _selftest():
     assert url_date("https://x.test/a/20260117-story.html") == date(2026, 1, 17)
     assert url_date("https://x.test/2026/Mar/12/story") == date(2026, 3, 12)
     assert url_date("https://x.test/2026/03/") is None and url_date("https://x.test/story") is None
-    assert in_window(date(2026, 1, 17), WINDOW) and in_window(date(2026, 10, 17), WINDOW)
-    assert not in_window(date(2026, 1, 16), WINDOW) and not in_window(None, WINDOW)
+    assert in_window(WINDOW[0], WINDOW) and in_window(WINDOW[1], WINDOW)          # the window rolls with today
+    assert not in_window(WINDOW[0] - timedelta(days=1), WINDOW) and not in_window(None, WINDOW)
     # --- RSS / Atom
     rss = (b'<?xml version="1.0"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" '
            b'xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>'
@@ -1782,6 +1821,8 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=6, help="sites in parallel (each site: <=2 requests at a time per host)")
     ap.add_argument("--normalize-urls", action="store_true",
                     help="re-apply backend.news.clean_url to the stored rows (re-key url/doc_id, merge duplicates)")
+    ap.add_argument("--to-file", help="write the harvested rows to this JSON-lines file, not the DB (a run on another host)")
+    ap.add_argument("--load-file", help="insert the rows of a --to-file run into staging.source_document")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
