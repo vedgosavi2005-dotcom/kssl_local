@@ -244,7 +244,10 @@ def run_one(conn, spec: dict, subject: dict, client: dict, blocks: dict, dry_run
     valid = env = None
     for attempt in ((2,) if reply is not None else (1, 2)):         # a reply that is not parseable JSON is asked for once more
         try:
-            res = reply if reply is not None else call_model(o.system, o.task, spec["model"], spec["web_search"])
+            again = ("" if attempt == 1 or reply is not None else      # the second ask says what broke, not the same task again
+                     f"\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON ({o.details.get('retry', '')[:200]}). Reply again with the complete JSON object "
+                     "only: escape every double quote inside a string as \\\" and close every bracket.")
+            res = reply if reply is not None else call_model(o.system, o.task + again, spec["model"], spec["web_search"])
         except ModelError as e:
             o.error = f"model: {e}"
             o.seconds = round(time.monotonic() - t0, 1)
