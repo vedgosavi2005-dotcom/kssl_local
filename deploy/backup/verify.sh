@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly restore test on the DC (sysadmin cron, installed by deploy/backup/install.sh into ~/kssl2-backup): restores the
+# Nightly restore test on the DC (container kssl2-backup-scheduler, 03:10 UTC; installed by deploy/backup/install.sh): restores the
 # newest kssl2 backup into a throwaway postgres:16 container and checks every database comes back with tables and rows.
 # One line per run in verify.log; receive.sh "status" hands the last line to VPS1's backup run for the pipeline log.
 set -uo pipefail
@@ -7,7 +7,8 @@ H="$(cd "$(dirname "$0")" && pwd)"; C=kssl2-restore-test
 log(){ echo "$(date -u +%FT%TZ) $*" | tee -a "$H/verify.log"; }
 F=$(ls -1t "$H"/dumps/kssl2-*.tar 2>/dev/null | head -1)
 [ -n "$F" ] || { log "FAIL restore test: no backups yet"; exit 1; }
-T=$(mktemp -d); trap 'docker rm -f $C >/dev/null 2>&1; rm -rf "$T"' EXIT
+# under $H, not /tmp: the scheduler container bind-mounts $H at the same path, so the host's docker sees the files
+T=$(mktemp -d "$H/restore.XXXX"); trap 'docker rm -f $C >/dev/null 2>&1; rm -rf "$T"' EXIT
 tar -xf "$F" -C "$T" && cd "$T"/* && sha256sum -c --quiet SHA256SUMS || { log "FAIL restore test $(basename "$F"): checksum"; exit 1; }
 chmod -R a+rX "$T"
 docker rm -f $C >/dev/null 2>&1

@@ -36,8 +36,15 @@ do_vps2(){ receiver vps2 "${VPS2[@]}"; cron kssl2-backup-prune '40 3 * * * bash 
 do_dc(){
   receiver dc "${DC[@]}"
   send '~/kssl2-backup/verify.sh' "${DC[@]}" < verify.sh
-  cron kssl2-backup-verify '10 3 * * * bash ~/kssl2-backup/verify.sh >/dev/null 2>&1' "${DC[@]}"
-  cron kssl2-backup-prune '40 3 * * * bash ~/kssl2-backup/receive.sh prune 14 13 >> ~/kssl2-backup/prune.log 2>&1' "${DC[@]}"
+  # the DC has no cron (and we don't install packages there): a container runs the restore test 03:10 and the prune 03:40 UTC.
+  # It mounts ~/kssl2-backup at the SAME path, so verify.sh's `docker run -v` paths mean the same thing to the host's docker.
+  "${DC[@]}" "bash -s" <<'EOF'
+H=$HOME/kssl2-backup; docker rm -f kssl2-backup-scheduler >/dev/null 2>&1
+docker run -d --name kssl2-backup-scheduler --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v "$H:$H" \
+  -e H="$H" docker:29-cli sh -c 'apk add -q --no-cache bash coreutils tar && while :; do
+    case $(date -u +%H%M) in 0310) bash $H/verify.sh >/dev/null 2>&1 ;; 0340) bash $H/receive.sh prune 14 13 >> $H/prune.log 2>&1 ;; esac
+    sleep $((60 - $(date +%S | sed "s/^0//"))); done' >/dev/null && echo "   scheduler: $(docker ps --filter name=kssl2-backup-scheduler --format '{{.Status}}')"
+EOF
 }
 do_vps1(){
   backup_pub >/dev/null
@@ -80,10 +87,10 @@ state=\$(docker run --rm -v kssl2-standby_data:/d alpine:3.20 sh -c 'if [ -f /d/
 case \$state in
   primary) echo "   the volume holds a NON-standby database (promoted?): not touching it"; exit 1 ;;
   empty)   echo "   seeding with pg_basebackup"
-           for i in \$(seq 30); do docker compose exec -T tunnel nc -z 127.0.0.1 5460 2>/dev/null && break; sleep 2; done
+           for i in \$(seq 30); do docker compose exec -T tunnel nc -z 127.0.0.1 5460 </dev/null 2>/dev/null && break; sleep 2; done
            docker run --rm --network kssl2-standby_default -v kssl2-standby_data:/var/lib/postgresql/data --user postgres \
              postgres:16 pg_basebackup -d "host=tunnel port=5460 user=kssl_repl password=$pw" \
-             -D /var/lib/postgresql/data -R -C -S dc_standby -X stream ;;
+             -D /var/lib/postgresql/data -R -C -S dc_standby -X stream </dev/null ;;   # (stdin closed: anything reading it would eat the rest of this script)
   standby) echo "   already a standby" ;;
 esac
 docker compose up -d db

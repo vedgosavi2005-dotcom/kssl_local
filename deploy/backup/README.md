@@ -17,9 +17,9 @@ The standby copies mistakes instantly; the dated backups are what you go back to
   backups, so a break-in on VPS1 cannot wipe them. Each receiver echoes the stored file's sha256, which must match.
 - Every run is logged in the pipeline log (`ops.run` with notes `kssl2 database backup`, its `ops.step` rows `backup.*` and
   an `ops.note` each), so it shows on the review site: dump size, each copy, the standby's lag, the DC's last restore test.
-- `verify.sh` (DC, 03:10 UTC) restores the newest backup into a throwaway `postgres:16` container and checks every database
+- `verify.sh` (DC, 03:10 UTC, run by the container `kssl2-backup-scheduler`: the DC has no cron) restores the newest backup into a throwaway `postgres:16` container and checks every database
   has tables and rows. Its last line reaches the next backup run via `receive.sh status`.
-- `receive.sh prune` (03:40 UTC) applies the retention on each receiver.
+- `receive.sh prune` applies the retention: on the DC at 03:40 UTC from the same scheduler container, on VPS2 from root cron.
 - The standby (`standby/docker-compose.yml`) is a `postgres:16` replica fed through an SSH tunnel container. On VPS1 the
   tunnel key has a forced `/bin/false` and may only forward to `127.0.0.1:5460`. VPS1 holds changes for it in the replication
   slot `dc_standby`, capped at 4 GB (`max_slot_wal_keep_size`): a standby that is away longer is dropped and must be re-seeded.
