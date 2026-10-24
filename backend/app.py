@@ -128,7 +128,10 @@ def load_schema_manifest() -> dict[str, dict[str, list[dict[str, Any]]]]:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT table_schema, table_name, column_name, ordinal_position,
+                SELECT table_schema, table_name, column_name,
+                       -- position in order, not the raw attnum: a dropped column leaves a gap there, so two DBs with the same
+                       -- columns in the same order would number them differently (local serving.competitive_signal, 2026-10-25)
+                       (row_number() OVER (PARTITION BY table_schema, table_name ORDER BY ordinal_position))::int AS ordinal_position,
                        data_type, udt_name, is_nullable, character_maximum_length,
                        numeric_precision, numeric_scale
                 FROM information_schema.columns
