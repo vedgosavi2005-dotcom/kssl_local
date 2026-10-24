@@ -115,7 +115,8 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
             # the one-sentence reason the signal prompt gave for each judgement (probability, impact per dimension, market,
             # product match, timing): the drawer explains every risk check with it (owner 22 Oct); live too since 24 Oct
             cur.execute(f"""SELECT row_id, column_name, quote FROM {SOURCE_SCHEMA['serving']}.fact_source
-                            WHERE table_name = 'competitive_signal' AND source_tier = 'judgement' AND quote IS NOT NULL""")
+                            WHERE table_name = 'competitive_signal' AND source_tier = 'judgement' AND quote IS NOT NULL
+                            ORDER BY row_id, column_name""")   # same order on every DB (VPS1 and AWS)
             database["serving"]["signal_reasons"] = [dict(r) for r in cur.fetchall()]
     return database
 
