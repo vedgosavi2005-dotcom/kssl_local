@@ -9,7 +9,8 @@ import { REVIEW } from "../components/review/Review";
 const KEY = "kssl_user";
 
 // on for the live site in local dev; a build turns it on with VITE_LOGIN=1. The review site never asks.
-export const LOGIN_REQUIRED = !REVIEW && (import.meta.env.DEV || import.meta.env.VITE_LOGIN === "1");
+const ENV = import.meta.env || {};   // node test bundles have no import.meta.env
+export const LOGIN_REQUIRED = !REVIEW && (ENV.DEV || ENV.VITE_LOGIN === "1");
 
 export function currentUser() {
   try {
