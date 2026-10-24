@@ -58,11 +58,11 @@ done < "$B/receivers"
 
 # 3. the DC standby: is it streaming, and how far behind
 t=$SECONDS
-sb=$(pg -d postgres -F ' ' -c "SELECT s.active, coalesce(r.state, 'disconnected'),
+sb=$(pg -d postgres -F '|' -c "SELECT s.active, coalesce(r.state, 'disconnected'),
        coalesce(pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), r.replay_lsn)), '?'), coalesce(date_trunc('second', r.replay_lag)::text, '0')
      FROM pg_replication_slots s LEFT JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = 'dc_standby'")
 if [ -z "$sb" ]; then step standby skipped 0 "No DC standby set up yet."
-else read -r active state behind lag <<< "$sb"
+else IFS='|' read -r active state behind lag <<< "$sb"
   if [ "$active" = t ] && [ "$state" = streaming ]; then step standby ok 0 "The DC standby is streaming: $behind behind, replay lag $lag."
   else step standby failed $((SECONDS - t)) "The DC standby is not streaming ($state). VPS1 keeps up to 4 GB of changes for it, then drops it." "$sb"; fi
 fi
