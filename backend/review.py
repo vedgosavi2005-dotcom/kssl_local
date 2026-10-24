@@ -256,9 +256,21 @@ def _clean(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in VOLATILE}
 
 
-def _signature(bundle: list) -> str:
+def _signature(bundle: list, srcs: dict | None = None) -> str:
     items = sorted(json.dumps([tb, _clean(r)], sort_keys=True, default=str) for tb, r, *_ in bundle)
+    if srcs is not None:          # the bundle's sources count too: a source-only fix is a change to publish
+        items += sorted(f"src|{tb}|{i}|{srcs.get((tb, i), '')}" for tb, ids in _row_ids(bundle).items() for i in ids)
     return hashlib.md5("\n".join(items).encode()).hexdigest()
+
+
+def _source_sigs(cur, schema: str, ids: list | None = None) -> dict[tuple[str, str], str]:
+    """(table, row_id) -> md5 of its fact_source rows. Approve copies a card's sources, but the status ignored them, so sources
+    re-loaded under an unchanged card (the re-verified leadership Excel, also-reported-by links) never went live (2026-10-24)."""
+    cur.execute(sql.SQL("""SELECT table_name, row_id, md5(string_agg(s, E'\\n' ORDER BY s)) AS h
+                           FROM (SELECT table_name, row_id, concat_ws('|', column_name, source_url, quote, document_id, source_tier, publisher) AS s
+                                 FROM {}.fact_source {}) x GROUP BY 1, 2""").format(
+        sql.Identifier(schema), sql.SQL("WHERE row_id = ANY(%s)" if ids is not None else "")), (ids,) if ids is not None else None)
+    return {(r["table_name"], r["row_id"]): r["h"] for r in cur.fetchall()}
 
 
 def statuses(st_cur, sv_cur) -> dict[str, Any]:
@@ -266,15 +278,16 @@ def statuses(st_cur, sv_cur) -> dict[str, Any]:
         "tables": {"ui"|"serving": {table: {"s": new|changed|live, "n": staged rows, "live_n": live rows}}}}"""
     S, V = _Tables(st_cur, "staging"), _Tables(sv_cur, "serving")
     rejected = {(r["table_name"], r["row_key"]): r["signature"] for r in S.all("review_decision")}
+    src_s, src_v = _source_sigs(st_cur, "staging"), _source_sigs(sv_cur, "serving")
     cards: dict[str, dict[str, dict[str, Any]]] = {}
     for table, (_, reviewed, _p) in GRAPH.items():
         if not reviewed:
             continue
         for row in S.all(table):
             key = _kv(table, row)
-            sig = _signature(_bundle(S, table, row))
+            sig = _signature(_bundle(S, table, row), src_s)
             live = V.card(table, key)
-            live_sig = _signature(_bundle(V, table, live)) if live else None
+            live_sig = _signature(_bundle(V, table, live), src_v) if live else None
             if sig == live_sig:
                 s = "live"
             elif rejected.get((table, key)) == sig:
@@ -402,7 +415,7 @@ def reject(st, sv, table: str, key: str) -> None:
     st.execute(
         """INSERT INTO staging.review_decision (table_name, row_key, status, signature) VALUES (%s, %s, 'rejected', %s)
            ON CONFLICT (table_name, row_key) DO UPDATE SET signature = EXCLUDED.signature, decided_at = now()""",
-        (table, key, _signature(_bundle(S, table, row))))
+        (table, key, _signature(b := _bundle(S, table, row), _source_sigs(st, "staging", [i for ids in _row_ids(b).values() for i in ids]))))
     ops_log.review_event("reject", table, key, None, st)
 
 
@@ -545,6 +558,8 @@ if __name__ == "__main__":
     changed = [(C, {"competitor_id": "c1", "updated_at": "now"}, None), b[1]]
     assert _signature(changed) == _signature(b)  # bookkeeping columns do not count
     assert _signature(b) != _signature(b[:1])
+    assert _signature(b, {(C, "c1"): "x"}) != _signature(b, {(C, "c1"): "y"})  # a source-only change counts
+    assert _signature(b, {}) == _signature(b, {("other_table", "c1"): "y"})    # other cards' sources do not
     assert _delete_specs(bu) == [(C, "competitor_id", "c1"), ("competitive_competitor_location", "competitor_id", "c1"),
                                  ("competitive_product", "competitor_id", "c1"),
                                  ("competitive_product_specification", "product_id", "p1")]
