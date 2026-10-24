@@ -293,6 +293,8 @@ def run(budget: float, only: set, start: str | None, skip: set, limit: int | Non
     from backend import ops_log
     if flood:                     # every prompt runs this time: an entity subject done within its cadence period is due again (prompts/run.pending)
         os.environ["KSSL_FLOOD_ALL"] = "1"
+    if WINDOW.get("since"):       # a windowed flood: dated article subjects older than the window wait (scripts/flood_run); the pillar cap
+        os.environ["KSSL_SINCE"] = WINDOW["since"]          # alone would let one backlog prompt (signal) spend its whole pillar
     run_id = ops_log.start_run("routine", {"budget": budget, "pillar_budget": pillar_budget, "flood": flood, "only": sorted(only), "from_step": start, "skip": sorted(skip),
                                            "log": f"db/flood_logs/routine_{stamp}.log"})
     for name, kind, what in steps():

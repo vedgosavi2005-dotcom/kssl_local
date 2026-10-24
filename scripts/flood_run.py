@@ -2,7 +2,7 @@
 Runs the pending subjects (the prompt's own query order) on a thread pool, one DB connection per worker, each run logged to
 staging.prompt_run like prompts.run. Stops taking new subjects when the cost of THIS invocation reaches --max-cost."""
 from __future__ import annotations
-import argparse, sys, threading
+import argparse, os, sys, threading
 from concurrent.futures import ThreadPoolExecutor
 from prompts import render, run
 
@@ -18,6 +18,13 @@ def main() -> int:
     spec = render.load_prompt(a.prompt)
     class A: subject = None; limit = a.limit; rerun = a.rerun; print_prompt = False
     subs, why = run.select(conn, spec, A)
+    since = os.environ.get("KSSL_SINCE")       # set by backend/routine --since: an article dated before it waits; undated ones run
+    if since and subs:
+        d = lambda s: str(s.get("published_date") or s.get("published_at") or "")[:10]
+        n = len(subs)
+        subs = [s for s in subs if not d(s) or d(s) >= since]
+        why = why or f"all {n} pending subjects are dated before {since}"
+        print(f"window from {since}: {len(subs)} of {n} pending subjects", flush=True)
     if not subs:
         print(why); return 0
     with conn.cursor() as cur:
