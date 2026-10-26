@@ -144,21 +144,22 @@ def _unit_in(v: str) -> str | None:
     return m.group(1) if m and spec_sheet._unit_of(m.group(1)) else None
 
 
-def _pair_values(comp: Any, client: Any, unit: Any, category: str, label: Any) -> tuple[Any, Any]:
-    """A comparison row's two shown values: source notes out (spec_sheet.clean_text), units standardised, and the competitor's figure
+def _pair_values(comp: Any, client: Any, unit: Any, category: str, label: Any, maker: Any = None) -> tuple[Any, Any]:
+    """A comparison row's two shown values: source notes out (spec_sheet.clean_text; maker = the competitor's spec_sheet.Maker, so
+    "(Elbit)" after an Elbit figure goes as a citation), units standardised, and the competitor's figure
     in the client side's unit when the row stores none and the two differ ("13,000 kg" next to "12.5 t" -> "13 t")."""
-    def tidy(v: Any, target: Any) -> Any:
+    def tidy(v: Any, target: Any, mk: Any = None) -> Any:
         if v in (None, ""):
             return v
         items = []
-        for i in spec_sheet.clean_text(v):
+        for i in spec_sheet.clean_text(v, mk):
             n = spec_sheet.normalise_units(i, category, text(label), target)
             target = target or _unit_in(n)         # no stored unit: the first figure's unit holds for the rest of the value
             if n not in items:                     # "90 cm; 900 mm" -> "90 cm" once both are in one unit
                 items.append(n)
         return "; ".join(items) if items else None
     k = tidy(client, unit)
-    return tidy(comp, unit or (_unit_in(k) if isinstance(k, str) else None)), k
+    return tidy(comp, unit or (_unit_in(k) if isinstance(k, str) else None), maker), k
 
 
 def build_matchups(database):
@@ -176,6 +177,9 @@ def build_matchups(database):
             advantages[mid][side + q].append(row.get("advantage_text"))
 
     cat_of = {text(r.get("matchup_id")): text(r.get("category_code")) for r in table(database, "serving", "competitive_matchup")}
+    maker_of = {text(c.get("competitor_id")): spec_sheet.Maker([c.get("display_name"), c.get("legal_name"), c.get("short_name")])
+                for c in table(database, "serving", "competitive_competitor")}
+    maker_by_mid = {text(r.get("matchup_id")): maker_of.get(text(r.get("competitor_id"))) for r in table(database, "serving", "competitive_matchup")}
     specs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     spec_rows = sorted(
         table(database, "serving", "competitive_matchup_specification"),
@@ -187,13 +191,13 @@ def build_matchups(database):
             continue
         cn, kn = row.get("competitor_value_numeric"), row.get("client_value_numeric")
         specs[mid].append({
-            "l": row.get("spec_label"),
+            "l": re.sub(r",\s*[A-Z][\w&.-]* (?:table|sheet|page)(?=\))", "", text(row.get("spec_label"))) or None,   # "(carbine only, KSSL table)": no source in the label
             "u": row.get("unit"),
             # both sides in one unit and without source notes (owner 2026-10-25: "a centimeter is compared with a meter", sources
             # inside the figures); the numbers cn / kn the edge is computed from are untouched, the sources stay on the row (_src)
             **dict(zip(("cv", "kv"), _pair_values(_val(row, "competitor_value_text", "competitor_value_numeric"),
                                                   _val(row, "client_value_text", "client_value_numeric"),
-                                                  row.get("unit"), cat_of.get(mid, ""), row.get("spec_label")))),
+                                                  row.get("unit"), cat_of.get(mid, ""), row.get("spec_label"), maker_by_mid.get(mid)))),
             "cn": cn,
             "kn": kn,
             "hi": _hi(row.get("better_side"), cn, kn),

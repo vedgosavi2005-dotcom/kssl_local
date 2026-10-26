@@ -44,7 +44,7 @@ _PLACEHOLDER = re.compile(r"^\s*(?:n/?a|none|nil|unknown|not applicable|no data|
 _PIPE = re.compile(r"\b(?:excel|xlsx|workbook|spreadsheet|scrap(?:e|ed|ing)|crawl(?:er|ed)|js-rendered|http \d{3}|returned 40[34]|"
                    r"retriev(?:e|able|ed)|could not be (?:read|extracted|fetched|retrieved|accessed|re-read|verified|confirmed)|"
                    r"was not (?:retrievable|accessible|reachable|read)|not (?:extracted|retrievable|obtained|compared)|page text|"
-                   r"todo|pipeline|placeholder|(?:see|in) (?:the )?(?:separate )?(?:[\w,/.-]+ (?:and )?){0,5}(?:rows?|cards?)\b|"
+                   r"todo|pipeline|placeholder|article text|truncated at|(?:see|in) (?:the )?(?:separate )?(?:[\w,/.-]+ (?:and )?){0,5}(?:rows?|cards?)\b|"
                    r"(?:this|product|catalogue|workbook|sheet|variant|program(?:me)?/common-systems) row\b|sheet exists|"
                    r"included with a caveat|no reliable source|source reviewed|wikipedia-derived|figures excluded|omitted\b)", re.I)
 # a word that makes a bracket a citation: "(Army Recognition)", "(Elbit 2025 datasheet)", "(f35.com)", "(KSSL page)"
@@ -52,19 +52,23 @@ _SRC_WORD = (r"sources?|sourced|datasheets?|data sheets?|brochures?|websites?|we
              r"reports?|reported|reporting|press release|news release|fact ?sheets?|fact tables?|fast facts|handbook|wikipedia|army recognition|"
              r"army[- ]technology|air ?force[- ]technology|naval[- ]technology|janes|jane's|csis|globalsecurity|seaforces|defen[cs]e talk|"
              r"defen[cs]e news|breaking defen[cs]e|flightglobal|shephard|aviation week|idrw|livefist|theprint|the print|manufacturer|"
+             r"frontier ?india|militarnyi|nrc|"
              r"official|officially|secondary|showroom|news|article|magazine|catalogue|catalog|leaflet|flyer|text|interview|quoted|citing|"
              r"cited|claimed|claim|according|as reproduced|reproduced by|uncited|disputed|typo|as printed|printed|product cards?|"
              r"variant cards?|spec cards?|not stated|not given|not published|not used|(?:19|20)\d\d release|"
              r"(?<!sim )(?<!sd )(?<!memory )(?<!smart )(?<!line )(?<!id )cards?")
-_SRC_PAREN = re.compile(r"\s*\((?=[^()]*(?:\b(?:%s)\b|\b[\w-]+\.(?:com|org|net|mil|gov|in|io|co\.uk|de|fr)\b))[^()]*\)" % _SRC_WORD, re.I)
+_BODY = r"(?:[^()]|\([^()]*\))*"                    # a bracket's text, one nested pair allowed: "(DoO(C&S) product page)"
+_SRC_PAREN = re.compile(r"\s*\((?=%s(?:\b(?:%s)\b|\b[\w-]+\.(?:com|org|net|mil|gov|in|io|co\.uk|de|fr)\b))%s\)" % (_BODY, _SRC_WORD, _BODY), re.I)
 _SRC_PAREN_CS = re.compile(r"\s*\((?=[^()]*(?:\bper [A-Z]|\b[A-Z][\w&-]+ (?:release|statement|announcement)\b|\b[A-Z][\w-]*\d\w* cards?\b|"
-                           r"^[A-Z][\w&.' -]*,\s*(?:\d{1,2} )?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.? \d{4}\s*\)))[^()]*\)")
+                           r"^[A-Z][\w&.' -]*,\s*(?:\d{1,2} )?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.? \d{4}\s*\)"
+                           r"|(?<=\()[A-Z]{2,5} (?:19|20)\d\d\s*\)))[^()]*\)")   # "(AR 2019)": an outlet's initials and a year
 _SRC_PHRASE = re.compile(r"\s*[-–—,]?\s*\b(?:sources? (?:differ|conflict|disagree|vary)|disputed|uncited|(?:a )?typo in (?:the )?source)\b[^;]*"
                          r"|\s+in (?:some |other )?secondary (?:sources|reports)\b", re.I)
 _SRC_PER = re.compile(r"\s*,?\s*\b(?:(?:per|according to)\s+(?:the\s+)?(?:[\w'’&.-]+\s+){0,3}|"
                       r"(?:as (?:reported|stated|listed) (?:by|in)|citing|in)\s+(?:the\s+)?(?:[A-Z][\w'’&.-]*\s+){0,3})"
                       r"(?:brochure|datasheet|data sheet|website|web page|page|fact sheet|press release|catalogue|leaflet|showroom|card|sheet|table|list)"
-                      r"(?:\s+[A-Z0-9][\w-]*\d[\w-]*)?\b|\s*,?\s*\bper (?:the )?(?:army[- ]technology|army recognition|janes|csis|wikipedia|manufacturer)\b", re.I)
+                      r"(?:\s+[A-Z0-9][\w-]*\d[\w-]*)?\b|\s*,?\s*\bper (?:the )?(?:army[- ]technology|army recognition|janes|csis|wikipedia|manufacturer)\b"
+                      r"|\s*,?\s*\b[Pp]er (?-i:[A-Z][\w&.'’-]*(?: [A-Z][\w&.'’-]*){0,2})\s*$", re.I)   # "25-38 km per Militarnyi" closing an item
 _SRC_CLAUSE = re.compile(r"^\s*(?:older|other|some|earlier|secondary) (?:sources?|reports?|press|media)\b|^\s*[A-Z][\w&.'-]*(?: [A-Z][\w&.'-]*)? (?:cites|quotes)\b|\b(?:secondary|other) (?:reports|sources) (?:quote|give|say|list|circulate)"
                          r"|\b(?:appears|given|quoted|cited|reported|circulates?) in (?:some |other )?(?:secondary )?(?:sources|reports|press)\b"
                          r"|\b(?:release|page|sheet|brochure|datasheet|website|article|report|card)s? (?:quotes?|says|states|lists|gives|shows|prints)\b", re.I)
@@ -97,7 +101,7 @@ class Maker:
                     stems.add(first)
         alt = "|".join(re.escape(x) for x in sorted(stems, key=len, reverse=True)) or "(?!)"
         self.paren = re.compile(r"\s*\((?:%s)(?:[\s-]+[A-Z][\w&.-]*){0,3}\)" % alt, re.I)
-        self.quote = re.compile(r"(?:%s)\s+(['\"‘“])(.+?)['\"’”]" % alt, re.I)
+        self.quote = re.compile(r"(?:%s)\s+(?:(?:states|says|claims|quotes|lists|gives|describes it as)\s+)?(['\"‘“])(.+?)['\"’”]" % alt, re.I)
 
 
 def strip_sources(s: str, maker: "Maker | None" = None) -> str:
@@ -113,7 +117,7 @@ def strip_sources(s: str, maker: "Maker | None" = None) -> str:
     s = _SRC_PHRASE.sub("", s)
     s = _SRC_PER.sub("", s)
     s = re.sub(r"^(?:the )?(?:brochure|datasheet|data sheet|website|web page|page|fact sheet|card)\s+(?:headline|figure|claim|value)s?\s*:?\s*", "", s, flags=re.I)
-    if maker:                                          # "Hanwha 'more than 40 km'": the company quoting itself -> the quote
+    if maker:                                          # "Hanwha 'more than 40 km'", 'Elbit states "..."': the company quoting itself -> the quote
         m = maker.quote.fullmatch(s.strip())
         if m:
             s = m.group(2)
@@ -1226,6 +1230,16 @@ def _selftest() -> None:
     s = sheet([("Weight empty", "29,300 lb (Lockheed 2021 fast facts)", None), ("Crew (NAVAIR MH-60R page)", "3", None)], "Aircraft & Aerostructures")
     assert row(s["key"], "Empty weight") == "13,290 kg (29,300 lb)" and row(s["key"], "Crew") == "3", s
     assert strip_sources("<10 m (GPS); SAL <5 m (Elbit 2025 datasheet) - sources differ") == "<10 m (GPS); SAL <5 m"
+    elbit = Maker(["Elbit Systems"])
+    assert clean_text('28.5 km (Elbit); 21 km NATO-standard', elbit) == ["28.5 km", "21 km NATO-standard"]
+    assert clean_text('Elbit states "wide angle of traverse"', elbit) == ["wide angle of traverse"]
+    assert clean_text("25 to 40 km; 25-38 km per Militarnyi; GP6 guided shell 6-25 km (AR 2019)") == ["25 to 40 km", "25-38 km", "GP6 guided shell 6-25 km"]
+    assert clean_text("4569 Class II per Bharat Forge") == ["4569 Class II"]
+    assert clean_text("6.8 t; titanium version 4.8 t (Frontier India)") == ["6.8 t", "titanium version 4.8 t"]
+    assert clean_text("800 m; 1000 m (DoO(C&S) product page, archived)") == ["800 m", "1000 m"]
+    assert clean_text("39 degrees both sides (NRC Canada)") == ["39 degrees both sides"]
+    assert clean_text("maximum about 5 rounds per minute; the 2016 article text is truncated at '4 to... rounds'") == ["maximum about 5 rounds per minute"]
+    assert clean_text("12.5 t (total)") == ["12.5 t (total)"] and clean_text("> 40 km/h (metalled roads)") == ["> 40 km/h (metalled roads)"]
     assert clean_text("Rotax 916 (Army Recognition); older sources Rotax 914 - disputed") == ["Rotax 916"]
     assert clean_text("24/7 support; Lockheed F-35 sustainment page text could not be extracted (JS-rendered)") == ["24/7 support"]
     # placeholders and "not disclosed" rows are not shown
