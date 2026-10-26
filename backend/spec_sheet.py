@@ -44,7 +44,7 @@ _PLACEHOLDER = re.compile(r"^\s*(?:n/?a|none|nil|unknown|not applicable|no data|
 _PIPE = re.compile(r"\b(?:excel|xlsx|workbook|spreadsheet|scrap(?:e|ed|ing)|crawl(?:er|ed)|js-rendered|http \d{3}|returned 40[34]|"
                    r"retriev(?:e|able|ed)|could not be (?:read|extracted|fetched|retrieved|accessed|re-read|verified|confirmed)|"
                    r"was not (?:retrievable|accessible|reachable|read)|not (?:extracted|retrievable|obtained|compared)|page text|"
-                   r"todo|pipeline|placeholder|article text|truncated at|unverified|(?:see|in) (?:the )?(?:separate )?(?:[\w,/.-]+ (?:and )?){0,5}(?:rows?|cards?)\b|"
+                   r"todo|pipeline|placeholder|article text|truncated at|unverified|allowed source|(?:see|in) (?:the )?(?:separate )?(?:[\w,/.-]+ (?:and )?){0,5}(?:rows?|cards?)\b|"
                    r"(?:this|product|catalogue|workbook|sheet|variant|program(?:me)?/common-systems) row\b|sheet exists|"
                    r"included with a caveat|no reliable source|source reviewed|wikipedia-derived|figures excluded|omitted\b)", re.I)
 # a word that makes a bracket a citation: "(Army Recognition)", "(Elbit 2025 datasheet)", "(f35.com)", "(KSSL page)"
@@ -52,7 +52,7 @@ _SRC_WORD = (r"sources?|sourced|datasheets?|data sheets?|brochures?|websites?|we
              r"reports?|reported|reporting|press release|news release|fact ?sheets?|fact tables?|fast facts|handbook|wikipedia|army recognition|"
              r"army[- ]technology|air ?force[- ]technology|naval[- ]technology|janes|jane's|csis|globalsecurity|seaforces|defen[cs]e talk|"
              r"defen[cs]e news|breaking defen[cs]e|flightglobal|shephard|aviation week|idrw|livefist|theprint|the print|manufacturer|"
-             r"frontier ?india|militarnyi|nrc|"
+             r"frontier ?india|militarnyi|nrc|crs|swarajya|investor presentation|presentation|"
              r"official|officially|secondary|showroom|news|article|magazine|catalogue|catalog|leaflet|flyer|text|interview|quoted|citing|"
              r"cited|claimed|claim|according|as reproduced|reproduced by|uncited|disputed|typo|as printed|printed|product cards?|"
              r"variant cards?|spec cards?|not stated|not given|not published|not used|(?:19|20)\d\d release|"
@@ -104,6 +104,18 @@ class Maker:
         self.quote = re.compile(r"(?:%s)\s+(?:(?:states|says|claims|quotes|lists|gives|describes it as)\s+)?(['\"‘“])(.+?)['\"’”]" % alt, re.I)
 
 
+# a figure led by who gave it: "Army Recognition (2024) says up to 40 km", "SOF brochure table gives 0.494 kg",
+# "a BDL official quoted by Janes (Aero India 2023) gave 50 km", "L&T page (search read) says the ATGM is optional"
+_LEAD_ATTR = re.compile(r"^(?:(?:a|an|the)\s+)?(?:(?:[A-Z][\w&.'’/-]*|official|officials|spokesperson|brochure|table|page|website|datasheet|"
+                        r"quoted|cited|by|of|in|and|\([^()]*\))\s+){1,8}?(?:says|said|gives|gave|lists|states|stated|estimates|confirms|"
+                        r"quotes|reports|reported|claims|claimed)\s+(?:that\s+)?(?=\S)")
+# a trailing research note: " - single source, medium", " - conflict, BDL value retained", "(earlier row said ~160,000)",
+# ", reported Oct 2025", " reported" closing a figure, "reported by Swarajya"
+_TAIL_NOTE = re.compile(r"\s+[-–—]\s+(?:single source|conflict)\b.*$|\s*\((?:earlier|another|other) (?:row|source|figure)s?\b[^()]*\)"
+                        r"|,?\s+reported(?: in)?(?: (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*)? (?:19|20)\d\d\s*$|\s+reported\s*$"
+                        r"|\s+(?:as )?reported by (?-i:[A-Z][\w&.'’-]*(?: [A-Z][\w&.'’-]*){0,2})", re.I)
+
+
 def strip_sources(s: str, maker: "Maker | None" = None) -> str:
     """Drop citation brackets and source phrases from a client-facing text; the figure itself stays."""
     prev = None
@@ -116,6 +128,7 @@ def strip_sources(s: str, maker: "Maker | None" = None) -> str:
             s = maker.paren.sub("", s)
     s = _SRC_PHRASE.sub("", s)
     s = _SRC_PER.sub("", s)
+    s = _TAIL_NOTE.sub("", s)
     s = re.sub(r"^(?:the )?(?:brochure|datasheet|data sheet|website|web page|page|fact sheet|card)\s+(?:headline|figure|claim|value)s?\s*:?\s*", "", s, flags=re.I)
     if maker:                                          # "Hanwha 'more than 40 km'", 'Elbit states "..."': the company quoting itself -> the quote
         m = maker.quote.fullmatch(s.strip())
@@ -149,6 +162,7 @@ def clean_text(value: Any, maker: "Maker | None" = None) -> list[str]:
         if not part or _NOTE.search(part) or _SRC_CLAUSE.search(part):
             continue
         part = strip_sources(_after_note(part), maker)
+        part = _cap(_LEAD_ATTR.sub("", part, count=1)) if _LEAD_ATTR.match(part) else part   # "X says up to 40 km" -> "Up to 40 km"
         if not part or _PIPE.search(part) or _PLACEHOLDER.match(part) or part in out:
             continue
         out.append(part)
@@ -1244,6 +1258,12 @@ def _selftest() -> None:
     assert clean_text("39 degrees both sides (NRC Canada)") == ["39 degrees both sides"]
     assert clean_text("maximum about 5 rounds per minute; the 2016 article text is truncated at '4 to... rounds'") == ["maximum about 5 rounds per minute"]
     assert clean_text("9.72 kg. The 7.5 kg / 1,200 mm figures are NOT on the current manufacturer product page, flyer or DDP: unverified, dropped") == ["9.72 kg"]
+    assert clean_text("a BDL official quoted by Janes (Aero India 2023) gave 50 km") == ["50 km"]
+    assert clean_text("Army Recognition (2024) gives roughly 154 kg - conflict, BDL value retained") == ["Roughly 154 kg"]
+    assert clean_text('the earlier "Mach 4-4.5" upper bound is not supported by any allowed source') == []
+    assert clean_text("182,000 pre-formed tungsten fragments (earlier row said ~160,000)") == ["182,000 pre-formed tungsten fragments"]
+    assert clean_text("Over 1,725 miles (about 2,780 km) reported (CRS)") == ["Over 1,725 miles (about 2,780 km)"]
+    assert clean_text("Power source") == ["Power source"] and clean_text("Range 38 km") == ["Range 38 km"]
     assert clean_text("12.5 t (total)") == ["12.5 t (total)"] and clean_text("> 40 km/h (metalled roads)") == ["> 40 km/h (metalled roads)"]
     assert clean_text("Rotax 916 (Army Recognition); older sources Rotax 914 - disputed") == ["Rotax 916"]
     assert clean_text("24/7 support; Lockheed F-35 sustainment page text could not be extracted (JS-rendered)") == ["24/7 support"]
