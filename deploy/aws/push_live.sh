@@ -73,3 +73,18 @@ pull() {                                               # pull <table> <id column
 }
 pull event event_id
 pull recording rec_id
+
+# terms acceptances (db/setup/42; key user_name + terms_version, no id): tiny, so copy them all and keep what VPS1 has.
+# Skipped until the table exists on both sides.
+has_terms="SELECT to_regclass('activity.terms_acceptance') IS NOT NULL"
+if [ "$(q kssl_serving <<<"$has_terms")" = t ] && [ "$(aws_q kssl_serving <<<"$has_terms")" = t ]; then
+  cols=$(q kssl_serving <<<"SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) FROM information_schema.columns
+                            WHERE table_schema = 'activity' AND table_name = 'terms_acceptance'")
+  got=$( { echo "CREATE TEMP TABLE x ON COMMIT DROP AS SELECT $cols FROM activity.terms_acceptance LIMIT 0;"
+           echo "COPY x FROM STDIN;"
+           aws_q kssl_serving <<<"COPY (SELECT $cols FROM activity.terms_acceptance) TO STDOUT"
+           echo '\.'
+           echo "WITH i AS (INSERT INTO activity.terms_acceptance ($cols) SELECT $cols FROM x ON CONFLICT DO NOTHING RETURNING 1) SELECT count(*) FROM i;"
+         } | docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -At -1 -U kssl_admin -d kssl_serving )
+  [ "$got" = 0 ] || log "usage log: $got new AWS terms acceptances"
+fi

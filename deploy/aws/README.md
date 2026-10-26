@@ -104,9 +104,28 @@ All steps run from this PC, in Git Bash, inside `kssl_local`.
 | `docker-compose.override.yml`, `Caddyfile` | AWS | Caddy with HTTPS for the live site; review services switched off |
 | `backup.sh` | AWS, cron daily | `pg_dump` of both databases, 7 days kept, optional S3 copy |
 
+## Sign-in at the edge (prepared, switched on with the login deploy)
+
+When the API requires sign-in (`KSSL_LOGIN_REQUIRED=1`, backend/auth.py), CloudFront's cached paths `/api/dataset*` and
+`/api/image/*` would otherwise either refuse everyone (no cookie reaches the API) or serve one user's cached copy to anyone.
+So a CloudFront Function, `cloudfront/edge_auth.js`, checks the `kssl_session` cookie at the edge (same rules as
+`auth.user_of`, secret in a CloudFront KeyValueStore) and only then serves the cached copy. On a cache miss CloudFront fetches
+from the API through a second origin that adds `X-KSSL-Service`, so the API answers it. Every other `/api` path is not cached
+and the API checks the cookie itself. Self-check: `node deploy/aws/cloudfront/test_edge_auth.mjs`.
+
+Deploy order (owner's word; done by the AWS agent with the AWS tools):
+1. On AWS, add to `/opt/kssl-v2/deploy/.env`: `KSSL_LOGIN_REQUIRED=1`, `KSSL_SESSION_SECRET`, `KSSL_SERVICE_TOKEN`,
+   `KSSL_LOGIN_USERS`; the web build gets `VITE_LOGIN=1`.
+2. CloudFront: KeyValueStore `kssl-session` with `session_secret` = the same secret; function `kssl-edge-auth`
+   (cloudfront-js-2.0, that store associated), tested with TestFunction (a valid and a bad cookie), then published.
+3. Deploy VPS1, then AWS (`deploy/aws/deploy.sh <sha>`); re-run `link_vps1.sh` so VPS1 gets the new `push_live.sh`
+   (it also pulls `activity.terms_acceptance` back).
+4. Right after: add origin `kssl-ec2-svc` (same host, custom header `X-KSSL-Service`), point `/api/dataset*` and
+   `/api/image/*` at it with `kssl-edge-auth` on viewer request, invalidate `/api/*`, then check: no cookie gets 401,
+   a signed-in browser gets the data.
+Rotating the secret: change it in the API's `.env` and in the KeyValueStore together; everyone is signed out.
+
 ## Not done yet
 
 These were agreed in principle and are not built:
-- **Standby copies on VPS2 and the DC:** streaming replicas of VPS1.
-- **Point-in-time backups.**
-- **The real login on the API.** The live API still answers without one.
+- **Point-in-time backups.** Dated backups every 6 hours and a DC standby are running (`deploy/backup/`).
