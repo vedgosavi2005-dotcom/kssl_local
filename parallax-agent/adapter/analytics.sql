@@ -323,8 +323,17 @@ SELECT a.article_id::text AS news_id, a.competitor_id::text AS comp_id, co.name 
        a.article_url AS url, NULL::text AS analysis
 FROM serving.competitive_news_article a
 JOIN analytics.company co ON co.comp_id = a.competitor_id::text
--- the site does not show news that is only 'Other' / 'Non-defence business' (src/lib/news.js hiddenNews, owner 22 Oct)
-WHERE a.category IS NULL OR a.category NOT IN ('Other', 'Non-defence business')
+-- defence news only, the site's rule (owner 2026-10-26; backend/areas/a_competitive.build_news + src/lib/news.js hiddenNews):
+-- not a story judged not about the company, not Non-defence business, and Other only with a defence headline or a product of
+-- the company in it (the word list mirrors backend/news.py DEFENCE_TERMS)
+WHERE NOT EXISTS (SELECT 1 FROM serving.fact_source f WHERE f.table_name = 'competitive_news_article'
+                    AND f.column_name = 'not_about_company' AND f.row_id = a.article_id::text)
+  AND coalesce(a.category, '') <> 'Non-defence business'
+  AND (coalesce(a.category, '') <> 'Other'
+       OR a.headline ~* '\m(army|navy|naval|air force|defen[cs]e|military|missiles?|drones?|uav|uas|ucav|tanks?|rifles?|guns?|howitzers?|artillery|radars?|armou?red|armou?r|combat|weapons?|drdo|torpedo|submarines?|frigates?|warships?|aircraft|helicopters?|ammunition|munitions?|rockets?|launchers?|interceptors?|troops|soldiers|aerospace|warhead|infantry|marines|coast guard|pentagon|dod|nato|procurement|sidm|eurosatory|dsei|ausa|defexpo|aero india|idex|farnborough|paris air show|adex|cansec|ndia|loitering|counter-drone|shipyard|corvettes?|destroyers?|fighters?|jets?|satellites?|space force|security forces)\M'
+       OR EXISTS (SELECT 1 FROM serving.competitive_product p WHERE p.competitor_id = a.competitor_id
+                    AND length(split_part(p.product_name, ' (', 1)) >= 4
+                    AND position(lower(split_part(p.product_name, ' (', 1)) IN lower(a.headline)) > 0))
 UNION ALL
 SELECT m.moment_id::text, m.competitor_id::text, co.name, false, 'moment', m.title,
        analytics.plain(coalesce(m.what_happened, m.description, m.card_summary)), m.category,

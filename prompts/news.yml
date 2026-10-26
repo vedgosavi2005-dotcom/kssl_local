@@ -134,6 +134,11 @@ task: |
      name the company is not enough: a general headline about a sector, a state or a country can still
      be a story about the company's plant or order, so then say "yes". A "no" story is still stored, with
      category Other. When in doubt, say "yes".
+     DEFENCE NEWS ONLY (owner 2026-10-26): this platform shows defence news. Say "no" also when the story is
+     about a person, place or thing that only shares a product's or the company's name (a sportsman, actor or
+     official called "Abhay", "Lakshya", "Akash"), or about the group's civil businesses on a group website
+     (power, gas, ports, airports, cement, real estate, education, CSR: "Adani Power announces Q2 results").
+     The company's own civil contract with no defence angle stays "yes" with category Non-defence business.
    - JUDGEMENT fields (each needs "_reason"): category (one sentence); relevant, only when "no" (one
      sentence: who or what the story is about instead); candidates, only when the story groups 2 or more
      articles (one sentence: why they are the same event).
