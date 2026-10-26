@@ -11,6 +11,9 @@ a re-run or a late-arriving older article gives the same result.
     story_key / handle_of / pick / story_change / card_date          pure (self-checked: python -m prompts.story --selftest)
     python -m prompts.story --backfill-dates [--write]               undated signal steps take the card's publication date (dry run without --write)
     python -m prompts.story --prune [--write]                        steps of cards that no longer exist are deleted, their stories rebuilt
+    python -m prompts.story --dedupe-events [--write]                one event = one story / one card (G3): signals of one event join one
+                                                                     story, repeat technology cards become status 'duplicate', same-day
+                                                                     repeat steps are dropped (dry run without --write)
     open_stories / snippet / stories_block                           candidates for a prompt (DB, read-only)
     link_card(cur, table, row, transient, run_id)                    called by the derive hook `story_link` (prompts/derive.py)
 
@@ -112,6 +115,124 @@ def timed_key(key: str, day, by_key: dict) -> str:
     return key if key not in by_key else f"{key}:{day.year}"
 
 
+# ---- one event reported twice (functional test G3, 2026-10-25) ------------------------------------------------------
+# A KNDS release filed under KNDS Germany AND Nexter, a Javelin JV award under RTX AND Lockheed: two signals, two stories,
+# two overview cards for one event. Two publishers of one award (the Hanwha K9 contract of 19 Aug: Yonhap + Hanwha's newsroom)
+# gave one story two "Contract" steps. Technology cards of one reveal (H38 x3, PERCH 2.0 x3) were separate cards.
+
+STOPWORDS = frozenset("a an the of for to in on and with by from at as its it is are be new first us u s".split())
+SAME_EVENT_MOVE = 0.5       # title overlap of two same-day signals on one article that report the same kind of move
+SAME_EVENT_ANY = 0.8        # title overlap that makes them one event whatever move each was read as
+SAME_DAY_PILLARS = ("competitive", "technology")    # market stories hold several needs of one buyer on one day: left alone
+TECH_EVENT_DAYS = 10        # two technology cards of one company family naming the same product this close are one reveal
+GENERIC_FIRST = frozenset({"general", "united", "the", "american", "us", "u", "national", "advanced", "china", "israel", "israeli"})
+_UNIT = re.compile(r"\d+(?:mm|km|kg|cal|m|t|kw|hp|nm)?\Z|\d+x\d+\Z")
+
+
+def fold(text) -> str:
+    """ASCII lower case ("Ragnarök" -> "ragnarok", "NEŞTER" -> "nester")."""
+    import unicodedata
+    return unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
+
+
+def event_url_key(url) -> str:
+    """One key per article: backend.news.url_key (scheme, www., port, trailing slash) after a web.archive.org copy prefix."""
+    from backend.news import url_key
+    u = re.sub(r"^https?://web\.archive\.org/web/[0-9a-z_]+/", "", str(url or "").strip(), flags=re.I)
+    return url_key(u) if u else ""
+
+
+def title_words(text) -> set:
+    t = re.sub(r"(\d)\s+(mm|km|kg|billion|million|bn|m)\b", r"\1\2", fold(text))
+    return {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", t) if w not in STOPWORDS and len(w) > 1}
+
+
+def title_overlap(a, b) -> float:
+    """Shared words / words of the shorter title (0..1)."""
+    x, y = title_words(a), title_words(b)
+    return len(x & y) / min(len(x), len(y)) if x and y else 0.0
+
+
+def same_signal_event(a: dict, b: dict) -> bool:
+    """Two competitive signals {url, date, title, move} are one event: the same article, the same day, and titles that say the
+    same thing (overlap >= SAME_EVENT_MOVE with the same move, or >= SAME_EVENT_ANY). One article can carry two events (KNDS at
+    MSPO: a shell plant AND the CELERIS 8x8; analisidifesa: Croatia's Leopards AND Portugal's Caesars): their titles differ, so
+    they stay apart."""
+    ka, kb = event_url_key(a.get("url")), event_url_key(b.get("url"))
+    if not ka or ka != kb or a.get("date") is None or a.get("date") != b.get("date"):
+        return False
+    ov = title_overlap(a.get("title"), b.get("title"))
+    return ov >= SAME_EVENT_ANY or (ov >= SAME_EVENT_MOVE and bool(a.get("move")) and a.get("move") == b.get("move"))
+
+
+def same_day_duplicates(steps: list[dict], pillar) -> list:
+    """step_ids of steps that repeat an earlier step of their story: same day, same step type, same kind of card (two publishers
+    of one award). The first loaded stays (created_at, then step id). Planned and label_change steps never count; market stories
+    are left alone."""
+    if pillar not in SAME_DAY_PILLARS:
+        return []
+    seen, drop = set(), []
+    for s in sorted(steps, key=lambda s: (str(s.get("created_at") or ""), str(s.get("step_id")))):
+        if s.get("step_type") in ("label_change", "planned") or s.get("step_date") is None:
+            continue
+        k = (s["step_date"], s.get("step_type"), s.get("source_table"))
+        if k in seen:
+            drop.append(s["step_id"])
+        else:
+            seen.add(k)
+    return drop
+
+
+def company_family(name) -> str:
+    """"Hanwha Defense USA" -> hanwha, "Rheinmetall Nordic" -> rheinmetall, "General Dynamics Land Systems" -> general dynamics."""
+    t = re.findall(r"[a-z0-9]+", fold(name))
+    return "" if not t else (" ".join(t[:2]) if t[0] in GENERIC_FIRST else t[0])
+
+
+def tech_tokens(title, subject, company) -> set:
+    """The words of a technology card that can name a product: in the title a designator (H38, FV-014, GMF 140, MK2) or an
+    all-capitals word (PERCH, MDACS, LORAS); in the model's story thread (story key subject) any word of 4+ letters. Units and
+    calibres (155mm, 120) and the company's own name never count."""
+    own = set(re.findall(r"[a-z0-9]+", fold(company)))
+    t = unicodedata_ascii(title)
+    t = re.sub(r"\b([A-Za-z]{1,4})[- ](\d{1,4}[A-Za-z]?)\b", r"\1\2", t)
+    out = set()
+    for w in re.findall(r"[A-Za-z0-9]+", t):
+        lw = w.lower()
+        if len(lw) < 3 or _UNIT.match(lw):
+            continue
+        if (re.search(r"\d", w) and re.search(r"[A-Za-z]", w)) or (w.isupper() and len(w) >= 3):
+            out.add(lw)
+    sub = re.sub(r"\b([a-z]{1,4})-(\d{1,4}[a-z]?)\b", r"\1\2", str(subject or ""))
+    out |= {w for w in sub.split("-") if len(w) >= 4 and not _UNIT.match(w)}
+    # slug() splits a name at a non-ASCII letter ("Ragnarök" -> ragnar-k): a title word whose slug is in the thread is that name
+    for w in re.findall(r"\w+", str(title or "")):
+        if any(ord(ch) > 127 for ch in w) and len(w) >= 4 and slug(w) and f"-{slug(w)}-" in f"-{subject or ''}-":
+            out.add(fold(w))
+    return {w for w in out if w not in own and w.rstrip("s") not in own}
+
+
+def unicodedata_ascii(text) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode()
+
+
+def same_tech_event(a: dict, b: dict, rare) -> str | None:
+    """Why two technology cards {url_key, day, family, tokens, story_id} are one event, or None: the same article; or, at most
+    TECH_EVENT_DAYS apart, the same story (thread) or the same company family naming the same product word (`rare(word)`: used by
+    one company family only)."""
+    if a.get("url_key") and a.get("url_key") == b.get("url_key"):
+        return "same article"
+    if a.get("day") is None or b.get("day") is None or abs((a["day"] - b["day"]).days) > TECH_EVENT_DAYS:
+        return None
+    if a.get("story_id") is not None and a.get("story_id") == b.get("story_id"):
+        return "same story"
+    if not a.get("family") or a.get("family") != b.get("family"):
+        return None
+    common = sorted(w for w in set(a.get("tokens") or ()) & set(b.get("tokens") or ()) if rare(w))
+    return f"same product ({', '.join(common)})" if common else None
+
+
 def step_line(text, limit: int = MAX_LINE) -> str | None:
     t = " ".join(str(text or "").split())
     return None if not t else (t if len(t) <= limit else t[:limit - 1].rstrip() + "…")
@@ -127,8 +248,9 @@ def story_change(prev_label, new_label, prev_prob=None, new_prob=None, prev_impa
     bits = [f"{n} {x} -> {y}" for n, x, y in (("probability", prev_prob, new_prob), ("impact", prev_impact, new_impact))
             if x is not None and y is not None and x != y]
     head = f"{prev_label} -> {new_label}" + (": " + ", ".join(bits) if bits else "")
-    tail = f" ({step_line(why, 50)})" if why else ""
-    return {"direction": direction, "changed": step_line(head + tail)}
+    # the reason is not appended: the step's own one_line already states it, and a reason cut at 50 characters ("full-rate
+    # produc…") is what the owner saw (2026-10-25). `why` stays in the signature for the callers.
+    return {"direction": direction, "changed": step_line(head)}
 
 
 def rebuild_timeline(steps: list[dict]) -> dict:
@@ -230,9 +352,17 @@ def label_word(cur, code) -> str:
 
 
 def rebuild_story(cur, story_id, rule_version: str | None = None) -> dict:
-    """Rewrite the label_change steps, the step numbers and the story's current state from its real steps."""
+    """Rewrite the label_change steps, the step numbers and the story's current state from its real steps. A step that repeats
+    an earlier one (same_day_duplicates: one event from two publishers) is deleted first."""
+    cur.execute("SELECT pillar FROM staging.story WHERE story_id = %s", (story_id,))
+    p = cur.fetchone()
     cur.execute("SELECT * FROM staging.story_step WHERE story_id = %s AND step_type <> 'label_change'", (story_id,))
-    tl = rebuild_timeline([dict(r) for r in cur.fetchall()])
+    steps = [dict(r) for r in cur.fetchall()]
+    drop = same_day_duplicates(steps, p["pillar"] if p else None)
+    if drop:
+        cur.execute("DELETE FROM staging.story_step WHERE step_id = ANY(%s)", (drop,))
+        steps = [s for s in steps if s["step_id"] not in set(drop)]
+    tl = rebuild_timeline(steps)
     cur.execute("DELETE FROM staging.story_step WHERE story_id = %s AND step_type = 'label_change'", (story_id,))
     entries = []
     for st in tl["ordered"]:
@@ -326,7 +456,7 @@ def _signal_parts(cur, row, tr):
                 competitor_id=row["company_id"], buyer_name=None,
                 country=_country_iso(cur, tr.get("story_country") or det.get("glance_where")),
                 family=tr.get("story_kind") if tr.get("story_kind") in FAMILIES else MOVE_FAMILY.get(move, "programme"),
-                step_type=MOVE_STEP.get(move, "update"), date=card_date(row), line=row.get("title"), url=det.get("source_url"),
+                step_type=MOVE_STEP.get(move, "update"), date=card_date(row), line=row.get("title"), url=det.get("source_url"), move=move,
                 probability=row.get("probability"), impact=row.get("impact"), label=row.get("classification"),
                 impact_dimension=row.get("impact_dimension"), rule_version=row.get("rule_version"), title=row.get("title"))
 
@@ -391,7 +521,10 @@ def link_card(cur, table: str, row: dict, tr: dict | None = None, run_id=None, w
     hit, how, warn = pick(tr.get("story_ref"), key, by_handle, by_key)
     if warn and warnings is not None:
         warnings.append(f"story: {warn}")
-    if hit is not None:
+    same = same_event_story(cur, table, row, p)
+    if same is not None:                          # the same event is already a story (a sister company / JV partner's card)
+        story_id = same
+    elif hit is not None:
         story_id = hit["story_id"]
     else:
         story_id = upsert_story(cur, key, pillar=p["pillar"], kind=p["family"], competitor_id=p["competitor_id"], product_id=p["product_id"],
@@ -411,6 +544,218 @@ def link_card(cur, table: str, row: dict, tr: dict | None = None, run_id=None, w
              rule_version=p["rule_version"])
     cur.execute(f"UPDATE staging.{table} SET story_id = %s WHERE {keycol}::text = %s", (story_id, str(row[keycol])))
     return story_id
+
+
+def same_event_story(cur, table: str, row: dict, p: dict) -> int | None:
+    """The story of another competitive signal (any competitor) that reports this same event (same_signal_event), else None."""
+    if table != "competitive_signal" or not p.get("url") or p.get("date") is None:
+        return None
+    cur.execute("""SELECT s.story_id, s.title, d.source_url, d.glance_move FROM staging.competitive_signal s
+                   JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+                   WHERE s.signal_id::text <> %s AND s.story_id IS NOT NULL AND coalesce(s.event_date, s.published_date) = %s
+                   ORDER BY s.story_id""", (str(row["signal_id"]), p["date"]))
+    me = {"url": p["url"], "date": p["date"], "title": p.get("line"), "move": p.get("move")}
+    for r in cur.fetchall():
+        if same_signal_event(me, {"url": r["source_url"], "date": p["date"], "title": r["title"], "move": r["glance_move"]}):
+            return r["story_id"]
+    return None
+
+
+def _rebuild_or_drop(cur, story_id) -> str:
+    """A story a card left: rebuilt while it has a step or a card (or project) still points at it, else deleted."""
+    cur.execute("SELECT count(*) AS n FROM staging.story_step WHERE story_id = %s AND step_type <> 'label_change'", (story_id,))
+    if cur.fetchone()["n"]:
+        rebuild_story(cur, story_id)
+        return "rebuilt"
+    cur.execute(" UNION ALL ".join(f"(SELECT 1 FROM staging.{tb} WHERE story_id = %(s)s LIMIT 1)" for tb in (*CARDS, "competitive_project")),
+                {"s": story_id})
+    if cur.fetchone() is not None:
+        rebuild_story(cur, story_id)
+        return "kept"
+    cur.execute("DELETE FROM staging.story_step WHERE story_id = %s", (story_id,))
+    cur.execute("DELETE FROM staging.story WHERE story_id = %s", (story_id,))
+    return "deleted"
+
+
+def move_card(cur, table: str, row_id, target) -> dict:
+    """Put a stored card into story `target`: its steps move there (step ids re-keyed, created_at kept so the first-loaded rule
+    still holds), the card's story_id is set, the target is rebuilt (same-day repeats dropped) and each story it left is rebuilt
+    or, left empty, deleted. Returns {left_story_id: rebuilt | kept | deleted}."""
+    keycol, _ = CARDS[table]
+    cur.execute(f"SELECT story_id FROM staging.{table} WHERE {keycol}::text = %s", (str(row_id),))
+    r = cur.fetchone()
+    left = {r["story_id"]} if r and r["story_id"] is not None and r["story_id"] != target else set()
+    cur.execute("""SELECT * FROM staging.story_step WHERE source_table = %s AND source_row_id = %s AND step_type <> 'label_change'
+                   AND story_id <> %s""", (table, str(row_id), target))
+    for s in cur.fetchall():
+        left.add(s["story_id"])
+        cur.execute("DELETE FROM staging.story_step WHERE step_id = %s", (s["step_id"],))
+        cur.execute("""INSERT INTO staging.story_step (step_id, story_id, step_no, step_date, step_type, one_line, changed, source_url, source_table,
+                                                       source_row_id, probability, impact, label_after, run_id, created_at, date_precision)
+                       VALUES (%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (step_id) DO NOTHING""",
+                    (_step_id(target, table, str(row_id), s["step_type"]), target, s["step_date"], s["step_type"], s["one_line"], s["changed"],
+                     s["source_url"], table, str(row_id), s["probability"], s["impact"], s["label_after"], s["run_id"], s["created_at"],
+                     s.get("date_precision")))
+    cur.execute(f"UPDATE staging.{table} SET story_id = %s WHERE {keycol}::text = %s", (target, str(row_id)))
+    rebuild_story(cur, target)
+    return {sid: _rebuild_or_drop(cur, sid) for sid in sorted(left)}
+
+
+# ---- technology: one card per reveal --------------------------------------------------------------------------------
+
+DUPLICATE = "duplicate"      # technology_overview_article.status of a card that repeats another (the live site leaves it out)
+
+
+def tech_cards(cur) -> list[dict]:
+    """Every active / duplicate technology card with what same_tech_event reads."""
+    cur.execute("""SELECT a.overview_article_id AS id, a.title, a.status, a.story_id, a.image_url, a.created_at,
+                          coalesce(a.article_date, a.published_on) AS day, s.story_key,
+                          (SELECT c.display_name FROM staging.technology_company c WHERE c.company_id = a.primary_company_id
+                            ORDER BY c.display_name LIMIT 1) AS company,
+                          (SELECT ts.source_url FROM staging.technology_overview_source o JOIN staging.technology_source ts ON ts.source_id = o.source_id
+                            WHERE o.overview_article_id = a.overview_article_id ORDER BY o.is_primary DESC NULLS LAST, o.display_order LIMIT 1) AS url
+                   FROM staging.technology_overview_article a LEFT JOIN staging.story s ON s.story_id = a.story_id
+                   WHERE coalesce(a.status, 'active') IN ('active', %s)""", (DUPLICATE,))
+    out = []
+    for r in cur.fetchall():
+        key = r["story_key"] or ""
+        subject = key.split(":")[2] if key.count(":") >= 2 else ""
+        out.append({**dict(r), "url_key": event_url_key(r["url"]), "family": company_family(r["company"]),
+                    "tokens": tech_tokens(r["title"], subject, r["company"])})
+    return out
+
+
+def tech_clusters(cards: list[dict]) -> list[list[dict]]:
+    """Groups (2+) of cards that are one event (same_tech_event, joined transitively), each sorted keeper first: the earliest
+    date, then a card with an image, then the first loaded, then the id. A product word is rare when one company family uses it."""
+    fams: dict = {}
+    for c in cards:
+        for w in c["tokens"]:
+            fams.setdefault(w, set()).add(c["family"])
+
+    def rare(w):
+        return len(fams.get(w, ())) <= 1 and not w.isdigit()
+    parent = {c["id"]: c["id"] for c in cards}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i, a in enumerate(cards):
+        for b in cards[i + 1:]:
+            if find(a["id"]) != find(b["id"]) and same_tech_event(a, b, rare):
+                parent[find(b["id"])] = find(a["id"])
+    groups: dict = {}
+    for c in cards:
+        groups.setdefault(find(c["id"]), []).append(c)
+
+    def order(c):
+        return (c["day"] or date.max, 0 if c.get("image_url") else 1, str(c.get("created_at") or ""), str(c["id"]))
+    return [sorted(g, key=order) for g in groups.values() if len(g) > 1]
+
+
+def dedupe_tech(cur, only_ids=None, show: bool = False) -> dict:
+    """One technology card per event: in each tech_clusters group the keeper is 'active' and the others 'duplicate' and in the
+    keeper's story. `only_ids`: touch only groups holding one of these cards (a prompt run). A card no longer in any group goes
+    back to 'active'. Returns counts."""
+    cards = tech_cards(cur)
+    only = {str(i) for i in only_ids} if only_ids is not None else None
+    n = {"groups": 0, "duplicate": 0, "restored": 0, "moved": 0}
+    grouped = set()
+    for g in tech_clusters(cards):
+        ids = {str(c["id"]) for c in g}
+        grouped |= ids
+        if only is not None and not ids & only:
+            continue
+        n["groups"] += 1
+        keep = g[0]
+        if show:
+            print(f"  keep {keep['id']} {keep['day']} {str(keep['title'])[:90]}")
+            for c in g[1:]:
+                print(f"    dup {c['id']} {c['day']} {str(c['title'])[:90]}")
+        if keep["status"] == DUPLICATE:
+            cur.execute("UPDATE staging.technology_overview_article SET status = 'active' WHERE overview_article_id = %s", (keep["id"],))
+        for c in g[1:]:
+            if c["status"] != DUPLICATE:
+                cur.execute("UPDATE staging.technology_overview_article SET status = %s WHERE overview_article_id = %s", (DUPLICATE, c["id"]))
+                n["duplicate"] += 1
+            if keep["story_id"] is not None and c["story_id"] != keep["story_id"]:
+                move_card(cur, "technology_overview_article", c["id"], keep["story_id"])
+                n["moved"] += 1
+    for c in cards:
+        if c["status"] == DUPLICATE and str(c["id"]) not in grouped and (only is None or str(c["id"]) in only):
+            cur.execute("UPDATE staging.technology_overview_article SET status = 'active' WHERE overview_article_id = %s", (c["id"],))
+            n["restored"] += 1
+    return n
+
+
+def merge_signal_events(cur) -> list[tuple]:
+    """Competitive signals of one event in different stories (same_signal_event): each later story's signal moves into the story
+    created first. Returns [(signal_id, from_story, to_story)]."""
+    cur.execute("""SELECT s.signal_id::text AS id, s.story_id, s.title, coalesce(s.event_date, s.published_date) AS day, d.source_url, d.glance_move,
+                          st.created_at AS story_created
+                   FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d ON d.signal_id = s.signal_id
+                   JOIN staging.story st ON st.story_id = s.story_id
+                   WHERE d.source_url IS NOT NULL AND coalesce(s.event_date, s.published_date) IS NOT NULL""")
+    by: dict = {}
+    for r in cur.fetchall():
+        by.setdefault((event_url_key(r["source_url"]), r["day"]), []).append(dict(r))
+
+    def ev(r):
+        return {"url": r["source_url"], "date": r["day"], "title": r["title"], "move": r["glance_move"]}
+    moves = []
+    for grp in by.values():
+        if len({r["story_id"] for r in grp}) < 2:
+            continue
+        grp.sort(key=lambda r: (str(r["story_created"]), r["story_id"]))
+        for i, b in enumerate(grp):
+            for a in grp[:i]:
+                if a["story_id"] != b["story_id"] and same_signal_event(ev(a), ev(b)):
+                    moves.append((b["id"], b["story_id"], a["story_id"], b["title"]))
+                    b["story_id"] = a["story_id"]
+                    break
+    for sid, _from, to, _t in moves:
+        move_card(cur, "competitive_signal", sid, to)
+    return moves
+
+
+def repair_events(write: bool = False) -> dict:
+    """One-off repair (G3): signals of one event join one story, one card per technology event, same-day repeat steps dropped.
+    Dry run (rolled back) unless write=True. Refuses any database but kssl_staging / kssl_test_*."""
+    from prompts.run import connect
+    conn = connect()
+    dup_q = """SELECT count(*) AS n FROM (SELECT 1 FROM staging.story_step st JOIN staging.story s USING (story_id)
+               WHERE s.pillar IN ('competitive', 'technology') AND st.step_type NOT IN ('label_change', 'planned') AND st.step_date IS NOT NULL
+               GROUP BY st.story_id, st.step_date, st.step_type, st.source_table HAVING count(*) > 1) x"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_database() AS d")
+        db = cur.fetchone()["d"]
+        if db != "kssl_staging" and not db.startswith("kssl_test"):
+            raise SystemExit(f"refused: database {db} (kssl_staging or kssl_test_* only)")
+        cur.execute(dup_q)
+        before = cur.fetchone()["n"]
+        moves = merge_signal_events(cur)
+        print(f"signals moved into the story of the same event: {len(moves)}")
+        for m in moves:
+            print(f"  {m[0]}  story {m[1]} -> {m[2]}  {str(m[3])[:80]}")
+        print("technology groups:")
+        tech = dedupe_tech(cur, show=True)
+        cur.execute("""SELECT DISTINCT st.story_id FROM staging.story_step st JOIN staging.story s USING (story_id)
+                       WHERE s.pillar IN ('competitive', 'technology') AND st.step_type NOT IN ('label_change', 'planned') AND st.step_date IS NOT NULL
+                       GROUP BY st.story_id, st.step_date, st.step_type, st.source_table HAVING count(*) > 1""")
+        for r in cur.fetchall():
+            rebuild_story(cur, r["story_id"])
+        cur.execute(dup_q)
+        after = cur.fetchone()["n"]
+        print(f"technology: {tech}")
+        print(f"same-day repeat step groups: {before} -> {after}" + ("" if write else "  (dry run, rolled back: --write to apply)"))
+        if write:
+            conn.commit()
+        else:
+            conn.rollback()
+    conn.close()
+    return {"signal_moves": moves, "tech": tech, "same_day_step_groups": (before, after)}
 
 
 # ---- self-check ---------------------------------------------------------------------------------------------------
@@ -451,7 +796,7 @@ def _selftest() -> None:
     assert step_line("  a   b ") == "a b" and step_line(None) is None and len(step_line("x" * 300)) == MAX_LINE and step_line("x" * 300).endswith("…")
     # story_change: up, down, same, unknown, text
     c = story_change("watch", "threat", 3, 5, 3, 5, "contract signed")
-    assert c == {"direction": "up", "changed": "watch -> threat: probability 3 -> 5, impact 3 -> 5 (contract signed)"}, c
+    assert c == {"direction": "up", "changed": "watch -> threat: probability 3 -> 5, impact 3 -> 5"}, c          # no cut-off reason
     assert story_change("threat", "watch", 5, 3)["direction"] == "down" and story_change("threat", "watch", 5, 3)["changed"] == "threat -> watch: probability 5 -> 3"
     assert story_change("watch", "watch", 3, 5) is None and story_change(None, "watch") is None and story_change("watch", None) is None
     assert story_change("a", "b")["direction"] == "changed" and story_change("pass", "pursue")["direction"] == "up"
@@ -466,7 +811,7 @@ def _selftest() -> None:
     tl = rebuild_timeline(steps)
     assert [s["step_id"] for s in tl["ordered"]] == [1, 2, 3, 4] and tl["state"]["step_id"] == 4
     assert [(c["after"]["step_id"], c["direction"]) for c in tl["changes"]] == [(3, "up"), (4, "down")]
-    assert tl["changes"][0]["changed"] == "watch -> threat: probability 3 -> 5, impact 4 -> 5 (Contract signed)" and tl["escalated_at"] == d(10, 8)
+    assert tl["changes"][0]["changed"] == "watch -> threat: probability 3 -> 5, impact 4 -> 5" and tl["escalated_at"] == d(10, 8)
     # an older article arriving late is placed by date and does not change the current state
     late = rebuild_timeline(steps[:1] + [dict(step_id=9, step_date=d(5, 1), one_line="Rumour", label_after="watch", probability=1, impact=2)])
     assert late["state"]["step_id"] == 3 and late["escalated_at"] == d(10, 8) and [c["direction"] for c in late["changes"]] == ["up"]
@@ -486,6 +831,56 @@ def _selftest() -> None:
     assert card_date({"event_date": date(2026, 4, 1), "published_date": date(2026, 4, 2)}) == date(2026, 4, 1)
     assert card_date({"event_date": None, "published_date": date(2026, 4, 2)}) == date(2026, 4, 2)
     assert card_date({}) is None and card_date({"event_date": None, "published_date": None}) is None
+    # one event reported twice (G3): same article + same day + same words; an archive copy is the same article
+    day = date(2026, 9, 17)
+    u = "https://knds.com/en/press-releases/thl-20-turrets-selected/"
+    assert event_url_key("https://web.archive.org/web/20261015003304/https://www.knds.com/en/press-releases/thl-20-turrets-selected") == event_url_key(u)
+    s1 = {"url": u, "date": day, "title": "Veland THL20 turrets selected for the new helicopter", "move": "Selection"}
+    assert same_signal_event(s1, dict(s1, url="http://www.knds.com/en/press-releases/thl-20-turrets-selected"))
+    assert same_signal_event({"url": u, "date": day, "title": "Army awards the Javelin Joint Venture $1.3B contract", "move": "Contract"},
+                             {"url": u, "date": day, "title": "Army awards Javelin Joint Venture $1.3 billion contract for missiles", "move": "Contract"})
+    assert not same_signal_event(s1, dict(s1, date=date(2026, 9, 18)))                                   # another day
+    assert not same_signal_event(s1, dict(s1, url="https://knds.com/en/press-releases/other"))           # another article
+    assert not same_signal_event({"url": u, "date": day, "title": "Nordvik sets up local shell production in Veland", "move": "Capacity"},
+                                 {"url": u, "date": day, "title": "Nordvik unveils 8x8 platform for wheeled combat vehicles", "move": "Launch"})
+    mid = {"url": u, "date": day, "title": "Veland Army fields first Bradley IFV with Iron Fist to counter drones and missiles", "move": "Delivery"}
+    other = "Veland Army fields first Bradley infantry fighting vehicles with Iron Fist active protection"
+    assert 0.5 <= title_overlap(mid["title"], other) < 0.8 and same_signal_event(mid, dict(mid, title=other))     # same move
+    assert not same_signal_event(mid, dict(mid, title=other, move="Capacity"))
+    assert title_overlap("", "x") == 0.0 and title_overlap("155 mm gun", "155mm gun") == 1.0
+    # same-day repeat steps: the first loaded stays; another type, another day, a planned step or a market story stay
+    st = [dict(step_id=1, step_date=day, step_type="contract", source_table="competitive_signal", created_at="2026-10-01"),
+          dict(step_id=2, step_date=day, step_type="contract", source_table="competitive_signal", created_at="2026-10-02"),
+          dict(step_id=3, step_date=day, step_type="trial", source_table="competitive_signal", created_at="2026-10-03"),
+          dict(step_id=4, step_date=day, step_type="contract", source_table="competitive_project_timeline", created_at="2026-10-04"),
+          dict(step_id=5, step_date=None, step_type="contract", source_table="competitive_signal", created_at="2026-10-05"),
+          dict(step_id=6, step_date=None, step_type="contract", source_table="competitive_signal", created_at="2026-10-06"),
+          dict(step_id=7, step_date=day, step_type="planned", source_table="competitive_signal", created_at="2026-10-07"),
+          dict(step_id=8, step_date=day, step_type="planned", source_table="competitive_signal", created_at="2026-10-08")]
+    assert same_day_duplicates(st, "competitive") == [2] and same_day_duplicates(list(reversed(st)), "technology") == [2]
+    assert same_day_duplicates(st, "market") == [] and same_day_duplicates([], "competitive") == []
+    # technology: one reveal from three publishers is one event; the company's own name, units and other families never match
+    assert company_family("Hanwha Defense USA") == "hanwha" == company_family("Hanwha") and company_family("General Dynamics Land Systems") == "general dynamics"
+    assert company_family("Rheinmetall Nordic") == "rheinmetall" and company_family(None) == ""
+    tk = tech_tokens("Nordvik shows H38 medium vessel with PERCH 2.0 and 155mm gun", "h38-unmanned-vessel", "Nordvik Defence")
+    assert {"h38", "perch", "unmanned", "vessel"} <= tk and not tk & {"155mm", "nordvik", "defence", "medium", "shows"}, tk
+    assert "ragnarok" in tech_tokens("Rheinmetall demonstrates its 120 mm Ragnarök mortar", "ragnar-k-120-mm-mortar", "Rheinmetall")
+    assert "refuels" not in tech_tokens("Robot Refuels a Drone Boat at Sea in US Navy Test", "", "Sealartec")
+    assert {"fv014", "gmf140"} <= tech_tokens("Veland FV-014 and GMF 140 shown", "", "Veland")
+    a = {"url_key": "a.com/x", "day": date(2026, 10, 12), "family": "nordvik", "tokens": {"h38", "vessel"}}
+    b = {"url_key": "b.com/y", "day": date(2026, 10, 15), "family": "nordvik", "tokens": {"h38", "vessel"}}
+    rare = lambda w: w == "h38"   # noqa: E731
+    assert same_tech_event(a, b, rare) == "same product (h38)"
+    assert same_tech_event(a, dict(b, url_key="a.com/x", family="other"), rare) == "same article"
+    assert same_tech_event(a, dict(b, day=date(2026, 11, 1)), rare) is None                               # 20 days apart
+    assert same_tech_event(a, dict(b, family="veland"), rare) is None and same_tech_event(a, dict(b, tokens={"vessel"}), rare) is None
+    assert same_tech_event(dict(a, story_id=7), dict(b, story_id=7, family="veland", tokens=set()), rare) == "same story"
+    assert same_tech_event(dict(a, story_id=7), dict(b, story_id=7, day=date(2026, 12, 1)), rare) is None              # a thread, months apart
+    cl = tech_clusters([dict(id=1, title="t", day=date(2026, 10, 15), family="n", tokens={"h38"}, url_key="u1", image_url=None, created_at="1"),
+                        dict(id=2, title="t", day=date(2026, 10, 12), family="n", tokens={"h38"}, url_key="u2", image_url=None, created_at="2"),
+                        dict(id=3, title="t", day=date(2026, 10, 12), family="n", tokens={"h38"}, url_key="u3", image_url="x", created_at="3"),
+                        dict(id=4, title="t", day=date(2026, 10, 12), family="m", tokens={"zz9"}, url_key="u4", image_url=None, created_at="4")])
+    assert [[c["id"] for c in g] for g in cl] == [[3, 2, 1]], cl                    # earliest day, then the one with a picture
     print("story self-check ok")
 
 
@@ -551,5 +946,7 @@ if __name__ == "__main__":
         backfill_step_dates(write="--write" in sys.argv)
     elif "--prune" in sys.argv:
         prune_orphans(write="--write" in sys.argv)
+    elif "--dedupe-events" in sys.argv:
+        repair_events(write="--write" in sys.argv)
     else:
         print(__doc__)

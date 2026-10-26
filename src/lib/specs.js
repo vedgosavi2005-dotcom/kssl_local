@@ -38,31 +38,77 @@ export function specParts(v) {
   return out.map((t) => t.trim().replace(/^•\s*/, "")).filter(Boolean);
 }
 
-/* A product's spec sheet as table rows (owner 22 Oct: "make it a proper clean table").
-   A plain value is one row. A packed value becomes one row per figure:
-   - under a generic label ("Note") or a long caveat label ("Variant-specific ... not published by Otokar"), each
-     figure is labelled by its OWN leading words ("GVW 19,000 kg" -> GVW | 19,000 kg); a caveat label becomes a
-     caption row above them. A figure with no leading words keeps an empty label -- nothing is invented.
-   - under a short real label ("Engine"), the label stays on the first figure and the rest follow beneath it.
-   Rows: { label, value } | { caption }. */
+/* A product's spec sheet as table rows (owner 22 Oct: "make it a proper clean table"; 25 Oct: no blank labels, a packed
+   value is ONE row with a list value, no caveat captions). This is the FALLBACK for a payload without `sheet` (an API
+   older than backend/spec_sheet.py); the API's sheet is what the page shows when it is there (productSheet below).
+   - a plain value is one row
+   - under a short real label ("Engine") a packed value stays one row: { label, values: [...] }
+   - under a generic label ("Note") or a long caveat label ("Variant-specific ... not published by Otokar"), a figure is
+     labelled by its OWN leading words ("GVW 19,000 kg" -> GVW | 19,000 kg); the figures with no leading words share one
+     row, "Other figures". The caveat itself is not shown (owner 25 Oct: no "not published" text on screen).
+   Rows: { label, value } | { label, values }. Every row has a label. */
 const SPEC_CAPTION_MIN = 31;
 export function specRows(specs) {
   const out = [];
   Object.entries(specs || {}).forEach(([label, val]) => {
     const parts = specParts(val);
-    if (parts.length <= 1) { out.push({ label, value: val }); return; }
+    if (parts.length <= 1) { out.push({ label, value: parts.length ? parts[0] : String(val == null ? "" : val) }); return; }
     const generic = /^note$/i.test(String(label).trim()), caveat = String(label).length >= SPEC_CAPTION_MIN;
-    if (!generic && !caveat) { parts.forEach((t, i) => out.push({ label: i ? "" : label, value: t })); return; }
-    if (caveat) out.push({ caption: label });
+    if (!generic && !caveat) { out.push({ label, values: parts }); return; }
+    const rest = [];
     parts.forEach((t) => {
       // "L 5,480 x W 2,240 x H 2,100 mm" is one dimension line, not a figure called "L"
       if (/^L\s+\S.*\bx\s*W\s+\S.*\bx\s*H\s+\S/.test(t)) { out.push({ label: "L × W × H", value: t }); return; }
       const m = t.match(/^([A-Za-z][A-Za-z /&'.-]{0,28}?)\s+([<>~≈+]?\d.*)$/);
-      out.push(m ? { label: m[1].charAt(0).toUpperCase() + m[1].slice(1), value: m[2] } : { label: "", value: t });
+      if (m) out.push({ label: m[1].charAt(0).toUpperCase() + m[1].slice(1), value: m[2] });
+      else rest.push(t);
     });
+    if (rest.length) out.push(rest.length > 1 ? { label: "Other figures", values: rest } : { label: "Other figures", value: rest[0] });
   });
   return out;
 }
+
+/* One row of the API's sheet ({ l, v } with v a string or a list) as a display row. */
+export function sheetRow(r) {
+  const v = r && r.v;
+  const label = (r && r.l) || "";
+  return Array.isArray(v) ? (v.length > 1 ? { label, values: v } : { label, value: v[0] }) : { label, value: v == null ? "" : String(v) };
+}
+
+/* THE PRODUCT SPEC SHEET (owner 2026-10-25). The API (backend/spec_sheet.py, served as product.sheet) has already put each
+   stored row under its standard label, in the category's standard order, with metric-first units, and dropped the
+   placeholder, pipeline and source text; this only lays the sections out:
+     description  lines
+     sections     Key specifications / Other specifications / Armament (a platform's carried weapons), each a list of rows
+     features     Features and capabilities: { label (may be ""), value | values }
+   A section with no row is not returned (a standard parameter with no value is hidden, owner 25 Oct). A payload without
+   `sheet` falls back to the stored specs / features as one "Technical specifications" section. */
+export const SHEET_SECTIONS = [
+  ["key", "Key specifications"],
+  ["other", "Other specifications"],
+  ["armament", "Armament"],
+];
+export function productSheet(p) {
+  const sh = p && p.sheet;
+  if (sh && typeof sh === "object") {
+    return {
+      description: Array.isArray(sh.description) ? sh.description : [],
+      sections: SHEET_SECTIONS
+        .map(([k, title]) => ({ key: k, title, rows: (Array.isArray(sh[k]) ? sh[k] : []).map(sheetRow).filter((r) => r.label) }))
+        .filter((s) => s.rows.length),
+      features: (Array.isArray(sh.features) ? sh.features : []).map(sheetRow),
+    };
+  }
+  const rows = specRows((p && p.specs) || {});
+  return {
+    description: String((p && p.description) || "").split("\n").filter(Boolean),
+    sections: rows.length ? [{ key: "specs", title: "Technical specifications", rows }] : [],
+    features: Object.entries((p && p.features) || {}).map(([label, v]) => ({ label, value: String(v) })),
+  };
+}
+
+/* A sheet row as one line of text (Copy / Export / Print): a list value joins with "; ". */
+export const rowText = (r) => (r.values ? r.values.join("; ") : String(r.value == null ? "" : r.value));
 
 export function specValueWithUnit(v, u) {
   if (v == null) return "";
@@ -86,9 +132,19 @@ function parseSpecNum(v, fallback) {
 }
 
 /* one comparable row */
+/* THE ORANGE DOT (functional test G13, 2026-10-25). It marks a value whose stored
+   provenance code says it is NOT from a sourced document ("s" = sourced). The served
+   matchup specs carry no provenance code at all (0 of 788 rows have p / cp / kp), and the
+   old test `pv === "s" ? "" : dot` read that absence as "not sourced", so every value on
+   the page wore an unexplained dot. No code means no claim: the dot is drawn only for a
+   stated non-sourced code, and specPanelHtml adds a legend line whenever one is drawn. */
+// owner 2026-10-25: "remove that red dot thing" -- no value is marked; sources stay on each value's source line
+const provDot = () => "";
+const PROV_LEGEND = '<span class="sb-key"><span class="provdot x"></span> value not taken from a cited source</span>';
+
 function specRow(s, compName) {
-  // per-side provenance dot (only when synthetic)
-  const dot = (pv) => (pv === "s" ? "" : '<span class="provdot x"></span>');
+  // per-side provenance dot (only when the row states a non-sourced value)
+  const dot = provDot;
   const cpv = s.cp || s.p;
   const kpv = s.kp || s.p;
 
@@ -133,7 +189,7 @@ function specRow(s, compName) {
     `<span class="sb-val${bfWin ? " win" : ""}">${s.kv}${dot(kpv)}${badge(bfWin)}</span>` +
     "</div>" +
     `<div class="sb-cmprow${compWin ? " win" : ""}">` +
-    `<span class="sb-who comp">${compName || "—"}</span>` +
+    `<span class="sb-who comp" title="${escAll(compName || "")}">${escAll(compName || "—")}</span>` +
     `<div class="sb-track"><div class="sb-fill comp${compWin ? ` win ${tier}` : ""}" style="width:${cw}%"></div></div>` +
     `<span class="sb-val${compWin ? " win" : ""}">${s.cv}${dot(cpv)}${badge(compWin)}</span>` +
     "</div>" +
@@ -275,7 +331,7 @@ function srcLine(urls, why, tier) {
 }
 
 function specRowQual(s) {
-  const dot = (pv) => (pv === "s" ? "" : '<span class="provdot x"></span>');
+  const dot = provDot;
   const cpv = s.cp || s.p;
   const kpv = s.kp || s.p;
   const has = (v) => v != null && v !== "" && v !== "—";
@@ -345,6 +401,8 @@ export function specPanelHtml(m) {
   const compared = real.filter((s) => hasVal(s.cv) && kvKnown(s));
   const hidden = real.length - compared.length;
   const hiddenNote = "";
+  // a dot is explained in the legend whenever one is drawn (functional test G13, 2026-10-25)
+  const anyDot = compared.some((s) => provDot(s.cp || s.p) || provDot(s.kp || s.p));
 
   if (!compared.length) {
     return (
@@ -357,11 +415,11 @@ export function specPanelHtml(m) {
   if (m.edge == null) {
     let h =
       '<div class="edge-gauge undisclosed"><span class="eg-word" style="background:#555;color:#fff;padding:3px 9px;border-radius:3px">NO SPEC-LEVEL EDGE</span><div style="font-size:11px;color:var(--l-txt-3);margin-top:8px;line-height:1.5">No single measured field separates these two products.</div></div>';
-    h += `<div class="sb-legend"><span class="sb-key"><i class="k-comp"></i> ${compName.split(" ")[0]}</span><span class="sb-key"><i class="k-bf"></i> ${clientShort()}</span></div>`;
+    h += `<div class="sb-legend"><span class="sb-key"><i class="k-comp"></i> ${escAll(compName)}</span><span class="sb-key"><i class="k-bf"></i> ${clientShort()}</span>${anyDot ? PROV_LEGEND : ""}</div>`;
     h += '<div class="sb-sect">Compared specifications <span class="sb-sect-note">published on both sides</span></div>';
     h += compared
       .map((s) => {
-        const dot = (s.kp || s.p) === "s" || s.kv == null ? "" : '<span class="provdot x"></span>';
+        const dot = s.kv == null ? "" : provDot(s.kp || s.p);
         const cChip = `<div class="sb-chip comp">${specValueWithUnit(s.cv, s.u)}</div>`;
         const kChip = `<div class="sb-chip bf">${specValueWithUnit(s.kv, s.u)}${dot}</div>`;
         return (
@@ -376,16 +434,18 @@ export function specPanelHtml(m) {
   }
   const ce = computeSpecEdge(m);
   const specEdge = ce.edge;
+  /* no AHEAD / NEAR PARITY / BEHIND word on the gauge (owner 2026-10-25): the marker on the scale and the score say it; the
+     stored verdict sentence above the gauge gives the judgement */
   const v = edgeVerdict(m.decision);
   const gPos = specEdge == null ? 50 : specEdge;
   return (
     `<div class="edge-gauge ${v.cls}">` +
-    `<div class="eg-top"><span class="eg-lab">Competitive edge index <span class="eg-sub">from the quantitative specs below</span></span><span class="eg-word">${v.word}${specEdge != null ? ` · ${specEdge}` : ""}</span></div>` +
+    `<div class="eg-top"><span class="eg-lab">Competitive edge index <span class="eg-sub">from the quantitative specs below</span></span><span class="eg-word">${specEdge != null ? specEdge : ""}</span></div>` +
     `<div class="eg-track"><div class="eg-mid"></div><div class="eg-marker" style="left:${gPos}%"></div></div>` +
     `<div class="eg-scale"><span>Competitor stronger</span><span>Parity</span><span>${clientShort()} stronger</span></div>` +
     edgeBasis(ce) +
     "</div>" +
-    `<div class="sb-legend"><span class="sb-key"><i class="k-comp"></i> ${compName.split(" ")[0]}</span><span class="sb-key"><i class="k-bf"></i> ${clientShort()}</span><span class="sb-key"><i class="k-win"></i> leads metric</span></div>` +
+    `<div class="sb-legend"><span class="sb-key"><i class="k-comp"></i> ${escAll(compName)}</span><span class="sb-key"><i class="k-bf"></i> ${clientShort()}</span><span class="sb-key"><i class="k-win"></i> leads metric</span>${anyDot ? PROV_LEGEND : ""}</div>` +
     specBars(compared, compName) + hiddenNote
   );
 }

@@ -5,7 +5,8 @@ import { bucketTenders } from "../../lib/overview";
 import { MARKET_SECTIONS as SECTIONS } from "../../lib/chrome";
 import { formatDate } from "../../utils/formatDate";
 import MarketOutlook from "../../components/marketOutlook/MarketOutlook";
-import { outlook } from "../../lib/marketOutlook";
+import { outlook, projectRows } from "../../lib/marketOutlook";
+import { awardedByCompetitor } from "../../lib/outlookDetail";
 import { amountText, formatTotals } from "../../lib/tenderValue";
 import {
   CATEGORY_COLOR,
@@ -226,6 +227,12 @@ export default function MarketOverview() {
   useMemo(() => initCategoryPalette(tenders), [tenders]);
   const { open, awarded, closed } = useMemo(() => bucketTenders(tenders), [tenders]);
   const ol = useMemo(() => outlook(data, open, new Date(), closed), [data, open, closed]);
+  /* the stored projects to win before they tender: listed under the open tenders, as the Cummins "open tenders and
+     projects" tab does; narrowed by the same country and category filters */
+  const projectsAll = useMemo(() => projectRows(data), [data]);
+  const clientShortName = (data.client && (data.client.short || data.client.name)) || "client";
+  /* awards and awarded tenders per tracked competitor, one per source URL (lib/outlookDetail) */
+  const byCompetitor = useMemo(() => awardedByCompetitor(data, 8), [data]);
 
   /* The report is about live demand — awarded and closed rows have their own sections,
      and counting them into the charts would inflate every number on the page. */
@@ -256,6 +263,10 @@ export default function MarketOverview() {
     return [...m.entries()].map(([v, n]) => ({ v, n })).sort((a, b) => b.n - a.n || a.v.localeCompare(b.v));
   }, [facets, section, awardsAll]);
   const cats = useMemo(() => facets.cats.map((c) => ({ label: c.v, count: c.n })), [facets]);
+  const projectsList = useMemo(
+    () => projectsAll.filter((p) => (country === "all" || p.country === country) && (!cat || p.cat === cat)),
+    [projectsAll, country, cat],
+  );
   /* What the header's Copy / Export / Print act on: the pipeline split and the rows
      the report is currently listing, under the section and filters in force. */
   const report = useMemo(() => {
@@ -265,7 +276,7 @@ export default function MarketOverview() {
         title: "Market Intelligence: market outlook",
         subtitle: `${ol.segments.length} segments · ${ol.winners.named} named award winners`,
         sections: [
-          { h: "Activity by segment", rows: ol.segments.map((r) => [r.segment, `${r.recent} in the last 6 months, ${r.before} before · ${r.open} open tenders fit · ${r.act}`]) },
+          { h: "Where demand is heading", rows: ol.segments.map((r) => [r.segment, [`${r.recent} in the last 6 months, ${r.before} before`, `${r.open} open tenders fit`, r.projects ? `${r.projects} projects to win` : null, r.recommendation].filter(Boolean).join(" · ")]) },
           { h: "Who wins", rows: ol.winners.rows.slice(0, 10).map((r) => [r.winner, `${r.wins} wins · ${formatTotals(r.totals)}`]) },
         ],
         payload: { section, outlook: ol },
@@ -371,6 +382,9 @@ export default function MarketOverview() {
      the column is meaningless there and QA asked for it gone (TC-MRT-05); only the
      Active section keeps it. */
   const showCloses = section === "active";
+  /* who won an awarded or closed tender: its stored winner, else that no award is published (none is inferred) */
+  const showWon = section === "awarded" || section === "closed";
+  const wonBy = (t) => (t.awardedTo ? <span className="clamp3" title={t.awardedTo}>{t.awardedTo}</span> : none(String(t.status || "").toLowerCase() === "awarded" ? "winner not published" : "award not published yet"));
   const tenderTable = (src, emptyNote) =>
     src.length ? (
       <>
@@ -378,7 +392,7 @@ export default function MarketOverview() {
           {/* fixed column widths: the columns line up whatever the text, long text wraps in its cell */}
           <table className="ovt-fixed">
             <colgroup>
-              {(showCloses ? ["44%", "14%", "16%", "11%", "15%"] : ["50%", "16%", "18%", "16%"]).map((w, i) => <col key={i} style={{ width: w }} />)}
+              {(showCloses ? ["44%", "14%", "16%", "11%", "15%"] : showWon ? ["38%", "13%", "15%", "20%", "14%"] : ["50%", "16%", "18%", "16%"]).map((w, i) => <col key={i} style={{ width: w }} />)}
             </colgroup>
             <thead>
               <tr>
@@ -386,6 +400,7 @@ export default function MarketOverview() {
                 <th>Where</th>
                 <th>Category</th>
                 {showCloses ? <th>Closes</th> : null}
+                {showWon ? <th>Who won</th> : null}
                 <th>Source</th>
               </tr>
             </thead>
@@ -399,6 +414,7 @@ export default function MarketOverview() {
                   {showCloses ? (
                     <td className="num">{t.closingDate ? formatDate(t.closingDate) : "—"}</td>
                   ) : null}
+                  {showWon ? <td>{wonBy(t)}</td> : null}
                   {sourceCell(t)}
                 </tr>
               ))}
@@ -420,9 +436,7 @@ export default function MarketOverview() {
         ? awarded.length + awardsAll.length
         : s.id === "closed"
           ? closed.length
-          : s.id === "category"
-            ? demandSplit(open).length
-            : open.length;
+          : open.length + projectsAll.length;
 
   return (
     <div className="ov-report">
@@ -571,71 +585,48 @@ export default function MarketOverview() {
       ) : null}
 
       <section className="ovt">
-        {section === "category" ? (
-          <>
-            <div className="ovc-h">
-              <span className="eyebrow">By category</span>
-              <span className="ovc-note">
-                every open tender counted exactly once · click a row to open its tenders in the Tender Pipeline
-              </span>
-            </div>
-            <div className="ovt-scroll">
-              <table className="ovt-fixed">
-                <colgroup>{["30%", "12%", "12%", "46%"].map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
-                <thead>
-                  <tr>
-                    <th>Category</th>
-                    <th className="num">Open</th>
-                    <th className="num">Share</th>
-                    <th>Markets</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* chartBase, not `open`: the Country filter above this table narrows
-                      the breakdown too (TC-MRT-04 -- it was shown but ignored here).
-                      Identical to `open` when no country is picked. */}
-                  {demandSplit(chartBase).map((s) => (
-                    <tr key={s.label}>
-                      <td className="ovt-t">
-                        <button
-                          onClick={() => {
-                            /* Opens the Tender Pipeline on this category (and the country picked above). A slice
-                               that groups several small categories ("Other (6 categories)") is not one category
-                               the pipeline can filter on, so it opens unfiltered by category. */
-                            const raw = tenders.some((t) => t.cat === s.label) ? s.label : null;
-                            jumpTo("market", "tender", { cat: raw, country: country === "all" ? null : country });
-                          }}
-                          type="button"
-                        >
-                          {s.label}
-                        </button>
-                      </td>
-                      <td className="num">{fmt(s.count)}</td>
-                      <td className="num">{s.pct}%</td>
-                      <td>
-                        {Array.from(
-                          new Set(
-                            chartBase
-                              .filter((t) => catOf(t) === s.label || sliceLabel(catOf(t)) === s.label)
-                              .map((t) => t.country),
-                          ),
-                        )
-                          .filter(Boolean)
-                          .join(" · ") || none("—")}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : (
-          <>
+        <>
             {/* The verbose "N rows · sorted by deadline · each row links to its source"
                 context line is cut as redundant noise: the table below is self-evidently
                 the rows, the count sits on the tab, and the rows are visibly links. */}
+            {section === "awarded" ? (
+              <>
+                <div className="ovc-h">
+                  <span className="eyebrow">Awarded per top competitor</span>
+                  <span className="ovc-note">awards and awarded tenders on record with a source, grouped under the tracked competitor named · not market share</span>
+                </div>
+                {byCompetitor.length ? (
+                  <div className="ovt-scroll" style={{ marginBottom: 22 }}>
+                    <table className="ovt-fixed">
+                      <colgroup>{["26%", "12%", "62%"].map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
+                      <thead><tr><th>Competitor name</th><th className="num">Awarded tenders</th><th>Source</th></tr></thead>
+                      <tbody>
+                        {byCompetitor.map((r) => (
+                          <tr key={r.competitor}>
+                            <td className="ovt-t">{r.competitor}</td>
+                            <td className="num">{r.awards}</td>
+                            <td>
+                              <ol className="ovt-srcs">
+                                {r.sources.map((x) => (
+                                  <li key={x.url}>
+                                    <a href={x.url} rel="noopener noreferrer" target="_blank" title={x.title}>{hostOf(x.url)} ↗</a>
+                                    {x.title ? <span className="ovt-buyer">{x.title}{x.winner && x.winner.trim() !== r.competitor ? ` · won by ${x.winner.trim()}` : ""}</span> : null}
+                                  </li>
+                                ))}
+                              </ol>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="ovc-empty" style={{ marginBottom: 22 }}>no award to a tracked competitor with a source on record</div>
+                )}
+              </>
+            ) : null}
             <div className="ovc-h">
-              <span className="eyebrow">{SECTIONS.find((s) => s.id === section).label}</span>
+              <span className="eyebrow">{section === "active" ? "Open tenders" : SECTIONS.find((s) => s.id === section).label}</span>
             </div>
             {section === "awarded" && !list.length && awardsList.length
               ? null
@@ -643,6 +634,41 @@ export default function MarketOverview() {
                   list,
                   `no ${section === "active" ? "open" : section} tender on record for this filter`,
                 )}
+            {section === "active" ? (
+              <>
+                <div className="ovc-h" style={{ marginTop: 22 }}>
+                  <span className="eyebrow">Projects to win before they tender</span>
+                  <span className="ovc-note">stored projects with no tender yet, with their stored {clientShortName} fit · {fmt(projectsList.length)} for this filter</span>
+                </div>
+                {projectsList.length ? (
+                  <div className="ovt-scroll">
+                    <table className="ovt-fixed">
+                      <colgroup>{["40%", "26%", "10%", "24%"].map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
+                      <thead><tr><th>Project</th><th>Where it stands</th><th>Fit</th><th>Source</th></tr></thead>
+                      <tbody>
+                        {projectsList.map((p) => {
+                          const src = (p.sources || [])[0];
+                          return (
+                            <tr key={p.id}>
+                              <td className="ovt-t">
+                                <span title={p.title}>{p.title}</span>
+                                <span className="ovt-buyer">{[p.issuer !== p.country ? p.issuer : null, p.country, p.cat].filter(Boolean).join(" · ")}</span>
+                                <Review src={p._src} />
+                              </td>
+                              <td><span className="clamp3" title={p.stage || ""}>{p.stage ? String(p.stage).split(" / ").slice(1).join(" / ") || p.stage : "—"}</span></td>
+                              <td>{p.clientFit ? <span className={`ti-fit ${p.clientFit}`}>{p.clientFit}</span> : "—"}</td>
+                              <td>{src && src.url ? <a href={src.url} rel="noopener noreferrer" target="_blank" title={src.label || src.url}>{hostOf(src.url)} ↗</a> : none("no URL on record")}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="ovc-empty">no project to win on record for this filter</div>
+                )}
+              </>
+            ) : null}
             {section === "awarded" && !cat ? (
               <>
                 <div className="ovc-h" style={{ marginTop: list.length ? 22 : 0 }}>
@@ -702,8 +728,7 @@ export default function MarketOverview() {
                 )}
               </>
             ) : null}
-          </>
-        )}
+        </>
       </section>
       </>)}
     </div>

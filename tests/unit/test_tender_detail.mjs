@@ -22,7 +22,7 @@
  * tender, and dropping the row would present a partial record as a complete one.
  */
 import { readFileSync } from "node:fs";
-import { TENDER_PARAMS, NOT_ON_RECORD, tenderFactRows } from "../../src/lib/tenderRow.js";
+import { TENDER_PARAMS, NOT_ON_RECORD, NO_DATE_PUBLISHED, tenderFactRows } from "../../src/lib/tenderRow.js";
 
 let bad = 0;
 const ck = (name, want, got) => {
@@ -58,8 +58,11 @@ ck("...labelled in the documented order", TENDER_PARAMS.map((p) => p.label),
 /* Eight of the nine, not all nine: RESOLVE.source returns `false` rather than null on
    an empty record, so its row prints "false" and reads as resolved. That is pre-existing
    and out of scope here -- pinned as it is so a change to it is deliberate, not silent. */
+/* the two DATE rows say "No date published" (the market's own words for a missing date), so the drawer's
+   NOT_ON_RECORD filter keeps them -- the old expectation (every row NOT_ON_RECORD) hid an unpublished date entirely
+   (functional test G19, 2026-10-25) */
 ck("...each unresolved one printed, not hidden",
-   TENDER_PARAMS.slice(0, 8).map(() => NOT_ON_RECORD), empty.slice(0, 8).map((r) => r[1]));
+   TENDER_PARAMS.slice(0, 8).map((p) => (p.key === "posted" || p.key === "closing" ? NO_DATE_PUBLISHED : NOT_ON_RECORD)), empty.slice(0, 8).map((r) => r[1]));
 ck("...and marked unresolved",
    TENDER_PARAMS.slice(0, 8).map(() => false), empty.slice(0, 8).map((r) => r[2]));
 ck("Source on an empty record: pre-existing `false`, pinned not endorsed",

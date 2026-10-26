@@ -468,7 +468,21 @@
 .cm-top { display: flex; align-items: center; gap: 10px; }
 .cm-co { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--d-txt-3); }
 .cm-title { font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--d-txt); }
-.cm-desc, .cm-why { font-size: 12.5px; line-height: 1.55; color: var(--d-txt-2); }
+.cm-desc, .cm-why { font-size: 12.5px; line-height: 1.55; color: var(--d-txt-2); text-align: justify; hyphens: auto; }
+/* the stance tag sits in the card's top-right corner (owner 2026-10-25) */
+.cm-tag { margin-left: auto; }
+/* Competitor Movement events: one row per story, opened to its episodes (owner 2026-10-25) */
+.ev-block { border-bottom: 1px solid var(--d-line); }
+.ev-row { display: flex; align-items: center; gap: 14px; padding: 16px 8px; cursor: pointer; }
+.ev-row:hover, .ev-row:focus-visible { background: var(--d-bg-2, rgba(255,255,255,0.03)); outline: none; }
+.ev-caret { color: var(--d-txt-3); transition: transform .15s; flex: none; }
+.ev-block.open .ev-caret { transform: rotate(90deg); }
+.ev-main { flex: 1; min-width: 0; }
+.ev-title { font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--d-txt); }
+.ev-sum { font-size: 12.5px; line-height: 1.55; color: var(--d-txt-2); margin-top: 6px; text-align: justify; hyphens: auto; }
+.ev-sub { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.04em; color: var(--d-txt-3); margin-top: 4px; }
+.ev-eps { padding: 0 0 8px 30px; border-left: 2px solid var(--d-line); margin-left: 14px; }
+.ev-eps .cm-row:last-child { border-bottom: none; }
 @media (max-width: 900px) { .cm-row { grid-template-columns: 1fr; gap: 12px; } .cm-left { flex-direction: row; align-items: center; } .cm-img { width: 140px; } }
 
 /* Projects page: the Overview's feed and panel, plus the stage track and the dated timeline */
@@ -516,3 +530,14 @@
 .pc-view { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ok-badge, #38bdf8); }
 .product-card:hover .pc-view { text-decoration: underline; text-underline-offset: 3px; }
 .pj-rep { display: block; color: var(--l-txt-4, #8a8a86); font-size: 9.5px; margin-top: 1px; }
+
+/* Spec and glance labels on the Projects panel wrap instead of being cut at 42% with an ellipsis
+   ("German funding for full pro…"); the value keeps the rest of the row (functional test G15, 2026-10-25) */
+.pj-page .ctx .cd-fk { white-space: normal; overflow: visible; text-overflow: clip; flex: 0 1 45%; max-width: 45%; line-height: 1.4; }
+.pj-page .ctx .cd-fv { flex: 1 1 55%; }
+
+/* Project card, BLUF order (owner 2026-10-25): the at-a-glance labels are short words (Who, Where, Value) in a fixed
+   column like the signal card's; source titles are shown whole and wrap -- no "…" anywhere in the card */
+.pj-page .ctx .cd-glance .cd-fk { flex: 0 0 84px; max-width: 84px; }
+.pj-page .ctx .cd-glance .cd-fv { flex: 1 1 auto; }
+.pj-page .ctx .pj-srcs .srcchip { white-space: normal; overflow: visible; text-overflow: clip; text-align: left; }

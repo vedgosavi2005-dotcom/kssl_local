@@ -5,6 +5,8 @@
    requests are relative to the page's own origin under /api — in dev the vite proxy
    forwards them to the FastAPI backend on 127.0.0.1:8600, and a production build works
    behind any static server that routes /api to the same backend. */
+import { LOGIN_REQUIRED } from "../lib/login";
+
 const BASE = "/api";
 
 const TIMEOUT_MS = 30000;
@@ -28,6 +30,12 @@ export async function apiGet(path, { signal } = {}) {
       throw new Error(
         `the API did not answer (${err.message || "network error"}) - is the backend running?`,
       );
+    }
+
+    // the session ended (expired, signed out in another tab): back to the sign-in screen
+    if (response.status === 401 && LOGIN_REQUIRED && path !== "/session") {
+      location.reload();
+      throw new Error("signed out");
     }
 
     if (!response.ok) {

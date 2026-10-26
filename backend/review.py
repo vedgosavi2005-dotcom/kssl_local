@@ -145,6 +145,8 @@ SERVING_TABLES = (
     "technology_pillar", "technology_category", "technology_category_ui_label", "technology_company",
     "technology_source", "technology_metric", "market_tender_portal", "market_category_summary",
     "market_filter_option", "market_top_opportunity_metric", "fx_rate",
+    "product_class",                                # product types for "Compare any two" (db/setup/44_product_class_serving.sql)
+    "sipri_arms_company", "sipri_milex_country",    # SIPRI figures on Company profile / Geo country panel (db/setup/48_sipri_ui_tables.sql)
 )
 # Bookkeeping columns: a change here alone does not make a card "changed".
 VOLATILE = {"created_at", "updated_at", "fetched_at", "retrieved_at"}

@@ -93,6 +93,12 @@ export function DataProvider({ children }) {
     window.__ksslDataReady = true;
     window.dispatchEvent(new Event("kssl:data-ready"));
   }, [value]);
+  /* the loading / error screen hides the Ask Parallax button even when it was mounted earlier (a dataset reload, a dev
+     hot reload): owner 2026-10-26 saw it over "137Parallax Loading". CSS: styles/index.css body.kssl-booting */
+  useEffect(() => {
+    document.body.classList.toggle("kssl-booting", !value);
+    return () => document.body.classList.remove("kssl-booting");
+  }, [value]);
 
   useEffect(() => {
     if (!value) return;

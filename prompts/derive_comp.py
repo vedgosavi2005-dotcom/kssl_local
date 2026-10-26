@@ -116,10 +116,10 @@ def step_kind(title) -> str:
     """A story step type from the event title (words only, no model). First match wins, in this order."""
     t = str(title or "").lower()
     for pattern, kind in ((r"deliver|receiv|induct|commission|in service|handed over", "delivery"),
-                          (r"contract|award|select|order|signs?|signed|agreement", "contract"),
+                          (r"contract|award|select|order|signs?\b|signed|agreement", "contract"),
                           (r"trial|test|prototype|qualif|demonstrat", "trial"),
                           (r"production|assembly|factory|plant|ground ?breaking", "production"),
-                          (r"announce|unveil|launch(?:ed|es)?|approv", "announced")):
+                          (r"announce|unveil|\blaunch(?:ed|es)?\b|approv", "announced")):
         if re.search(pattern, t):
             return kind
     return "update"

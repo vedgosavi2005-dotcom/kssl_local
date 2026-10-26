@@ -1,0 +1,106 @@
+id: signal_rewrite
+title: Rewrite a signal drawer's two prose fields to the reporting standard (no new facts, no new scores)
+version: 1
+fills: [competitive_signal_detail]
+shows_on: Signal drawer - "What the article says" and "Impact on KSSL"
+cadence: on_demand
+recurring: false                 # a signal is rewritten once per prompt version
+handler: signal_rewrite          # prompts/signal_rewrite.py writes ONLY what_article_says and why_it_matters of the subject signal
+# Owner 2026-10-25: "the wording ... make sure it is up to the standard, human-readable, and easily understandable. The current way it's
+# written looks like just line after line." The signal prompt's 20-word, one-idea-per-sentence rule produced lists of facts, not prose.
+# Standard used: the news INVERTED PYRAMID for what the article says; BLUF (bottom line up front, the analyst's key-judgement-first
+# paragraph) for the impact; plain-language rules for both. Scores, labels, glance, key points and sources are not touched.
+# Only threat and watch signals (a 'none' signal is never shown).
+
+subject:
+  key: signal_id
+  query: |
+    SELECT s.signal_id, s.classification, s.company_id AS competitor_id, c.display_name AS competitor, d.source_url, d.drawer_title
+    FROM staging.competitive_signal s
+    JOIN staging.competitive_signal_detail d USING (signal_id)
+    LEFT JOIN staging.competitive_competitor c ON c.competitor_id = s.company_id
+    WHERE s.classification IN ('threat', 'watch')
+    ORDER BY s.classification DESC, s.published_date DESC NULLS LAST
+  documents:
+    - from: sql                  # the card as stored: its current prose, key points, verdict, and the reasons behind each score
+      query: |
+        SELECT x.doc, x.item, x.text
+        FROM staging.competitive_signal s JOIN staging.competitive_signal_detail d USING (signal_id),
+             LATERAL (VALUES (1, 'CARD', 'title', d.drawer_title), (2, 'CARD', 'label', s.classification),
+                             (3, 'CARD', 'verdict', s.label_basis->>'summary'),
+                             (4, 'CARD', 'current what the article says', d.what_article_says),
+                             (5, 'CARD', 'current impact on KSSL', d.why_it_matters)) AS x(n, doc, item, text)
+        WHERE s.signal_id = '{{subject.signal_id}}'
+        UNION ALL
+        SELECT 'KEY POINT', e.label, e.value
+        FROM staging.competitive_signal_evidence e
+        WHERE e.signal_id = '{{subject.signal_id}}' AND e.evidence_group = 'key_point'
+        UNION ALL
+        SELECT 'REASON', f.column_name, f.quote
+        FROM staging.fact_source f
+        WHERE f.table_name = 'competitive_signal' AND f.source_tier = 'judgement' AND f.row_id = '{{subject.signal_id}}'
+          AND f.column_name <> 'summary'
+    - from: source_document
+      field: source_url
+      min_chars: 600
+      cap: 12000
+    - from: url
+      field: source_url
+
+context: [client, client_portfolio, client_markets]
+
+task: |
+  TASK signal_rewrite - rewrite two texts of one signal card so a busy manager reads them once and understands them.
+  The card: "{{subject.drawer_title}}" ({{subject.classification}} for {{client.name}}; rival {{subject.competitor}}).
+  You REWRITE; you do not research. Every fact must come from the ARTICLE or the CARD rows below. Do not change any judgement:
+  the REASON rows are the scores' reasons and the card's label is final.
+
+  1. what_article_says - a short news report in the INVERTED PYRAMID, one paragraph of 3 to 5 sentences, 60 to 110 words.
+     - Sentence 1 (the lead): who did what, where and when, with the main number (value, quantity) if the article gives one.
+     - Then the most important detail, then the next: dates, options, conditions, the next step.
+     - Only what the article states. No opinion, no "this shows", no background the article does not give.
+  2. why_it_matters - the impact on {{client.name}}, BLUF style, one paragraph of 3 to 5 sentences, 50 to 110 words.
+     - Sentence 1 (the bottom line): what this means for {{client.name}}, in plain words, naming the {{client.name}} product, market
+       or partner it touches (from CLIENT PORTFOLIO / CLIENT MARKETS, by its everyday name).
+     - Then the evidence for that line, from the REASON rows and the article: how close the rival's product is to the
+       {{client.name}} product, where it lands, how soon. Join the facts with "because", "so", "while", "but".
+     - If nothing of {{client.name}}'s is touched, say what it does touch in one natural sentence ("It does not compete with any
+       {{client.name}} product; it matters because it wins Kongsberg a seventh European customer.").
+     - At most ONE sentence on what is not known, and only if it changes the picture.
+     - Do not write the words "threat" or "watch" and do not grade it: the page adds the verdict line after your paragraph.
+     - Never recommend an action. Never write "{{client.name}} should".
+
+  WRITING STANDARD (both texts)
+   - Write the way a good newspaper writes: sentences of 12 to 25 words, varied, joined into one flowing paragraph. Never a list of
+     one-fact sentences. Never start two sentences in a row with the same word.
+   - HARD LIMIT: no sentence longer than 28 words, quotations included. Count before you answer; split a long sentence in two.
+   - Everyday words. Do not write these internal terms: "country line", "client line", "sub-type", "like-for-like", "anchor",
+     "dimension", "market standing", "the article says", "the article does not say", "is touched", "kept because".
+     Say "KSSL sells in the United States", "the same kind of gun", "it makes the rival better known".
+   - Name things fully the first time: the company, the product with a few words on what it is ("the K9, a tracked
+     self-propelled howitzer"), an acronym spelled out unless it is a product name.
+   - Numbers keep their unit and the article's own wording ("about $100 million", "nine guns"); never round or convert.
+   - Active voice. No hype, no filler: leverage, robust, ecosystem, strengthens its position, poses a threat to, going forward.
+   Before (impact): "No cruise missile product line is touched; kept because of the market standing it gives the rival with a
+     customer in Europe."
+   After: "This does not compete with anything KSSL makes, because KSSL has no cruise missile. It matters because Denmark becomes the
+     seventh country to choose Kongsberg's missile, which makes the Norwegian firm a stronger name with European buyers."
+
+  Output one record, table competitive_signal_detail: what_article_says, why_it_matters. If the ARTICLE cannot be read and the CARD
+  rows are not enough to write both, "records": [] and "skip_reason".
+
+  CLIENT: {{context.client}}
+  CLIENT PORTFOLIO:
+  {{context.client_portfolio}}
+  CLIENT MARKETS:
+  {{context.client_markets}}
+
+  CARD ROWS AND ARTICLE:
+  {{documents}}
+
+output:
+  competitive_signal_detail:      # documentary only (handler)
+    card: true
+    columns:
+      what_article_says: {required: true, max: 900, plain: strict}
+      why_it_matters: {required: true, max: 900, plain: strict}

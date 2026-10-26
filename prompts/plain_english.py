@@ -70,7 +70,7 @@ def sentences(text: str) -> list[str]:
     """Split on . ! ? followed by a capital, digit or quote; and on line breaks. Abbreviations ("e.g.", "No.") and decimals do not split."""
     out: list[str] = []
     for block in re.split(r"\n+", text or ""):
-        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"“(])", block.strip())
+        parts = re.split(r"(?:(?<=[.!?])|(?<=[.!?][\"”’)]))\s+(?=[A-Z0-9\"“(])", block.strip())   # also after a closing quote
         cur = ""
         for p in parts:
             cur = f"{cur} {p}".strip() if cur else p
@@ -213,6 +213,7 @@ def _selftest() -> None:
     assert codes("KSSL should bid for this order.") == ["client_should"] and lint("KSSL should bid.")[0].hard
     assert codes("The order shows KSSL could bid.") == []
     # statements of absence (soft), with the fixed allowed sentence
+    assert sentences('It buys "loitering munitions." Deliveries start soon.')[0] == 'It buys "loitering munitions."'     # a closing quote ends the sentence too
     assert codes("KSSL has no stated route to adopt it.") == ["absence"] and not lint("There is no direct overlap exists here.")[0].hard
     assert codes("No artillery product line is touched; kept because of supply chain.") == []
     assert codes("The article gives no reason for the choice.") == []

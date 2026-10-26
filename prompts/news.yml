@@ -93,7 +93,7 @@ task: |
      dropped: every article gets a story and a category.
    - same_as: a list of S handles of already stored stories that report the same event (the event can be
      stored under the company and under a product, so there may be several); [] when it is new.
-   - category: exactly one of the eleven below. There is no category for accidents or incidents.
+   - category: exactly one of the twelve below. There is no category for accidents or incidents.
        Contract & order         an order, contract, tender win, selection or procurement decision to supply
                                 defence goods or services. If the customer is a foreign government (outside
                                 the company's home country), the story is Export, not this.
@@ -107,10 +107,16 @@ task: |
                                 credit ratings
        Stock & market           share-price moves, analyst or broker notes, fund holdings, "breakout" or volume
                                 lists, stock tips
-       Facility & capacity      a new plant, unit or local subsidiary, expansion, investment, jobs,
-                                production capacity
+       Facility & capacity      a new plant, unit or local subsidiary, expansion, jobs, production capacity
+       Investments              money the company puts in or takes in: a stated investment amount or capex
+                                in a plant or programme, buying an equity stake, a funding round or raise, an
+                                IPO / QIP / bond or share issue, a government or partner investing in the
+                                company (a civil one with no defence angle is Non-defence business). Not
+                                share-price moves, fund holdings or "invest in this stock" tips (Stock &
+                                market), and not a government funding its own programme or buying equipment. A plant or expansion WITH a stated investment amount is Facility &
+                                capacity; the code adds Investments to it as well (prompts/news_category.py).
        Leadership & corporate   management changes, strategy statements, restructuring, acquisitions,
-                                disposals
+                                disposals (buying an equity stake is Investments)
        Non-defence business     the company's civil, infrastructure, energy, EPC, real-estate or IT business
                                 with no defence angle (metro, power lines, offshore platform, chemical plant,
                                 data centre): a civil contract, partnership or MoU is Non-defence business
@@ -118,8 +124,8 @@ task: |
                                 violations, prosecutions, court cases, regulator actions, labour disputes,
                                 general news that names the company. An accident story is always Other.
      Financial results is what the company reported or guided; Stock & market is how the share or the
-     market reacts to it. Before choosing Other for an order, delivery, export, plant, result or
-     partnership, read the list again. Give a category for every story, also when same_as is set.
+     market reacts to it. Before choosing Other for an order, delivery, export, plant, investment, result
+     or partnership, read the list again. Give a category for every story, also when same_as is set.
    - relevant: "yes" when the story is about {{subject.name}} or one of its products: the company is the
      subject or a main party. "no" only when the headline itself shows that the company is not: it is one
      name in a list (several bidders, several stocks), a "-backed" or "parent of" aside, an evergreen or
@@ -146,7 +152,8 @@ task: |
    - new_product: a product of {{subject.name}} that RIVAL PRODUCTS does not list (subject = its name, field = one of the categories,
      value = what the headline says it is)
    - leadership: a person appointed to or leaving a role (subject = the person, field = the role, value = appointed | left)
-   - partner: a company it now works with (subject = the partner, field = partner type, value = what the tie is)
+   - partner: a company it now works with (subject = the partner, field = partner type, one of Joint venture | Acquisition | Technology / ToT | Teaming | Supplier | MoU / strategic,
+     value = what the tie is)
    - location: a new plant or site (subject = the site or country, field = facility | footprint, value = the country)
   Nothing a headline only hints at; no specs or company figures from headlines.
 
@@ -169,6 +176,6 @@ output:                          # documentary: news_story is applied by prompts
       same_as: {}                                  # list of S handles, [] when new
       category: {required: true, judgement: true,
                  enum: [Contract & order, Partnership / JV, Product launch & testing, Delivery & induction, Export,
-                        Financial results, Stock & market, Facility & capacity, Leadership & corporate,
+                        Financial results, Stock & market, Facility & capacity, Investments, Leadership & corporate,
                         Non-defence business, Other]}
       relevant: {required: true, judgement: true, enum: [yes, no]}   # "no" -> stored with category Other + fact_source column not_about_company

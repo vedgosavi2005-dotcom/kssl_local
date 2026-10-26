@@ -4,9 +4,9 @@ rules written here (docs/audit_v2/ANSWERS.md section 1 and the comments of the p
 
 Foundations (docs/audit_v2/PROMPT_LOGIC_FABLE_REVIEW.md): the label rules below are PURE functions of stored scores, each with a
 rule version stored on the row; the hooks apply them. Order in a prompt's `derive:` list matters:
-    competitive signal   [signal_label, product_news_merge, story_link]   (+ moment_grade on a moment prompt, award_to_signal on a tender prompt)
+    competitive signal   [signal_dedupe, signal_label, signal_text_tidy, product_news_merge, story_link]   (+ moment_grade on a moment prompt, award_to_signal on a tender prompt)
     market assessment    [tender_fit, pursue_label]            (+ requirement_state on a global requirement prompt)
-    technology article   [tech_direction, story_link]
+    technology article   [tech_direction, tech_glance, story_link, tech_dedupe]
     any prompt           [filter_options]                       (rebuilds the three filter-option tables from the stored values)
 Self-checks: python -m prompts.derive --selftest   (pure)   |   --selftest-db   (hooks, on a throwaway kssl_test_* database).
 
@@ -997,6 +997,45 @@ def story_link(cur, ctx: dict) -> None:
         if sig is not None and sig.get("story_id") is not None:
             for pn in ids(ctx, "competitive_product_news"):
                 cur.execute("UPDATE staging.competitive_product_news SET story_id = %s WHERE product_news_id::text = %s", (sig["story_id"], str(pn)))
+
+
+@hook("moment_news_category")
+def moment_news_category(cur, ctx: dict) -> None:
+    """Functional test G5 (prompts/news_category.py): a moment shows in the company news list, which uses the news categories of
+    news.yml, so its category is set from the move of the signal it points at (else its headline when one rule is clear); a
+    product category the prompt gave ("Marine / Naval") is replaced, an unclear one is kept and noted. Run AFTER moment_grade."""
+    from prompts import news_category
+    mids = ids(ctx, "competitive_competitor_moment")
+    if mids:
+        changed, left = news_category.recategorise_moments(cur, mids)
+        if changed or left:
+            ctx["notes"].append(f"moment_news_category: {len(changed)} set, {len(left)} unclear (kept)")
+
+
+@hook("signal_text_tidy")
+def signal_text_tidy(cur, ctx: dict) -> None:
+    """Functional test G1 (prompts/signal_text.py): a drawer headline that stops on a dangling word takes the card's own title
+    (and its sources); "155mm" -> "155 mm" (km, kg) in the signal's card and drawer text, never in a product name or a quote.
+    Run BEFORE story_link (the story step copies the title)."""
+    from prompts import signal_text
+    sids = ids(ctx, "competitive_signal")
+    if sids:
+        out = signal_text.tidy_signals(cur, sids)
+        if out["columns"] or out["drawer_titles"]:
+            ctx["notes"].append(f"signal_text_tidy: {out['columns']}; drawer titles replaced: {len(out['drawer_titles'])}")
+
+
+@hook("tech_dedupe")
+def tech_dedupe(cur, ctx: dict) -> None:
+    """One technology card per event (functional test G3: H38 x3, PERCH 2.0 x3): a card of this run that repeats another (same
+    article, or the same company family naming the same product within 10 days: prompts/story.same_tech_event) is stored with
+    status 'duplicate' and joins the kept card's story; the live site leaves it out. Run AFTER story_link."""
+    from prompts import story
+    aids = ids(ctx, "technology_overview_article")
+    if aids:
+        n = story.dedupe_tech(cur, only_ids=aids)
+        if n["duplicate"] or n["restored"]:
+            ctx["notes"].append(f"tech_dedupe: {n}")
 
 
 @hook("tech_direction")

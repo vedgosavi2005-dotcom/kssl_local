@@ -46,6 +46,13 @@ const one = (n, unit, d) => `${(Math.round((n / unit) * 10 ** d) / 10 ** d).toLo
 export const rupees = (n) =>
   n >= 1e7 ? `₹ ${one(n, 1e7, n >= 1e9 ? 0 : 1)} Cr` : n >= 1e5 ? `₹ ${one(n, 1e5, 1)} L` : `₹ ${Math.round(n).toLocaleString("en-IN")}`;
 
+/* the rupee sum of the totals that can be converted (stored rate or INR), or null when none can: what a share of value
+   is counted on. Amounts in a currency with no stored rate are left out of it, never guessed. */
+export function inrSum(totals) {
+  const inr = (totals || []).map(inrOf).filter((v) => v != null);
+  return inr.length ? inr.reduce((a, b) => a + b, 0) : null;
+}
+
 /* one stated amount in rupees ("₹ 12.4 Cr"), or in its own currency when no stored rate exists; null with no amount */
 export function amountText(amount, currency) {
   const n = Number(amount), c = String(currency || "").trim();

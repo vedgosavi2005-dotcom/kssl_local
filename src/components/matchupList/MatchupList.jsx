@@ -23,53 +23,13 @@ const formatCategoryLabel = (str) => {
   return titleCaseHeadline(String(str).replace(/&amp;/g, "&").trim());
 };
 
-/* One side of "Compare any two products": pick a company to narrow the list, then type to search its
-   products. With a company chosen the suggestions are bare product names (short enough to read in the
-   browser's list); with none they carry the maker. */
-const makerOf = (p) => (p.side === "client" ? clientShort() : p.maker || "?");
-function ProductPick({ id, products, value, onChange, label }) {
-  const cur = products.find((p) => p.key === value);
-  const [company, setCompany] = useState(cur ? makerOf(cur) : "");
-  const companies = useMemo(() => [...new Set(products.map(makerOf))].sort((x, y) => x.localeCompare(y)), [products]);
-  const list = useMemo(() => (company ? products.filter((p) => makerOf(p) === company) : products), [products, company]);
-  const { labelOf, keyOf } = useMemo(() => {
-    const labelOf = new Map(), keyOf = new Map();
-    list.forEach((p) => {
-      let l = company ? p.name : `${p.name} — ${makerOf(p)}`;
-      if (keyOf.has(l)) l += ` (${p.cat || p.key})`;
-      labelOf.set(p.key, l); keyOf.set(l, p.key);
-    });
-    return { labelOf, keyOf };
-  }, [list, company]);
-  const [text, setText] = useState(cur ? labelOf.get(cur.key) || "" : "");
-  return (
-    <div className="mu-pick">
-      <select className="mu-fsel" value={company} aria-label={`${label}: company`}
-        onChange={(e) => { setCompany(e.target.value); setText(""); onChange(""); }}>
-        <option value="">All companies</option>
-        {companies.map((c) => <option key={c} value={c}>{c}</option>)}
-      </select>
-      <input className="mu-fsel" list={`mu-cmp-${id}`} value={text} aria-label={`${label}: product`}
-        placeholder={`${label}… type to search ${list.length.toLocaleString()}`}
-        onChange={(e) => { setText(e.target.value); onChange(keyOf.get(e.target.value) || ""); }} />
-      <datalist id={`mu-cmp-${id}`}>
-        {[...labelOf.values()].map((l) => <option key={l} value={l} />)}
-      </datalist>
-    </div>
-  );
-}
-
 /* The competitor-product list: category → KSSL anchor product → the rivals paired
    against it. Groups collapse; the four selects narrow each other, so a combination
    that matches nothing can't be chosen. */
-export default function MatchupList({ data, selected, onSelect, products = [], compare = null, onCompare }) {
+export default function MatchupList({ data, selected, onSelect, tabs = null }) {
   const { matchups, POS_CATS, CAT_KEY } = data;
   const { searchQuery } = useAppState();
   const [query, setQuery] = useState("");
-  /* "Compare any two products": each side is a company select + a product search over that company's
-     products (or over all ~4,500 when no company is chosen). A pick is a product key. */
-  const [pickA, setPickA] = useState(compare ? compare.a : "");
-  const [pickB, setPickB] = useState(compare ? compare.b : "");
   const [co, setCo] = useState("");
   const [cat, setCat] = useState("");
   const [koel, setKoel] = useState("");
@@ -90,7 +50,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
       if (m.compBy) coLabel[m.compBy.toLowerCase()] = m.compBy;
       if (m.country) ctLabel[m.country.toLowerCase()] = m.country;
       const a = m.anchor || m.bf;
-      if (a) koelLabel[a.toLowerCase()] = a;
+      if (a) koelLabel[a.toLowerCase()] = m.bfName || a;
     });
     return { catLabel, coLabel, ctLabel, koelLabel };
   }, [matchups, POS_CATS]);
@@ -187,9 +147,15 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
   }, [matchups, POS_CATS, CAT_KEY, query, searchQuery, co, cat, koel, country]);
 
   const select = (setter) => (e) => setter(e.target.value);
+  const anchorNames = useMemo(() => {
+    const o = {};
+    Object.values(matchups).forEach((m) => { if (m.bfName) o[m.anchor || m.bf] = m.bfName; });
+    return o;
+  }, [matchups]);
 
   return (
     <div className="mu-list">
+      {tabs}
       <div className="mu-list-h">
         <span className="eyebrow">Competitor Products</span>
         <div className="mu-search">
@@ -235,27 +201,6 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
             ))}
           </select>
         </div>
-        {/* FREE COMPARISON: any two products, not only the matched pairs below */}
-        {onCompare && products.length ? (
-          <div className="mu-compare">
-            {/* its own section, headed exactly like "Competitor Products" above */}
-            <span className="eyebrow">Compare Any Two Products</span>
-            <div className="mu-compare-fields">
-            <ProductPick id="a" products={products} value={pickA} onChange={setPickA} label="Product A" />
-            <span className="mu-compare-vs">vs</span>
-            <ProductPick id="b" products={products} value={pickB} onChange={setPickB} label="Product B" />
-            <button
-              type="button"
-              className="mu-compare-btn"
-              disabled={!pickA || !pickB || pickA === pickB}
-              title={!pickA || !pickB ? "Pick both products from the suggestions" : pickA === pickB ? "Pick two different products" : "Compare the two products"}
-              onClick={() => onCompare(pickA, pickB)}
-            >
-              Compare
-            </button>
-            </div>
-          </div>
-        ) : null}
       </div>
 
       <div id="mu-list-body">
@@ -283,7 +228,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
               {g.anchors.map(({ anchor, ids }) => (
                 <div key={anchor}>
                   <div className="mu-anchor">
-                    <span className="ma-koel">{clientShort()}</span> {anchor}{" "}
+                    <span className="ma-koel">{clientShort()}</span> {anchorNames[anchor] || anchor}{" "}
                     <span className="ma-count">
                       {ids.length} rival{ids.length > 1 ? "s" : ""}
                     </span>
@@ -295,6 +240,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
                        the product, attributed. The KSSL side it is paired against is the
                        anchor heading above this group, so it is not repeated per row. */
                     const { company, product } = splitComp(m.comp);
+                    const shortName = m.compName || product;      // the Products page's short name when the product is served
                     return (
                       <div
                         className={`mu-item${selected === id ? " active" : ""}`}
@@ -310,7 +256,7 @@ export default function MatchupList({ data, selected, onSelect, products = [], c
                           }
                         }}
                       >
-                        <div className="comp-prod">{product}</div>
+                        <div className="comp-prod">{shortName}</div>
                         {company ? <div className="cp-co">{companyShort(company)}</div> : null}
                         <Review src={m._src} />
                       </div>

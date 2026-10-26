@@ -1,6 +1,6 @@
 import ReactDOM from "react-dom/client";
 import { isDesktop } from "./lib/device";
-import { LOGIN_REQUIRED, currentUser } from "./lib/login";
+import { LOGIN_REQUIRED, session } from "./lib/login";
 import Login from "./components/login/Login";
 import "./styles/index.css";
 
@@ -31,9 +31,10 @@ const startApp = () =>
     });
 
 if (isDesktop()) {
-  // temporary login (lib/login): the app and its data load only after sign-in
-  if (LOGIN_REQUIRED && !currentUser()) root.render(<Login onDone={startApp} />);
-  else startApp();
+  // sign-in (lib/login): the app and its data load only for a signed-in user who has accepted the current terms
+  if (LOGIN_REQUIRED) {
+    session().then((s) => (s && s.termsAccepted ? startApp() : root.render(<Login onDone={startApp} signedIn={s} />)));
+  } else startApp();
 } else {
   root.render(
     <div className="device-gate" role="alert">

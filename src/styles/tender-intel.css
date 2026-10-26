@@ -31,3 +31,51 @@
 .ovt-demand .od-trend.down{color:var(--threat)}
 .ovt-demand .od-clip{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;max-width:360px}
 @media (max-width:1100px){.ovt-demand table{min-width:960px}}
+
+/* Top opportunity tables (TenderCockpit .ti-cockpit): pixel columns and a min width, so a narrow pane (the drawer open
+   at 1366 px) scrolls the table sideways instead of squeezing it; a header never breaks inside a word ("R/A/N/K",
+   "REVEN/UE") and a cell breaks a word only when the word alone is wider than its column (functional test G16, 2026-10-25) */
+.ti-simple .ovt table.ti-cockpit{min-width:1020px}
+.ti-simple .ovt table.ti-cockpit th{white-space:nowrap;overflow-wrap:normal;word-break:keep-all}
+.ti-simple .ovt table.ti-cockpit td{overflow-wrap:break-word}
+.ti-simple .ti-stage .ti-stage-sub{display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  white-space:normal;margin-top:3px;font-size:11px;font-weight:400;line-height:1.4;color:var(--d-txt-3)}
+
+/* MARKET OUTLOOK analytics panel: the platform's own light reading surface (.ctx), so it matches the Competitor panels.
+   Tokens only (--l-*, --mono, --accent, --ok/--watch/--threat); sizes follow .ctx-h .ct, .cd-prose, .relrow and .dirtag. */
+.ol-split{display:block}
+.ol-split.has-panel{display:grid;grid-template-columns:minmax(0,1fr) 470px;gap:0;align-items:start}
+.ol-split .ti-row-link{cursor:pointer}
+.ol-split tr.on{background:rgba(224,160,32,.10)}
+/* the box is pinned just under the sticky tab bar (the bar is 47px tall), so it neither jumps up when the left side starts to scroll nor runs off the bottom of the window */
+.ol-panel{position:sticky;top:47px;height:auto;max-height:calc(100vh - 223px);min-width:0}
+.ol-panel .ctx-scroll{max-height:calc(100vh - 223px);overflow-y:auto;overscroll-behavior:contain}
+.ol-panel a{color:var(--accent,#c0392b);text-decoration:none}
+.ol-panel a:hover{text-decoration:underline}
+.ol-panel .ol-sub{font-size:12px;line-height:1.5;color:var(--l-txt-3);margin-top:6px}
+.ol-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--l-line);border:1px solid var(--l-line);border-radius:6px;overflow:hidden;padding:0;margin:0;width:100%}
+.ol-tiles .olt{background:var(--l-bg);padding:11px 12px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.ol-tiles .olt span{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--l-txt-3)}
+.ol-tiles .olt b{font-size:19px;font-weight:600;letter-spacing:-.01em;line-height:1.2;color:var(--l-txt);overflow-wrap:anywhere}
+.ol-tiles .olt em{font-style:normal;font-size:11px;line-height:1.35;color:var(--l-txt-3)}
+.ol-note{font-size:12px;line-height:1.5;color:var(--l-txt-3);margin:0 0 10px}
+.ol-chart svg{width:100%;height:auto;display:block;color:var(--l-txt-3)}
+.ol-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--l-txt-2);margin-top:6px}
+.ol-legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
+.olr{padding:9px 0;border-bottom:1px solid var(--l-bg-2)}
+.olr:last-child{border-bottom:0}
+.olr-h{display:flex;gap:12px;justify-content:space-between;align-items:baseline}
+.olr-t{font-size:13px;line-height:1.4;font-weight:600;color:var(--l-txt);overflow-wrap:anywhere}
+.olr-r{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--l-txt);white-space:nowrap}
+.olr-r.bad{color:var(--threat)}.olr-r.good{color:var(--ok)}
+.olr-s{font-size:12px;line-height:1.5;color:var(--l-txt-3);margin-top:3px;overflow-wrap:anywhere}
+.olr-bar{height:3px;background:var(--l-bg-2);margin-top:6px}.olr-bar i{display:block;height:100%;background:var(--watch,#e0a020)}
+.olr-f{margin:7px 0 0;display:flex;flex-direction:column;gap:4px}
+.olr-f div{display:grid;grid-template-columns:104px 1fr;gap:10px;align-items:baseline}
+.olr-f dt{font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--l-txt-3)}
+.olr-f dd{margin:0;font-size:12px;line-height:1.5;color:var(--l-txt-2);overflow-wrap:anywhere}
+.olr-f dd.np{color:var(--l-txt-3);font-style:italic}
+@media (max-width:1100px){.ol-split.has-panel{grid-template-columns:1fr}.ol-panel{position:static;max-height:none}}
+/* outlook tables: a number cell's second line wraps instead of being cut ("209 · 93 open · 209 tenders") */
+.ti-simple .ovt td.num{white-space:normal}
+.ti-simple .ovt td.num .ovt-buyer{white-space:normal;overflow:visible;text-overflow:clip;max-width:none}

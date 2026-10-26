@@ -21,6 +21,8 @@ import httpx
 from . import adapter
 
 PRODUCT_API = os.environ.get("PRODUCT_API", "http://127.0.0.1:8600").rstrip("/")
+# the product API is locked behind a sign-in (backend/auth.py); this server-side reader carries the service token instead
+SERVICE = {"X-KSSL-Service": os.environ["KSSL_SERVICE_TOKEN"]} if os.environ.get("KSSL_SERVICE_TOKEN") else {}
 TTL_S = 600
 
 _lock = threading.Lock()
@@ -56,7 +58,7 @@ def _ensure():
         if _state["docs"] is not None and time.time() - _state["at"] < TTL_S:
             return
     try:
-        r = httpx.get(PRODUCT_API + adapter.manifest()["product_api"]["dataset"], timeout=60, headers={"Accept-Encoding": "gzip"})
+        r = httpx.get(PRODUCT_API + adapter.manifest()["product_api"]["dataset"], timeout=60, headers={"Accept-Encoding": "gzip", **SERVICE})
         r.raise_for_status()
         data = r.json()
         docs = _index().build(data, adapter.manifest())
@@ -165,7 +167,7 @@ def live_news(company: str) -> dict:
         web = os.environ.get("PRODUCT_WEB", "").rstrip("/")
         routes = adapter.manifest()["product_api"].get("web_routes") or []
         base = web if web and any(path == r or path.startswith(r.rstrip("/") + "/") for r in routes) else PRODUCT_API
-        r = httpx.get(base + path, params=params, timeout=40)
+        r = httpx.get(base + path, params=params, timeout=40, headers=SERVICE)
         r.raise_for_status()
         return r.json()
 

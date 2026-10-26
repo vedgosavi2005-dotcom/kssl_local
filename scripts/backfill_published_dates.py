@@ -78,6 +78,19 @@ def parse_date(text):
     return v if date(2000, 1, 1) <= v <= date.today() else None
 
 
+def from_visible(html):
+    """The publication date PRINTED on the article: a <time datetime=...> (or other element) marked itemprop="datePublished".
+    2026-10-25 (owner, test G6): it outranks every hidden stamp. israeldefense.co.il re-publishes old articles and moves
+    article:published_time (node 71464: meta 15 Oct, page shows <time datetime="2026-10-11..." itemprop="datePublished">11/10/2026).
+    Two different such dates on one page (a related-articles list) -> None: the other rules decide."""
+    found = set()
+    for m in re.finditer(r"<\w+\b[^>]*itemprop\s*=\s*[\"']datePublished[\"'][^>]*>", html, re.I):
+        v = re.search(r'(?:datetime|content)\s*=\s*["\']([^"\']+)["\']', m.group(0), re.I)
+        if v and parse_date(v.group(1)):
+            found.add(parse_date(v.group(1)))
+    return found.pop() if len(found) == 1 else None
+
+
 def from_jsonld(html):
     blocks = re.findall(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.S | re.I)
     for key in ("datePublished", "dateCreated"):        # dateCreated: CMSs (Joomla) that write no datePublished
@@ -168,7 +181,8 @@ def find_date(url):
       except Exception as exc:  # noqa: BLE001
         v = from_url(url)
         return (v, "url") if v else (None, f"fetch failed: {type(exc).__name__}")
-    rules = [("json-ld", from_jsonld), ("meta", from_meta), ("markup", from_markup), ("header", from_header), ("dateline", from_dateline)]
+    rules = [("visible", from_visible), ("json-ld", from_jsonld), ("meta", from_meta), ("markup", from_markup), ("header", from_header),
+             ("dateline", from_dateline)]
     if re.search(r"\.pdf(?:$|[?#])", url, re.I) or html.startswith("%PDF"):
         rules = [("pdf", from_pdf)]                     # a PDF has no page markup: only its own metadata
     for how, fn in rules:
@@ -190,14 +204,15 @@ def from_issue(html):
 
 
 # the pipeline log's words for where a date came from (backend/ops_log notes)
-HOW_WORDS = {"json-ld": "the page's structured data (JSON-LD datePublished)", "meta": "a published-time <meta> tag",
+HOW_WORDS = {"visible": "the publication date printed on the page (<time itemprop=datePublished>)", "json-ld": "the page's structured data (JSON-LD datePublished)", "meta": "a published-time <meta> tag",
              "markup": "a <time> / date element on the page", "header": "a date line just under the article's title",
              "dateline": "the press-release dateline", "url": "the date in the article's web address",
              "issue-year": "the magazine's issue line (the year only)", "pdf": "the PDF's own creation date"}
 
 
 def note_date(sid, url, v, how, old=None):
-    tbl = {"signal": "staging.competitive_signal", "news": "staging.competitive_news_article", "doc": "staging.source_document"}[TABLE]
+    tbl = {"signal": "staging.competitive_signal", "news": "staging.competitive_news_article", "doc": "staging.source_document",
+           "tech": "staging.technology_overview_article"}[TABLE]
     if old is not None:
         msg = f"Stored date {old} replaced by {v}: {HOW_WORDS.get(how, how)} says so (the stored date was off by {abs((old - v).days)} days)."
         outcome = "date_corrected"
@@ -208,7 +223,12 @@ def note_date(sid, url, v, how, old=None):
     ops_log.note("date", outcome, msg, subject=url, tbl=tbl, rec_id=str(sid), detail={"date": v, "how": how, "old": old})
 
 
-MACHINE = ("json-ld", "meta", "url")     # sources reliable enough to overrule a stored date; markup / header guesses are not
+MACHINE = ("visible", "json-ld", "meta", "url")     # sources reliable enough to overrule a stored date; markup / header guesses are not
+
+
+def contradicts(old, v, how):
+    """does the page's own date overrule the stored one? The printed date (rule "visible") by any day; a hidden machine stamp by > 3"""
+    return bool(v) and how in MACHINE and (old - v).days != 0 and (how == "visible" or abs((old - v).days) > 3)
 
 
 # --table: signal (default) or news (2026-10-22: 959 undated news rows; asdnews / navalnews news rows carried the crawl date).
@@ -229,32 +249,69 @@ TABLES = {
                 WHERE published_date IS NOT NULL AND article_url ~ '^https?://'""",
              """SELECT article_id, article_url FROM staging.competitive_news_article WHERE published_date IS NULL AND article_url ~ '^https?://'""",
              "UPDATE staging.competitive_news_article SET published_date = %s WHERE article_id = %s", "news articles"),
+    # 2026-10-25: technology cards (only with --fix-wrong): published_on = the page's date; article_date follows it only where it was
+    # the same stamp (an article_date taken from the text, "On September 29 ...", is the event's date and stays)
+    "tech": ("""SELECT a.overview_article_id, (SELECT coalesce(ts.source_url, ts.url) FROM staging.technology_overview_source s
+                  JOIN staging.technology_source ts ON ts.source_id = s.source_id WHERE s.article_id = a.article_id
+                  AND coalesce(ts.source_url, ts.url) ~ '^https?://' ORDER BY s.is_primary DESC NULLS LAST, s.display_order LIMIT 1) AS url,
+                a.published_on FROM staging.technology_overview_article a WHERE a.published_on IS NOT NULL""",
+             None,
+             "UPDATE staging.technology_overview_article SET article_date = CASE WHEN article_date = published_on THEN %s ELSE article_date END, "
+             "published_on = %s, updated_at = now() WHERE overview_article_id = %s", "technology cards"),
 }
 TABLE = "signal"
 
 
-def fix_wrong(con, cur, write):
+def fix_wrong(con, cur, write, url_like=None):
     cur.execute(TABLES[TABLE][0])
-    rows = cur.fetchall()
+    rows = [r for r in cur.fetchall() if r[1] and (not url_like or re.search(url_like, r[1]))]
     con.rollback()      # no transaction open during the page fetches
-    if TABLE == "news":      # ~3,800 dated news rows: checked against the date in their own URL only (no page fetch)
+    if TABLE == "news" and not url_like:      # ~3,800 dated news rows: checked against the date in their own URL only (no page fetch)
         found = [(r, (from_url(r[1]), "url")) for r in rows]
     else:
         with ThreadPoolExecutor(8) as pool:
             found = list(pool.map(lambda r: (r, find_date(r[1])), rows))
-    wrong =[(sid, url, old, v, how) for (sid, url, old), (v, how) in found if v and how in MACHINE and abs((old - v).days) > 3]
+    wrong = [(sid, url, old, v, how) for (sid, url, old), (v, how) in found if contradicts(old, v, how)]
     for sid, url, old, v, how in wrong:
         print(f"{old} -> {v} ({how})  {url[:100]}")
     print(f"\n{len(rows)} dated {TABLES[TABLE][3]} checked; {len(wrong)} contradicted by the page's own date" + ("" if write else "  (dry run: --write to replace)"))
     if write and wrong:
-        cur.executemany(TABLES[TABLE][2], [(v, sid) for sid, _, _, v, _ in wrong])
+        if TABLE == "tech":
+            for sid, url, old, v, how in wrong:
+                cur.execute("SELECT article_date FROM staging.technology_overview_article WHERE overview_article_id = %s", (sid,))
+                follows = cur.fetchone()[0] == old
+                cur.execute(TABLES[TABLE][2], (v, v, sid))
+                if follows:         # the card's date fact keeps its source: same page, the date as printed there
+                    cur.execute("""UPDATE staging.fact_source SET quote = %s, retrieved_at = now() WHERE table_name = 'technology_overview_article'
+                                   AND column_name = 'article_date' AND row_id = %s AND source_url = %s""",
+                                (f"Published {v:%d/%m/%Y} (the date printed on the page)", str(sid), url))
+        else:
+            cur.executemany(TABLES[TABLE][2], [(v, sid) for sid, _, _, v, _ in wrong])
         for sid, url, old, v, how in wrong:
             note_date(sid, url, v, how, old)
-        if TABLE == "news":
+        if TABLE in ("news", "signal", "tech"):       # the stored page of the same url carries the same date
             cur.executemany("UPDATE staging.source_document SET published_at = %s WHERE url = %s", [(v, url) for _, url, _, v, _ in wrong])
         con.commit()
         print(f"written: {len(wrong)}")
     con.close()
+
+
+def _selftest():
+    # Israel Defense (node 71464): the re-publish stamp in the meta tag, the real date printed in <time itemprop>
+    idf = ('<meta property="article:published_time" content="2026-10-15T10:12:48+0300" /><div class="header__date-row">25/10/2026 Sunday</div>'
+           '<span class="article__info-date"><time datetime="2026-10-11T21:31:00+03:00" itemprop="datePublished">11/10/2026</time></span>')
+    assert from_meta(idf) == date(2026, 10, 15) and from_visible(idf) == date(2026, 10, 11)
+    PAGES["https://www.israeldefense.co.il/en/node/71464"] = idf
+    assert find_date("https://www.israeldefense.co.il/en/node/71464") == (date(2026, 10, 11), "visible")
+    # two different printed dates (a related-articles list): not trusted, the next rules decide
+    two = '<time datetime="2026-10-11" itemprop="datePublished">a</time><time datetime="2026-09-01" itemprop="datePublished">b</time>'
+    assert from_visible(two) is None and from_visible('<p>x</p>') is None
+    assert contradicts(date(2026, 10, 15), date(2026, 10, 11), "visible") and contradicts(date(2026, 10, 12), date(2026, 10, 11), "visible")
+    assert not contradicts(date(2026, 10, 12), date(2026, 10, 11), "json-ld") and contradicts(date(2026, 10, 20), date(2026, 10, 11), "meta")
+    assert not contradicts(date(2026, 10, 20), date(2026, 10, 11), "markup") and not contradicts(date(2026, 10, 11), date(2026, 10, 11), "visible")
+    assert from_jsonld('<script type="application/ld+json">{"datePublished": "2025-06-20T08:00:00Z"}</script>') == date(2025, 6, 20)
+    assert from_url("https://x.com/news/2026/03/09/a") == date(2026, 3, 9)
+    print("backfill_published_dates self-check ok")
 
 
 @ops_log.logged("scripts.backfill_published_dates")
@@ -264,8 +321,12 @@ def main():
     ap.add_argument("--fix-wrong", action="store_true", help="replace stored dates the page's own machine date contradicts (> 3 days)")
     ap.add_argument("--pages", help="JSON {url: {html}} from scripts/browser_pages.mjs, for sites that block plain requests")
     ap.add_argument("--table", choices=sorted(TABLES), default="signal")
+    ap.add_argument("--url-like", help="only rows whose url matches this regex (with --fix-wrong: each page fetched, news too)")
+    ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--copy-only", action="store_true", help="news / signal: only take the date of the stored page of the same url (no fetching)")
     args = ap.parse_args()
+    if args.selftest:
+        return _selftest()
     global TABLE
     TABLE = args.table
     if args.pages:
@@ -276,7 +337,9 @@ def main():
     con = psycopg2.connect(dsn)
     cur = con.cursor()
     if args.fix_wrong:
-        return fix_wrong(con, cur, args.write)
+        return fix_wrong(con, cur, args.write, args.url_like)
+    if TABLE == "tech":
+        sys.exit("--table tech is for --fix-wrong (technology cards always carry a date)")
     if TABLE in ("news", "signal") and args.write:      # first, free: the stored page of the same url already has its date (--table doc)
         cur.execute({"news": """UPDATE staging.competitive_news_article n SET published_date = d.published_at::date FROM staging.source_document d
                                 WHERE n.published_date IS NULL AND d.url = n.article_url AND d.published_at IS NOT NULL""",
@@ -288,7 +351,7 @@ def main():
         if args.copy_only:
             return con.close()
     cur.execute(TABLES[TABLE][1])
-    rows = cur.fetchall()
+    rows = [r for r in cur.fetchall() if not args.url_like or re.search(args.url_like, r[1] or "")]
     con.rollback()      # never hold a transaction across the page fetches below (it blocked ops.install_triggers and every read behind it)
     with ThreadPoolExecutor(8) as pool:
         found = list(pool.map(lambda r: (r[0], r[1], *find_date(r[1])), rows))

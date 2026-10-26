@@ -147,7 +147,26 @@ def _selftest() -> None:
                        {"source": "Blog", "date": None, "title": "t", "snippet": "s"}])
     assert "1. (Wire; 2026-10-01) [tracked: Nordvik] Nordvik wins order" in pr and "2. (Blog; undated) t" in pr
     assert clean_snippet("a  b\n c" * 200).startswith("a b c") and len(clean_snippet("x" * (HEAD_CHARS + 500))) == HEAD_CHARS
+    k, l = split_listing([{"url": "https://www.naval-group.com/en/news", "title": "News page 1 on 42 |  Naval Group"},
+                          {"url": "https://x.test/tag/k9", "title": "K9 Archives - X News"},
+                          {"url": "https://www.naval-group.com/en/netherlands-and-naval-group-extend-industrial-cooperation-agreement", "title": "T"}])
+    assert [r["title"] for r in l] == ["News page 1 on 42 |  Naval Group", "K9 Archives - X News"] and len(k) == 1, (k, l)
+    assert LISTING_ROUTE["route"] == ["none"] and LISTING_ROUTE["listing"] is True
     print("triage_routes self-check ok")
+
+
+LISTING_ROUTE = {"route": ["none"], "route_reason": "listing page (index of stories), routed by code", "route_model": "code",
+                 "route_version": PROMPT_VERSION, "listing": True}
+
+
+def split_listing(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(documents for the model, listing pages): a page that only lists stories (backend.news.is_listing_page) is not read by
+    any lane -- three Naval Group moves were sourced to naval-group.com/en/news ("News page 1 on 42")."""
+    from backend.news import is_listing_page
+    keep, listing = [], []
+    for r in rows:
+        (listing if is_listing_page(r.get("url") or "", r.get("title") or "") else keep).append(r)
+    return keep, listing
 
 
 # ---- database --------------------------------------------------------------------------------------------------------
@@ -168,7 +187,7 @@ def pending(cur, limit, since=None):
     """documents with no route; with `since`, also those from that date on that an older triage version routed (re-triage)"""
     again = (f" OR (coalesce(published_at::date, fetched_at::date) >= '{since}'::date"
              f" AND coalesce(triage->>'route_version', '1') <> '{PROMPT_VERSION}')") if since else ""
-    cur.execute(f"""SELECT doc_id::text AS id, source_kind, source_name, title, published_at, competitor_ids::text[] AS cids,
+    cur.execute(f"""SELECT doc_id::text AS id, url, source_kind, source_name, title, published_at, competitor_ids::text[] AS cids,
                            left(body_text, 6000) AS body
                     FROM staging.source_document WHERE (NOT (coalesce(triage, '{{}}'::jsonb) ? 'route'){again})
                     ORDER BY {ORDER_SQL}, published_at DESC NULLS LAST, doc_id
@@ -203,6 +222,13 @@ def run(limit=None, workers=6, dry_run=False, since=None) -> dict:
     cur = conn.cursor()
     rows = pending(cur, limit, since)
     conn.rollback()
+    rows, listing = split_listing(rows)
+    if listing and not dry_run:                       # a page that only LISTS stories feeds no lane (G8 2026-10-25); no model call
+        with conn.cursor() as c0:
+            psycopg2.extras.execute_batch(c0, "UPDATE staging.source_document SET triage = coalesce(triage, '{}'::jsonb) || %s WHERE doc_id = %s::uuid",
+                                          [(psycopg2.extras.Json(LISTING_ROUTE), r["id"]) for r in listing], page_size=100)
+        conn.commit()
+    print(f"{len(listing)} listing pages routed 'none' by code" + (" [dry run]" if dry_run else ""), flush=True)
     docs = []
     for r in rows:
         body = ad.clean_body(r["source_name"], r["body"] or "", boiler)

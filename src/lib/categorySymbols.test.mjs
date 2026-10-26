@@ -67,7 +67,7 @@ test("typeGraphSvg integration: renders categoryDisc with symbols in Categories 
   const spreadSvg = partners.typeGraphSvg(ksslCo, { stage: "spread", mode: "cat" });
   assert.ok(spreadSvg.includes('class="pg-cat-symbol"'), "Rendered spread SVG should include pg-cat-symbol");
   assert.ok(spreadSvg.includes("Technology / licence"), "Rendered spread SVG should contain the technology category");
-  assert.ok(spreadSvg.includes("Supply / customer"), "Rendered spread SVG should contain Supply / customer category");
+  assert.ok(spreadSvg.includes("Supplier"), "Rendered spread SVG should contain the Supplier category (supply folds into it)");
   assert.ok(spreadSvg.includes("Joint venture"), "Rendered spread SVG should contain Joint venture category");
   assert.ok(spreadSvg.includes('class="lbl-ptr-title center-title"'), "Rendered spread SVG should include center-title");
 

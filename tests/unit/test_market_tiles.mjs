@@ -95,7 +95,8 @@ const v = (l) => tile(l).v;
 const act = (l) => tile(l).act;
 if (m.length !== 5 || m.filter((x) => x.blank).length !== 1) fail(`the strip is four stored tiles and one empty slot, got ${m.length} tiles`);
 // the tile words are the front end's own (chrome.js), the same with or without any ui table in the dataset
-if (JSON.stringify(m.filter((x) => !x.blank).map((x) => x.l)) !== JSON.stringify(["Latest tenders", "Strong fits", "Tender value", "Perceived opportunities"]))
+// "Strong-fit tenders" (was "Strong fits"): the stored count is tenders only (functional test G17, 2026-10-25)
+if (JSON.stringify(m.filter((x) => !x.blank).map((x) => x.l)) !== JSON.stringify(["Latest tenders", "Strong-fit tenders", "Tender value", "Perceived opportunities"]))
   fail("the four tile labels are the front-end words");
 if (JSON.stringify((cfg.filters || []).map((f) => f.l)) !== JSON.stringify(["All", "Latest Tenders", "Perceived Opportunities"])) fail("the pills are the front-end words");
 if (v("Latest tenders") !== "84") fail(`Latest tenders reads ${v("Latest tenders")}, the stored value is 84 (3 are on the feed: not counted)`);

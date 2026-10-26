@@ -288,4 +288,4 @@ output:
               label: host_of_url
               retrieved_at: run_time
 
-derive: [tech_direction, tech_glance, story_link]
+derive: [tech_direction, tech_glance, story_link, tech_dedupe]

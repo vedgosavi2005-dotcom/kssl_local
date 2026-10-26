@@ -601,3 +601,21 @@
     text-align: center;
     margin-top: 8px;
   }
+
+/* A match nothing was checked against (0%, or only "no spec on file" lines): grey edge and a neutral "Not assessed"
+   badge, not the green fit pill (functional test G18, 2026-10-25) */
+.tp-match.na { border-left-color: #94a3b8; }
+.tp-match .fit.na { background: #f1f5f9; color: #64748b; cursor: help; }
+.tp-match .mns { color: #94a3b8; font-style: italic; }
+
+/* A multi-lot notice: one numbered line per lot, only what differs; the notice's own sentence is the tooltip
+   (functional test G19, 2026-10-25) */
+.tp-lots { margin: 10px 0 4px; padding: 0 0 0 20px; display: flex; flex-direction: column; gap: 8px; }
+.tp-lots li { font-size: 12.5px; line-height: 1.55; color: #0f172a; padding-left: 4px; }
+.tp-lots li::marker { font-family: var(--mono); font-size: 10.5px; color: #64748b; }
+.tp-lots .tp-lot-d { display: block; }
+.tp-lots .tp-lot-x { display: block; font-size: 11.5px; color: #475569; }
+.tp-lots .tp-lot-x b { font-family: var(--mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #64748b; }
+.tp-lots .tp-lot-x .sep { color: #cbd5e1; }
+/* the badge never breaks into "partial / fit" or "Not / assessed" beside a long product name (G18, 2026-10-25) */
+.tp-match .fit { white-space: nowrap; flex: none; }

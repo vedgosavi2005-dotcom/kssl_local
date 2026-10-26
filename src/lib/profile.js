@@ -98,7 +98,10 @@ export function formatLabel(raw) {
     /* An all-capitals token of the stored text is kept as stored: ARI stays ARI, BAE stays BAE. Lower-casing
        its tail was how a company acronym printed as "Ari". */
     if (/[A-Z]/.test(word) && word === word.toUpperCase()) return word;
+    // a plural acronym ("UAVs", "IFVs") and a unit ("7.62 x 51 mm", "155 mm") keep their case (owner 2026-10-25: "Uavs", "Mm")
+    if (/^[A-Z]{2,}s$/.test(word)) return word;
     const low = word.toLowerCase();
+    if (/^(mm|cm|km|kg|lb|lbs|kn|hp|kw|nm)$/.test(low)) return low;
     // one spelling of the word this whole product is about
     if (low === "defense" || low === "defence") return "Defence";
     return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
@@ -138,13 +141,17 @@ const capWord = (w) => {
   return m ? m[1] + m[2].charAt(0).toUpperCase() + m[2].slice(1) : w;
 };
 
-export function titleCaseHeadline(raw) {
+const UNIT_WORD = /^(mm|cm|km|m|kg|g|gr|lb|lbs|t|kn|hp|kw|nm|cal|in)[.,;:)]*$/;
+
+export function titleCaseHeadline(raw, keepSmall = false) {
   if (!raw) return "";
   const words = (part) =>
     // a hyphen is a word break: 'carrier-based' -> 'Carrier-Based'
     part.replace(/[^\s-]+/g, (w, at, s) =>
       w === "x" && /\d[a-z]*\s*$/.test(s.slice(0, at)) && /^\s*\d/.test(s.slice(at + 1))
         ? w
+        // in a PRODUCT name a unit and a small joining word stay as written (owner 2026-10-25: "155 Mm", "For", "And")
+        : keepSmall && (UNIT_WORD.test(w) || (at > 0 && MINOR_WORDS.has(w))) ? w
         : capWord(w));
   return String(raw)
     .split(/(<[^>]*>|&[a-zA-Z#][a-zA-Z0-9]*;)/)
@@ -172,7 +179,7 @@ export function formatProductName(raw) {
   if (!raw) return "";
   const s = tidySeparators(unescapeEntities(String(raw)).replace(/&amp;/g, "&"));
   if (!s) return "";
-  return titleCaseHeadline(s);
+  return titleCaseHeadline(s, true);
 }
 
 /* Title case for a notice/headline title. A lower-case word is raised; the rest of a mixed word is

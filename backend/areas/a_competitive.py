@@ -249,8 +249,10 @@ def evidence_parts(rows):
     return facts, points, srcs
 
 
-GLANCE = (("glance_who", "Who"), ("glance_move", "Move"), ("glance_where", "Where"),
-          ("glance_impact", "Impact on {client}"), ("glance_third_party", "Third party"), ("glance_when", "When"))
+# Owner 2026-10-25: At a glance asks only the W questions -- who, what, when, where -- plus the third party. The impact on the
+# client has its own section ("Impact on KSSL").
+GLANCE = (("glance_who", "Who"), ("glance_move", "What"), ("glance_when", "When"), ("glance_where", "Where"),
+          ("glance_third_party", "Third party"))
 
 # At a glance in plain words (owner 2026-10-24: "Capacity" / "Orders · high" had to be interpreted; say what happened).
 # The database keeps the codes (signal.yml's move list, derive.glance_impact's "Dimension · level"); only the display changes.
@@ -409,7 +411,9 @@ def signal_v2(database, row, det, labels, steps_by, stories, news_by, products):
                          "type": lab("news_type", n.get("news_type"), "competitive_product_news"),
                          "date": n.get("event_date") or n.get("published_date"),
                          "variant": n.get("product_variant"), "relevance": n.get("kssl_relevance")}
-                        for n in news_by.get(story_id, [])],
+                        # the products THIS article names, each once (owner 25 Oct): the story holds every article's rows
+                        for n in {text(n.get("product_id")) or n.get("product_news_id"): n for n in reversed(news_by.get(story_id, []))
+                                  if n.get("article_url") == (det or {}).get("source_url")}.values()],
     }
 
 
@@ -571,6 +575,10 @@ def build_tech_articles(database, competitors, details):
     for row in ordered(table(database, "serving", "technology_overview_article"), "sequence_no"):
         raw_aid = text(row.get("article_id"))
         if not raw_aid:
+            continue
+        # a card that repeats another card's event (prompts/story.dedupe_tech, G3 2026-10-25) is left out of the live site; the
+        # review site keeps it so its change can be approved
+        if text(row.get("status")).lower() == "duplicate" and not _review():
             continue
         aid = "tech-" + raw_aid   # card / details id: prefixed per source table; _src.id stays the raw key
         primary = companies.get(text(row.get("primary_company_id"))) or {}

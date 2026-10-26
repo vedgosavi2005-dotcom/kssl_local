@@ -51,6 +51,35 @@ HOST_GAP = 2.0              # seconds between two requests to one site (armyreco
 _host_lock: dict[str, threading.Lock] = {}
 _host_last: dict[str, float] = {}
 _locks_lock = threading.Lock()
+_robots: dict[str, object] = {}
+
+
+class RobotsDisallowed(Exception):
+    pass
+
+
+def robots_allowed(url: str) -> bool:
+    """robots.txt of the url's site (2026-10-25, owner: every fetch respects robots.txt), read once per site with the harvester's
+    parser (backend/harvest_sites.Robots: `*` group, longest match). 4xx / unreachable robots.txt -> allowed; 5xx -> disallowed (RFC 9309)."""
+    from urllib.error import HTTPError
+    from urllib.parse import urlsplit
+    from backend.harvest_sites import Robots
+    p = urlsplit(url)
+    key = f"{p.scheme}://{p.netloc}"
+    with _locks_lock:
+        rb = _robots.get(key)
+    if rb is None:
+        try:
+            with urlopen(Request(key + "/robots.txt", headers={"User-Agent": UA}), timeout=15) as r:
+                text = r.read(500_000).decode("utf-8", "replace")
+            rb = Robots(text) if "<html" not in text[:500].lower() else Robots()
+        except HTTPError as e:
+            rb = Robots(allow_all=e.code < 500)
+        except Exception:  # noqa: BLE001 -- unreachable robots.txt: the page fetch itself decides
+            rb = Robots()
+        with _locks_lock:
+            _robots[key] = rb
+    return rb.allowed(url)
 
 
 def fetch(url: str, limit: int, accept="*/*", retry=True, referer=None):
@@ -60,6 +89,8 @@ def fetch(url: str, limit: int, accept="*/*", retry=True, referer=None):
     from urllib.parse import quote
     url = quote(url.strip(), safe=":/?#[]@!$&'()*+,;=%~")     # spaces / control characters in a site's own links (InvalidURL)
     host = urlsplit(url).hostname or ""
+    if retry and not robots_allowed(url):
+        raise RobotsDisallowed(f"robots.txt disallows {url[:120]}")
     with _locks_lock:
         lock = _host_lock.setdefault(host, threading.Lock())
     with lock:                                  # one request per site at a time, HOST_GAP apart; other sites run in parallel
@@ -67,7 +98,10 @@ def fetch(url: str, limit: int, accept="*/*", retry=True, referer=None):
         _host_last[host] = time.monotonic()
         try:
             headers = {"User-Agent": UA, "Accept": accept, "Accept-Language": "en", **({"Referer": referer} if referer else {})}
-            with urlopen(Request(url, headers=headers), timeout=25) as r:
+            # a cookie jar per request: aviationweek.com answers a plain request with a 302 loop that sets a cookie (G6/G7, 2026-10-25)
+            from http.cookiejar import CookieJar
+            from urllib.request import HTTPCookieProcessor, build_opener
+            with build_opener(HTTPCookieProcessor(CookieJar())).open(Request(url, headers=headers), timeout=25) as r:
                 return r.read(limit + 1), r.headers.get_content_type(), r.geturl()
         except HTTPError as e:
             if e.code != 429 or not retry:
@@ -131,7 +165,10 @@ def body_images(page_html: str, base: str) -> list[str]:
     else from the first <h1> on (menus and hero banners above the headline are not the story's)."""
     m = re.search(r"<article\b.*?</article>", page_html, re.I | re.S) or re.search(r"<h1\b.*", page_html, re.I | re.S)
     wide, rest = [], []
-    for t in re.finditer(r"<img\b[^>]*>", m.group(0) if m else page_html, re.I):
+    # 2026-10-25: the page's hero picture, marked fetchpriority="high" (the picture the browser loads first), counts even when it sits
+    # above the headline: knds.com press releases (Next.js) carry their photo there and an og:image that is the KNDS logo
+    hero = [t.group(0) for t in re.finditer(r"<img\b[^>]*>", page_html, re.I) if re.search(r"fetchpriority\s*=\s*[\"']?high", t.group(0), re.I)]
+    for k, t in enumerate([*re.finditer(r"<img\b[^>]*>", "".join(hero)), *re.finditer(r"<img\b[^>]*>", m.group(0) if m else page_html, re.I)]):
         src = img_src(t.group(0))
         src = re.match(r"(.+)", src) if src else None
         if not src or _JUNK.search(src.group(1)):
@@ -140,7 +177,7 @@ def body_images(page_html: str, base: str) -> list[str]:
         if w and int(w.group(1)) < MIN_W:
             continue
         url = urljoin(base, htmlmod.unescape(src.group(1).strip()))
-        (wide if w and int(w.group(1)) >= 400 else rest).append(url)
+        (wide if k < len(hero) or (w and int(w.group(1)) >= 400) else rest).append(url)    # the hero picture first
     return list(dict.fromkeys(wide + rest))
 
 
@@ -286,6 +323,14 @@ def _selftest() -> None:
     assert find_image(ar, "https://ar.com/n/1") == ("https://ar.com/stories/k9.jpg", "article_img")
     lm = '<nav><img src="/hero.jpg"></nav><h1>Spike NLOS</h1><img src="/t/ryan169.jpg" width="1200"><img src="/file.php/1/Spike.jpg">'
     assert body_images(lm, "https://n.lm.com/a") == ["https://n.lm.com/t/ryan169.jpg", "https://n.lm.com/file.php/1/Spike.jpg"]
+    # knds.com (Next.js): the photo sits above the <h1>, marked fetchPriority="high"; logos (also high priority on L&T) stay out
+    kn = ('<img fetchPriority="high" src="https://x.com/media/lt.svg"><img alt="" fetchPriority="high" data-nimg="fill" '
+          'src="/_next/image?url=https%3A%2F%2Fknds.com%2Fmedia%2FRF_Land.jpg&amp;w=3840&amp;q=75"/><h1>RAPIDFire Land</h1>'
+          '<img src="/media/footer.png" width="131">')
+    assert body_images(kn, "https://knds.com/en/p/1")[0] == "https://knds.com/_next/image?url=https%3A%2F%2Fknds.com%2Fmedia%2FRF_Land.jpg&w=3840&q=75"
+    from backend.harvest_sites import Robots
+    rb = Robots("User-agent: *\nDisallow: /search/\nAllow: /*.jpg$\n")
+    assert rb.allowed("https://s.com/en/node/1") and not rb.allowed("https://s.com/search/x") and rb.allowed("https://s.com/x/a.jpg")
     u = unique_images({"a": ["T", "A1"], "b": ["T", "B1", "B2"], "c": ["T"]})
     assert u == {"a": ["A1"], "b": ["B1", "B2"], "c": []}, u
     from PIL import Image

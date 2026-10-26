@@ -32,6 +32,12 @@ import { amountText } from "./tenderValue.js";
 import { fitOf } from "./tenderIntel.js";
 
 export const NOT_ON_RECORD = "not on record";
+/* A DATE the notice does not publish reads "No date published" -- the words the Market overview's closing-window chart
+   already uses for the same absence (marketOverview.WINDOWS). A fact row printing NOT_ON_RECORD is hidden by the tender
+   drawer, so the VR7 armoured-SUV tender (the one active tender with no published date) showed no Published row at all:
+   a date that silently vanished (functional test G19, 2026-10-25). */
+export const NO_DATE_PUBLISHED = "No date published";
+const DATE_PARAMS = new Set(["posted", "closing"]);
 
 /* The fixed set, in display order. `label` is what the row prints. */
 export const TENDER_PARAMS = [
@@ -168,7 +174,7 @@ export function resolveTenderRow(t) {
 /* The same nine, as [label, text, resolved] rows -- for report tables and any surface
    that prints facts as pairs. Never filtered: the unresolved ones are the point. */
 export function tenderFactRows(t) {
-  return resolveTenderRow(t).params.map((p) => [p.label, p.text, p.value != null]);
+  return resolveTenderRow(t).params.map((p) => [p.label, p.value == null && DATE_PARAMS.has(p.key) ? NO_DATE_PUBLISHED : p.text, p.value != null]);
 }
 
 /* A READABLE GIST, not an invented title.
@@ -259,7 +265,10 @@ export function fitRank(t) {
 }
 export const compareTenders = (a, b) => fitRank(b) - fitRank(a) || (Number(a.dl) || 999) - (Number(b.dl) || 999);
 export function tenderFitBar(t) {
-  const m0 = t && Array.isArray(t.matches) ? t.matches[0] : null;
+  /* a match nothing was checked against (0%, or only "no spec on file" lines) draws no 0% bar: the card falls back to
+     the tender's own stored grade (functional test G18, 2026-10-25) */
+  const first = t && Array.isArray(t.matches) ? t.matches[0] : null;
+  const m0 = first && matchAssessed(first) ? first : null;
   const pct = m0 && /%/.test(m0.pct || "") ? parseFloat(String(m0.pct).replace(/[^\d.]/g, "")) : NaN;
   if (!Number.isNaN(pct)) return { cls: pctClass(pct), width: `${Math.max(0, Math.min(100, pct))}%`, word: String(m0.pct), scored: true };
   const grade = String((m0 && m0.fit) || fitOf(t) || "").trim().toLowerCase();
@@ -268,3 +277,78 @@ export function tenderFitBar(t) {
   const word = Object.keys(GRADE_CLASS).find((k) => GRADE_CLASS[k] === cls);
   return { cls, width: `${GRADE_WIDTH[cls]}%`, word, scored: false };
 }
+
+/* ---- matched products (functional test G18, 2026-10-25) ---------------------------------------------------------
+   5 of 64 matches on active tenders printed "0% fit" and 12 more carried only "no spec on file" lines: KSSL has no
+   stored spec for the part, so nothing was checked -- a 0% (or a grade) there reads as a measured misfit. A match is
+   NOT ASSESSED when its stored percent is 0 or when every line it carries says no spec is on file. */
+const NO_SPEC = /^\s*no spec on file\b/i;
+export const NOT_ASSESSED = "Not assessed";
+const pctOf = (m) => (m && /%/.test(m.pct || "") ? parseFloat(String(m.pct).replace(/[^\d.]/g, "")) : NaN);
+export function matchAssessed(m) {
+  if (!m) return false;
+  if (pctOf(m) === 0) return false;
+  const lines = Array.isArray(m.lines) ? m.lines : [];
+  return !(lines.length && lines.every((l) => Array.isArray(l) && NO_SPEC.test(String(l[1] || ""))));
+}
+/* the badge of one match: "72% fit", "partial fit", or "Not assessed" (no "fit", no number); `na` marks the last */
+export function matchFitWord(m) {
+  if (!matchAssessed(m)) return { word: NOT_ASSESSED, na: true };
+  if (has(m.pct)) return { word: `${str(m.pct)} fit`, na: false };
+  if (has(m.fit)) return { word: `${str(m.fit)} fit`, na: false };
+  return { word: TENDER_EMPTY, na: true };
+}
+/* a stored line "no spec on file | required: LV1 R72 175.02.460 TORSION BAR" as { required, noSpec }: the requirement
+   is the content, the missing KSSL spec is the state; any other line comes back as { text } */
+export function matchLine(value) {
+  const v = value == null ? "" : String(value);
+  if (!NO_SPEC.test(v)) return { text: v };
+  const req = /\|\s*required:\s*(.*)$/i.exec(v);
+  return { required: req ? req[1].trim() : "", noSpec: true };
+}
+
+/* ---- requirement rows as lots (functional test G19, 2026-10-25) --------------------------------------------------
+   The requirement rows are one flat [code, value] list; a notice with several lots (or several requirement lines)
+   repeats its block -- description, use case, quantity, source -- once per lot, so 15 active tenders printed
+   "Use case: Sea target shooting practice" three times. reqBlocks cuts the list into blocks (each `description` starts
+   one), lifts every field whose value is the same wherever it is stated into `shared` (printed once), and leaves each
+   block only what differs. `source_text` is the notice's own sentence: it stays with its block as provenance, never a shared row.
+   `head` = rows before the first description, `tail` = the notice dates; a list with fewer than two blocks returns
+   blocks [] and every row in `head`, so a single-lot notice prints exactly as before. */
+const DATE_CODES = new Set(["published_date", "closing_date"]);
+export function reqBlocks(req) {
+  const rows = (Array.isArray(req) ? req : []).filter((r) => Array.isArray(r) && has(r[1]));
+  const tail = rows.filter((r) => DATE_CODES.has(r[0]));
+  const body = rows.filter((r) => !DATE_CODES.has(r[0]));
+  const head = [];
+  const blocks = [];
+  body.forEach((r) => {
+    if (r[0] === "description") blocks.push([r]);
+    else if (blocks.length) blocks[blocks.length - 1].push(r);
+    else head.push(r);
+  });
+  if (blocks.length < 2) return { head: body, shared: [], blocks: [], tail };
+  const valueIn = (b, code) => (b.find((r) => r[0] === code) || [])[1];
+  const codes = [...new Set(blocks.flat().map((r) => r[0]))].filter((c) => c !== "source_text");
+  /* shared = carried by two or more blocks, with one identical value in every block that carries it (the practice
+     ammunition notice states its use case on the three quantity lots, not on the framework-term lines after them) */
+  const shared = codes
+    .map((c) => [c, blocks.map((b) => valueIn(b, c)).filter(has).map(str)])
+    .filter(([, vals]) => vals.length >= 2 && vals.every((v) => v === vals[0]))
+    .map(([c, vals]) => [c, vals[0]]);
+  const sharedCodes = new Set(shared.map((r) => r[0]));
+  return {
+    head,
+    shared,
+    blocks: blocks.map((b) => ({
+      description: sharedCodes.has("description") ? null : valueIn(b, "description"),
+      rows: b.filter((r) => r[0] !== "description" && r[0] !== "source_text" && !sharedCodes.has(r[0])),
+      source: b.filter((r) => r[0] === "source_text").map((r) => str(r[1])).join(" | "),
+    })),
+    tail,
+  };
+}
+
+/* ISO dates written into a requirement sentence ("2026-11-25 to 2031-11-26", "run up to 2030-10-16") in the house
+   format of every other tender date (functional test G19, 2026-10-25) */
+export const textDates = (s) => (s == null ? s : String(s).replace(/\b\d{4}-\d{2}-\d{2}\b/g, (d) => formatDate(d)));

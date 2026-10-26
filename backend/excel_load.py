@@ -116,6 +116,34 @@ def split_bullets(cell) -> list[str]:
     return out
 
 
+# A research note in a leader line says what a source does or does not show, not what the person did (functional test G11:
+# "BDL does not specify which institution awarded each degree...", "Both are confirmed in Anglo American's ... release.").
+NOTE_ABSENT = re.compile(r"\b(?:not|never)\s+(?:been\s+)?(?:publicly\s+|independently\s+|separately\s+|necessarily\s+)?(?:stated|specified|"
+                         r"disclosed|given|named|listed|published|provided|verified|confirmed|known|available|recorded|found|identified|treated)\b"
+                         r"|\b(?:does|do|did)\s+not\s+(?:state|specify|name|give|list|provide|disclose|say|mention|identify|record|include|confirm)\b"
+                         r"|\bno\s+(?:dates?|years?|institutions?|details?|degree)\s+(?:is|are|was|were)\s+(?:given|stated|listed|disclosed)\b", re.I)
+NOTE_CONFIRM = re.compile(r"^(?:both|this|these|it|they|all|each)?\s*(?:(?:are|is|was|were)\s+)?(?:also\s+)?(?:independently\s+)?"
+                          r"(?:confirmed|verified|corroborated)\b", re.I)
+NOTE_SOURCE = re.compile(r"\b(?:filing|biography|cv|report|profile|page|release|prospectus|notice)s?\s+confirms?\b[^0-9]*\Z", re.I)
+
+
+def _note_sentence(s: str) -> bool:
+    return bool(NOTE_ABSENT.search(s) or NOTE_CONFIRM.search(s) or NOTE_SOURCE.search(s))
+
+
+def note_free(bullet: str | None) -> str | None:
+    """The leader line without its research notes (a bracketed note, a note sentence), or None when the line is only a note.
+    "Master's in Labour Management. The institution and year are not disclosed." -> "Master's in Labour Management."
+    A fact told through its source stays ("The 2025 AGM notice lists appointment on 14 August 2023.")."""
+    t = re.sub(r"\s*\(([^()]*)\)", lambda m: "" if NOTE_ABSENT.search(m.group(1)) else m.group(0), str(bullet or "")).strip()
+    sents = [s.strip() for s in re.split(r"(?<=[.;])\s+(?=[A-Z])", t) if s.strip()]
+    keep = [s for s in sents if not _note_sentence(s)]
+    if not keep:
+        return None
+    out = re.sub(r"\s+([.,;])", r"\1", " ".join(keep)).strip()
+    return out if out == str(bullet).strip() or out.endswith((".", ";")) else out + "."
+
+
 def initials(name: str) -> str:
     """First + last word of the name, uppercase, titles (Dr, Shri, Gen, Adm, Lt...) skipped: 'Dr Jane Example' -> 'JE'."""
     words = [w for w in re.split(r"[\s]+", name.strip()) if w]
@@ -450,6 +478,12 @@ def build_plan(sheets: dict, existing: dict[str, str] | None = None, include_unv
             for c in orphans:
                 plan.warnings.append(f"row {row} {person} {rtype}: unsupported claim matches no bullet: {c.text[:80]!r} [{c.result}]")
             for pos, b in enumerate(bullets, 1):
+                clean = note_free(b)
+                if clean is None:                   # a research note, not a fact about the person (functional test G11)
+                    _count(plan, company, f"{rtype}_held")
+                    held(company, person, col, b, "research_note: the line says what a source shows, not what the person did")
+                    continue
+                b = clean                           # a bracketed or trailing note is cut from a fact line
                 suggested = "; ".join(dict.fromkeys(c.suggested for c in uns[pos - 1] if c.suggested))
                 for olds, news in applied.get((row, col), []):
                     if any(norm_text(o) and norm_text(o) in norm_text(b) for o in olds) and not suggested:
@@ -792,6 +826,23 @@ def resolve_competitor(company: str, existing: dict[str, str]) -> dict:
     return {"name": company, "id": str(competitor_id_for(company)), "existing": False, "display_name": company}
 
 
+REGIONS = {"europe", "european union", "eu", "multinational", "international", "global", "worldwide", "asia", "middle east",
+           "africa", "americas", "north america", "south america", "latin america", "nordics", "scandinavia"}
+
+
+def origin_of(country: str | None, hq: str | None) -> tuple[str | None, str | None]:
+    """(origin_country, the quote it rests on). A region in the Country cell ("Europe" for MBDA; functional test G9) is not an
+    origin beside nations: the country the headquarters line ends with is taken instead ("1 Avenue Réaumur, 92350
+    Le Plessis-Robinson, France" -> France), quoted from that line. A region with no country in the HQ line stays as written."""
+    c = (country or "").strip()
+    if c.casefold() not in REGIONS:
+        return country, country
+    last = re.split(r"[,;]", hq or "")[-1].strip() if hq else ""
+    if last and re.fullmatch(r"[A-Za-z][A-Za-z .'-]+", last) and last.casefold() not in REGIONS and not re.search(r"\d", last):
+        return last, hq
+    return country, country
+
+
 def build_company_plan(rows: list[dict], existing: dict[str, str]) -> dict:
     """{'items': [...], 'widen': {...}}: per company the competitor, the column values to write, the fact_source rows and why
     numbers were left NULL."""
@@ -801,7 +852,8 @@ def build_company_plan(rows: list[dict], existing: dict[str, str]) -> dict:
         year, ywhy = parse_year(d["start"])
         emp, ewhy = parse_employees(d["size"])
         rev, cur, rwhy = parse_revenue(d["revenue"])
-        vals = {"origin_country": d["country"], "headquarters": d["hq"], "industry_sector": d["sector"],
+        origin, origin_quote = origin_of(d["country"], d["hq"])
+        vals = {"origin_country": origin, "headquarters": d["hq"], "industry_sector": d["sector"],
                 "starting_year_text": d["start"], "starting_year": year, "employee_count_text": d["size"], "employee_count": emp,
                 "revenue_text": d["revenue"], "annual_revenue": rev, "revenue_currency": cur, "financial_year": d["fy"]}
         for col, lim in VARCHAR_LIMITS.items():
@@ -810,7 +862,7 @@ def build_company_plan(rows: list[dict], existing: dict[str, str]) -> dict:
         rev_quote = None
         if d["revenue"]:
             rev_quote = f"{d['revenue']} [entity: {d['label'] or d['company']}; {d['fy'] or 'financial year not stated'}]"
-        quotes = {"origin_country": d["country"], "headquarters": d["hq"], "industry_sector": d["sector"],
+        quotes = {"origin_country": origin_quote, "headquarters": d["hq"], "industry_sector": d["sector"],
                   "starting_year_text": d["start"], "starting_year": d["start"], "employee_count_text": d["size"],
                   "employee_count": d["size"], "revenue_text": rev_quote, "annual_revenue": rev_quote, "revenue_currency": rev_quote,
                   "financial_year": d["fy"]}
@@ -1961,6 +2013,26 @@ def _selftest() -> None:
                                            "Sources": "http://idrw.org/x http://b.example/z"}]), {})
     assert cb["items"][0]["vals"]["employee_count"] is None and cb["items"][0]["vals"]["headquarters"] is None and cb["items"][0]["facts"] == [] and cb["items"][0]["blocked_source"]
     assert cb["items"][1]["vals"]["employee_count"] == 250 and {f["source_url"] for f in cb["items"][1]["facts"]} == {"http://b.example/z"} and not cb["items"][1]["blocked_source"]
+    # research notes in leader lines (G11): a note line is dropped, a bracketed / trailing note is cut, a fact told via its source stays
+    assert note_free("BDL does not specify which institution awarded each degree or provide completion years.") is None
+    assert note_free("Both are confirmed in Anglo American's person-specific appointment release.") is None
+    assert note_free("Confirmed on page 2 of his signed CV.") is None and note_free("Graduation years are not stated.") is None
+    assert note_free("The 2026 issuer filing confirms his Nordvik Corporation executive role.") is None
+    assert note_free("Master's in Labour Management. The institution and year are not disclosed.") == "Master's in Labour Management."
+    assert note_free("Graduate of the Staff College (military professional education, not stated as a separate degree).") == "Graduate of the Staff College."
+    for keep in ("The 2025 AGM notice lists appointment on 14 August 2023.", "MBA, IIM Calcutta (listed as IIM Kolkata in MIL Annual Report).",
+                 "Joined Nordvik in 2017, according to his February 2025 published interview.", "Tiffin's own alumni biography confirms both institutions and identifies her as an '08 alumna.",
+                 "Current Senior VP and Head confirmed by L&T.", "Began his career as a research associate at Ruhr-University Bochum in 1997."):
+        assert note_free(keep) == keep, keep
+    # a region in the Country cell (G9: MBDA "Europe") takes the country its headquarters line ends with, quoted from that line
+    hq = "1 Avenue Réaumur, 92350 Le Plessis-Robinson, France"
+    assert origin_of("Europe", hq) == ("France", hq) and origin_of("Multinational", "Veland City, Veland") == ("Veland", "Veland City, Veland")
+    assert origin_of("India", hq) == ("India", "India") and origin_of("Europe", None) == ("Europe", "Europe")
+    assert origin_of("Europe", "Rue X 12, 1000") == ("Europe", "Europe") and origin_of(None, hq) == (None, None)
+    ob = build_company_plan(company_rows([{**{h: None for h in COMPANY_COLS}, "Company": "Nordvik", "Country / Region": "Europe", "Headquarters": hq,
+                                           "Sources": "https://nordvik.example/about"}]), {})
+    assert ob["items"][0]["vals"]["origin_country"] == "France" and \
+        {(f["column_name"], f["quote"]) for f in ob["items"][0]["facts"]} >= {("origin_country", hq), ("headquarters", hq)}
     pb = build_products_plan([prow("Acme Corp", "Only Blog", "A: 1", src="http://idrw.org/1"), prow("Acme Corp", "Mixed", "A: 1", src="http://idrw.org/1\nhttp://a.example/2"),
                               prow("Acme Corp", "Mixed 2", "A: 1", src="http://ajaishukla.com/1"), prow("Acme Corp", "Mixed 2", "B: 2", src="http://a.example/3")], comps, [])
     assert pb["blocked_products"] == [("Acme Corp", "Only Blog")] and [g["name"] for g in pb["products"]] == ["Mixed", "Mixed 2"]

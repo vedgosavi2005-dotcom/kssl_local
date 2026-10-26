@@ -71,12 +71,20 @@ def steps() -> list[tuple[str, str, object]]:
         ("harvest_sites", "cmd", ["-m", "backend.harvest_sites", "--from", since(14), "--to", until]),
         ("google_news", "cmd", ["-m", "backend.news", "--competitor", "all", "--from", since(7), "--to", until]),
         ("dc_corpus", "cmd", ["-m", "backend.import_dc_corpus", "--from", since(30)]),
+        # partner / geo / pair queries on more sources (owner 2026-10-26); Bing / GDELT / Google partner runs stay manual (volume, terms)
+        ("partner_search_dc", "cmd", ["-m", "backend.news_sources", "--source", "dc", "--kind", "partner,pair,geo", "--from", since(14), "--to", until]),
+        ("partner_search_trade", "cmd", ["-m", "backend.news_sources", "--source", "wpsearch", "--kind", "partner", "--from", since(14), "--to", until]),
         ("tenders_harvest", "cmd", ["-m", "backend.harvest_tenders", "--api", "all", "--from", since(30), "--to", until]),
         ("tenders_stage", "cmd", ["-m", "backend.harvest_tenders", "--stage"]),
+        ("filings", "cmd", ["-m", "backend.harvest_filings", "--announcements", "--from", since(30), "--to", until]),   # BSE filings of the listed Indian rivals
+        ("annual_reports", "cmd", ["-m", "backend.harvest_filings", "--annual"]),   # their latest annual report (skipped when already stored)
         ("spec_harvest", "cmd", ["-m", "backend.harvest_specs", "--routine", "30"]),
         ("spec_store", "cmd", ["-m", "backend.import_spec_store"]),   # owner's spec store: new / changed pages, checked figures only (no model)
         # 2. attribution (code) and triage (Haiku, batched, logged as prompt_run 'triage_route')
         ("attribution", "cmd", ["-m", "backend.attribute_documents"]),
+        ("candidate_scan", "cmd", ["-m", "backend.candidate_finder", "--scan"]),     # partnership pairs / geo leads in the raw text (code, free)
+        ("candidate_search", "cmd", ["-m", "backend.candidate_finder", "--search", "--limit", "40"]),   # source articles for new pairs (DC titles + Google News, free)
+        ("attribution_found", "cmd", ["-m", "backend.attribute_documents"]),         # the pages the pair search stored
         ("doc_dates", "cmd", ["-m", "scripts.backfill_published_dates", "--table", "doc", "--write"]),   # a page's own date when the listing gave none (free; each page checked once)
         ("triage", "cmd", ["-m", "backend.triage_routes"] + (["--since", WINDOW["since"]] if WINDOW.get("since") else [])),   # a windowed run re-triages it
         ("news_candidates", "cmd", ["-m", "backend.flood", "candidates"]),
@@ -93,6 +101,8 @@ def steps() -> list[tuple[str, str, object]]:
         ("moment", "prompt", "moment"),
         ("partnership", "prompt", "partnership"), ("project", "prompt", "project"), ("product_program", "prompt", "product_program"),
         ("client_product_program", "prompt", "client_product_program"), ("geo", "prompt", "geo"),
+        ("sipri_geo", "cmd", ["-m", "backend.sipri_geo"]),   # owner's SIPRI transfers -> geo rows cited to SIPRI (no model; rebuilds its own rows after a geo re-run)
+        ("sipri_ui", "cmd", ["-m", "backend.sipri_ui"]),     # SIPRI Top 100 / milex setup tables for Company profile and Geo country panel (no model)
         ("geo_code", "cmd", ["-m", "prompts.geo_analysis", "--code"]), ("geo_analysis", "prompt", "geo_analysis"),
         ("stored_fill", "cmd", ["-m", "backend.stored_fill"]),          # programmes from sales rows, movement images (no model)
         ("synthesis", "prompt", "synthesis"), ("field_synthesis", "prompt", "field_synthesis"),

@@ -11,7 +11,8 @@ import { srcChips, cssWord } from "../../lib/html";
 import { formatLabel, smartTitleCase } from "../../lib/profile";
 import { facetOptions } from "../../lib/countryFacet";
 import RiskBasis from "../../components/detailPanel/RiskBasis";
-import { NOT_ON_RECORD, reqLabel, resolveTenderRow, tenderCardCells, tenderFactRows, tenderFitBar, compareTenders } from "../../lib/tenderRow";
+import { NOT_ON_RECORD, reqLabel, resolveTenderRow, tenderCardCells, tenderFactRows, tenderFitBar, compareTenders, reqBlocks, matchAssessed, matchFitWord, matchLine, textDates } from "../../lib/tenderRow";
+import { formatDate } from "../../utils/formatDate";
 import { Review } from "../../components/review/Review";
 
 const fitClass = (p) => {
@@ -224,7 +225,11 @@ export default function Tenders({ mode = "tender" }) {
       setCountry(p.country || null);
       setProductType(null);
     }
-    if (p && p.tenderTitle) {
+    /* a tender row in the Market outlook panel opens that tender by id */
+    if (p && p.tenderId && (data.tenders || []).some((x) => x.id === p.tenderId)) {
+      select(p.tenderId);
+      setTimeout(() => asmtRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 130);
+    } else if (p && p.tenderTitle) {
       const t =
         (data.tenders || []).find((x) => x.title === p.tenderTitle) ||
         (data.tenders || []).find(
@@ -262,7 +267,8 @@ export default function Tenders({ mode = "tender" }) {
       if (Array.isArray(t.matches) && t.matches.length) {
         sections.push({
           h: `${clientName} match`,
-          rows: t.matches.map((m) => [m.n, [m.fit, m.pct].filter(has).join(" · ")]),
+          // the same badge the panel prints: "Not assessed" for a match nothing was checked against (G18, 2026-10-25)
+          rows: t.matches.map((m) => [m.n, matchFitWord(m).word]),
         });
       }
     }
@@ -467,7 +473,9 @@ export default function Tenders({ mode = "tender" }) {
 
               {/* Client fit & rank section */}
               {(() => {
-                const m0 = (t.matches || [])[0];
+                // a match nothing was checked against gives no "0%" verdict: the tender's stored grade stands (G18, 2026-10-25)
+                const first = (t.matches || [])[0];
+                const m0 = first && matchAssessed(first) ? first : null;
                 const pctNum = m0 && /%/.test(m0.pct || "")
                   ? parseFloat(String(m0.pct).replace(/[^\d.]/g, ""))
                   : NaN;
@@ -511,45 +519,91 @@ export default function Tenders({ mode = "tender" }) {
                 <div className="tp-asmt-sec">
                   <span className="eyebrow">What the tender requires</span>
                   {has(t.reqNote) ? (
-                    <div className="req" dangerouslySetInnerHTML={{ __html: t.reqNote }} />
+                    <div className="req" dangerouslySetInnerHTML={{ __html: textDates(t.reqNote) }} />
                   ) : has(t.desc) ? (
-                    <div className="req">{t.desc}</div>
+                    <div className="req">{textDates(t.desc)}</div>
                   ) : null}
-                  {(t.req || []).map((r, i) => (
-                    <div className="kv" key={`${r[0]}-${i}`}>
-                      <span className="k">{reqLabel(r[0])}</span>
-                      <span className="v" dangerouslySetInnerHTML={{ __html: r[1] }} />
-                    </div>
-                  ))}
+                  {/* A notice with several lots used to repeat Description / Use case / Quantity / Source once per lot
+                      ("Sea target shooting practice" three times). reqBlocks prints what every lot shares once, then one
+                      numbered line per lot with only what differs; the notice's own sentence is the line's tooltip; the
+                      notice dates read in the house format, not ISO (functional test G19, 2026-10-25). */}
+                  {(() => {
+                    const rb = reqBlocks(t.req);
+                    const kv = (r, i, v) => (
+                      <div className="kv" key={`${r[0]}-${i}`}>
+                        <span className="k">{reqLabel(r[0])}</span>
+                        <span className="v" dangerouslySetInnerHTML={{ __html: v == null ? textDates(r[1]) : v }} />
+                      </div>
+                    );
+                    return (
+                      <>
+                        {[...rb.head, ...rb.shared].map((r, i) => kv(r, i))}
+                        {rb.blocks.length ? (
+                          <ol className="tp-lots">
+                            {rb.blocks.map((b, i) => (
+                              <li key={i} title={b.source || undefined}>
+                                {b.description ? <span className="tp-lot-d" dangerouslySetInnerHTML={{ __html: textDates(b.description) }} /> : null}
+                                {b.rows.length ? (
+                                  <span className="tp-lot-x">
+                                    {b.rows.map(([c, v], j) => (
+                                      <Fragment key={j}>
+                                        {j ? <span className="sep"> · </span> : null}
+                                        <b>{reqLabel(c)}</b> <span dangerouslySetInnerHTML={{ __html: textDates(v) }} />
+                                      </Fragment>
+                                    ))}
+                                  </span>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ol>
+                        ) : null}
+                        {rb.tail.map((r, i) => kv(r, `d${i}`, formatDate(r[1])))}
+                      </>
+                    );
+                  })()}
                 </div>
               ) : null}
 
               {(t.matches || []).length ? (
                 <div className="tp-asmt-sec">
                   <span className="eyebrow">Matched {clientName} products</span>
-                  {(t.matches || []).map((m, i) => (
-                    <div className="tp-match" key={`${m.n}-${i}`}>
+                  {(t.matches || []).map((m, i) => {
+                    /* the stored percentage, else the stored fit word (strong / partial / weak); a match with a 0% or only
+                       "no spec on file" lines reads "Not assessed", never "0% fit" (functional test G18, 2026-10-25) */
+                    const fw = matchFitWord(m);
+                    return (
+                    <div className={`tp-match${fw.na ? " na" : ""}`} key={`${m.n}-${i}`}>
                       <div className="mh">
                         <span className="mn">{prodName(m.n)}</span>
-                        {/* the stored percentage, else the stored fit word (strong / partial / weak) */}
-                        <span className={`fit ${cssWord(m.fit)}`}>{has(m.pct) ? m.pct : has(m.fit) ? m.fit : "—"} fit</span>
+                        <span
+                          className={`fit ${fw.na ? "na" : cssWord(m.fit)}`}
+                          title={fw.na ? `No ${clientName} spec is on file for what this tender asks, so the fit was not checked` : undefined}
+                        >{fw.word}</span>
                       </div>
                       {/* a stored line is [label, value] (market_tender_product_match_line); a reference-style line is
                           [up|down, text]. Only a stored direction draws an arrow. */}
                       {(m.lines || []).map((l, j) => {
                         const dirn = l[0] === "up" || l[0] === "down";
+                        // "no spec on file | required: X" reads as the requirement, then the missing spec as a state
+                        const ml = matchLine(l[1]);
                         return (
                           <div className="mline" key={j}>
                             <span className={`mk ${dirn ? l[0] : "info"}`}>{l[0] === "up" ? "▲" : l[0] === "down" ? "▼" : "•"}</span>
                             <span>
                               {dirn || !has(l[0]) ? null : <b>{l[0]}: </b>}
-                              <span dangerouslySetInnerHTML={{ __html: l[1] }} />
+                              {ml.noSpec ? (
+                                <>
+                                  {ml.required ? <>required <span dangerouslySetInnerHTML={{ __html: ml.required }} /></> : null}
+                                  <span className="mns">{ml.required ? " · " : ""}no {clientName} spec on file</span>
+                                </>
+                              ) : <span dangerouslySetInnerHTML={{ __html: l[1] }} />}
                             </span>
                           </div>
                         );
                       })}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
 

@@ -16,6 +16,7 @@ import * as viewState from "../../lib/viewState";
 import { isVisible } from "../../lib/visibility";
 import { REVIEW, ReviewList } from "../../components/review/Review";
 import { buildCategories } from "../../lib/partnerCategories";
+import { tieSince } from "../../lib/tieValue";
 
 /* `sector` is escaped at write time ("Defence &amp; Aerospace") and is formatted consistently here. */
 const sectorText = (co) => formatSectorName(co && co.sector);
@@ -227,7 +228,8 @@ export default function Partnerships() {
                   : nd(tp.status)],
                 ["Source confidence", nd(tp.confidence)],
                 ["Country", nd(tp.country)],
-                ["Date", nd(tp.date)],
+                // the same "Since" the tie detail prints: earliest of the stored date and the timeline (functional test G14, 2026-10-25)
+                ["Since", nd(tieSince(tp))],
                 ["Deal", nd(tp.deal)],
                 tp.note ? ["Note", tp.note] : null,
                 tp.insight ? ["Insight", tp.insight] : null,
@@ -412,8 +414,8 @@ export default function Partnerships() {
     return partners.allPartnersRosterHtml(gc, gcid, clientName);
   };
 
+  // a tie's card carries its own heading (the RELATIONSHIP eyebrow and WHO <-> WHO, partners.tieHtml)
   const drawerHeadText = () => {
-    if (tie) return "Relationship detail";
     return gc ? `${gc.name} · Mapped Partners` : "Mapped Partners";
   };
 
@@ -428,10 +430,13 @@ export default function Partnerships() {
       className={`pos-view v-partnerships ${hasSel ? "has-sel" : "no-sel"}${byRegion ? " has-graph" : ""}`}
       style={{
         position: "relative",
+        /* an open relationship gets a wide card, as in the owner's reference (2026-10-26): about 510px on a usual screen;
+           the partner list alone keeps the narrow column */
         gridTemplateColumns: hasSel
           ? (listOpen
-              ? (vw < 900 ? "148px 1fr 264px" : vw < 1100 ? "176px 1fr 288px" : vw < 1350 ? "216px 1fr 320px" : "268px 1fr 356px")
-              : (vw < 900 ? "40px 1fr 264px" : vw < 1100 ? "44px 1fr 288px" : vw < 1350 ? "44px 1fr 320px" : "48px 1fr 356px"))
+              ? (vw < 900 ? "148px 1fr" : vw < 1100 ? "176px 1fr" : vw < 1350 ? "216px 1fr" : "268px 1fr")
+              : (vw < 900 ? "40px 1fr" : vw < 1100 ? "44px 1fr" : vw < 1350 ? "44px 1fr" : "48px 1fr"))
+            + " " + (tie ? (vw < 1100 ? "360px" : "clamp(400px, 32vw, 540px)") : vw < 900 ? "264px" : vw < 1100 ? "288px" : vw < 1350 ? "320px" : "356px")
           : (vw < 1200 ? "300px 1fr 0px" : "460px 1fr 0px"),
         transition: "grid-template-columns 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)",
       }}
@@ -763,7 +768,8 @@ export default function Partnerships() {
         <div style={{ display: "flex", flex: 1, flexDirection: "column", height: "100%", overflow: "hidden" }}>
           <div className="pg-drawer-scroll" ref={drawerRef} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", paddingBottom: "24px" }}>
             <div style={{ position: "absolute", top: "12px", right: "14px", display: "flex", alignItems: "center", gap: "6px", zIndex: 30, paddingBottom: "10px" }}>
-              {(tie || mode === "field") && (
+              {/* a tie's card has its own back action under its title (partners.tieHtml, [data-back]) */}
+              {mode === "field" && !tie && (
                 <button
                   type="button"
                   className="col-close"
@@ -799,17 +805,16 @@ export default function Partnerships() {
                 ✕
               </button>
             </div>
-            <div className="pg-drawer-head" style={{ paddingRight: "110px", paddingBottom: "16px" }} dangerouslySetInnerHTML={{ __html: drawerHeadText() }} />
-            {/* review copy only: the drawer draws its records as HTML, so the same records are listed here */}
-            {gc && mode !== "field" ? (
+            {!tie ? <div className="pg-drawer-head" style={{ paddingRight: "110px", paddingBottom: "16px" }} dangerouslySetInnerHTML={{ __html: drawerHeadText() }} /> : null}
+            {/* review copy only: the drawer draws its records as HTML, so the same records are listed here
+                (under a tie's card, so the card opens on its title as on the live site) */}
+            {gc && mode !== "field" && !tie ? (
               <>
                 <ReviewList
                   title={`${gc.name} partners`}
-                  items={(gc.partners || [])
-                    .filter((x) => !tie || x.id === tie)
-                    .map((x) => ({ src: x._src, label: [x.label, x.ptype].filter(Boolean).join(" · ") }))}
+                  items={(gc.partners || []).map((x) => ({ src: x._src, label: [x.label, x.ptype].filter(Boolean).join(" · ") }))}
                 />
-                {!tie && data.COMPSYN && data.COMPSYN[gcid] ? (
+                {data.COMPSYN && data.COMPSYN[gcid] ? (
                   /* the intelligence read (thesis, vulnerabilities, traces) is part of the competitor's own card:
                      the review API approves it only through that card, so the one bar here is the competitor's */
                   <ReviewList
@@ -852,6 +857,12 @@ export default function Partnerships() {
               html={drawerBody()}
               id="pg-r-body"
             />
+            {gc && tie && mode !== "field" ? (
+              <ReviewList
+                title={`${gc.name} partners`}
+                items={(gc.partners || []).filter((x) => x.id === tie).map((x) => ({ src: x._src, label: [x.label, x.ptype].filter(Boolean).join(" · ") }))}
+              />
+            ) : null}
             {/* review API only: why this tie is (or is not) a KSSL overlap, in plain English */}
             {gc && tie && mode !== "field" ? <RiskBasis basis={((gc.partners || []).find((x) => x.id === tie) || {}).labelBasis} /> : null}
             {/* REMOVED ON REQUEST: the "What an overlapping <kind> partner costs KSSL"

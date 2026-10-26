@@ -4,7 +4,7 @@ import AskBox from "../askBox/AskBox";
 import RiskBasis from "./RiskBasis";
 import { isVisible } from "../../lib/visibility";
 import { articleBullets } from "../../lib/detail";
-import { tenderFactRows, NOT_ON_RECORD } from "../../lib/tenderRow";
+import { tenderFactRows, NOT_ON_RECORD, matchFitWord } from "../../lib/tenderRow";
 import { srcChips, attr } from "../../lib/html";
 import { formatDate } from "../../utils/formatDate";
 import "../../styles/projects.css";
@@ -155,31 +155,6 @@ export default function DetailPanel({ detail, onClose, badge }) {
           </div>
         ) : null}
 
-        {/* THE HEADLINE INSIGHT, up top: how this signal bears on KSSL, written per pillar
-            by gen_signal_text (threat read / opportunity read / knowledge read) and
-            grounded in the card's own facts. The eyebrow names the kind so the reader
-            knows at a glance whether to worry, act, or note it. */}
-        {!isTender && detail.ksslImpact ? (
-          <div className={detail.ksslImpactKind ? `ctx-sec cd-kssl kssl-${detail.ksslImpactKind}` : "ctx-sec cd-kssl"}>
-            {/* the stored impact_eyebrow of the signal's detail row (serving.competitive_signal_detail) leads; a
-                row that stores none is named by its kind. These name WHAT THE SIGNAL IS: the reader decides
-                whether to bid or adopt; the panel reports the facts. */}
-            <span className="eyebrow">
-              {detail.eyebrow ||
-                {
-                  threat: `Threat to ${clientShort()}`,
-                  demand: "Demand in a client line",
-                  "tech-advance": "Technology advance",
-                  "rival-advance": "Competitor advance",
-                  opportunity: "Demand in a client line",
-                  adoptable: "Technology advance",
-                }[detail.ksslImpactKind] ||
-                `How ${clientShort()} is impacted`}
-            </span>
-            <div className="cd-prose">{detail.ksslImpact}</div>
-          </div>
-        ) : null}
-
         <div className="ctx-sec">
           <span className="eyebrow">At a glance</span>
           <div className="cd-facts cd-glance">
@@ -289,14 +264,32 @@ export default function DetailPanel({ detail, onClose, badge }) {
           </div>
         ) : null}
 
-        {/* review API only: the scores and tests behind watch / threat (the live API ships no labelBasis) */}
-        <RiskBasis basis={detail.labelBasis || (tenderRec && tenderRec.labelBasis)} stats={detail.promptStats} title={detail.title} />
+        {!v2 && !isTender && bullets.length ? (
+          <div className="ctx-sec">
+            <span className="eyebrow">Key points</span>
+            <ul className="cd-bullets">
+              {bullets.map((b, i) => (
+                <li key={`b-${i}`}>{b}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {/* IMPACT ON KSSL (owner 25 Oct, BLUF drawer): after the article and its key points, one plain heading and the stored impact
+            paragraph (prompts/signal_rewrite.yml writes the reasoning into it). No coloured box, no verdict line (owner 25 Oct). The risk
+            grid, the dimension bars and the checks are gone from the drawer. */}
+        {!isTender && detail.ksslImpact ? (
+          <div className="ctx-sec">
+            <span className="eyebrow">Impact on {clientShort()}</span>
+            <div className="cd-prose">{detail.ksslImpact}</div>
+          </div>
+        ) : null}
 
         {/* the story timeline, drawn like the Projects timeline: dated steps on a rail, the event, what changed in grey,
-            its source chip; a label change (a stance moving) is not an event of the story and is not listed */}
+            its source chip; folded shut until clicked (owner 25 Oct); a label change (a stance moving) is not an event of the story and is not listed */}
         {detail.story && (detail.story.steps || []).some((s) => !LABEL_CHANGE.test(String(s.type || ""))) ? (
-          <div className="ctx-sec">
-            <span className="eyebrow">Timeline</span>
+          <details className="ctx-sec cd-fold">
+            <summary className="eyebrow">Timeline</summary>
             <ol className="pj-time">
               {detail.story.steps.filter((s) => !LABEL_CHANGE.test(String(s.type || ""))).map((s, i, all) => {
                 const later = /^planned$/i.test(String(s.type || "")) || (/^\d{4}-\d{2}-\d{2}/.test(String(s.date || "")) && new Date(s.date) > new Date());
@@ -325,12 +318,13 @@ export default function DetailPanel({ detail, onClose, badge }) {
                 );
               })}
             </ol>
-          </div>
+          </details>
         ) : null}
 
+        {/* products the article names, folded shut like the timeline, just above the sources (owner 25 Oct) */}
         {v2 && detail.productNews && detail.productNews.length ? (
-          <div className="ctx-sec">
-            <span className="eyebrow">Product news</span>
+          <details className="ctx-sec cd-fold">
+            <summary className="eyebrow">Products mentioned ({detail.productNews.length})</summary>
             <div className="cd-facts">
               {detail.productNews.map((n, i) => (
                 <div className="cd-frow" key={`pn-${i}`} title={n.relevance || undefined}>
@@ -346,18 +340,7 @@ export default function DetailPanel({ detail, onClose, badge }) {
                 </div>
               ))}
             </div>
-          </div>
-        ) : null}
-
-        {!v2 && !isTender && bullets.length ? (
-          <div className="ctx-sec">
-            <span className="eyebrow">Key points</span>
-            <ul className="cd-bullets">
-              {bullets.map((b, i) => (
-                <li key={`b-${i}`}>{b}</li>
-              ))}
-            </ul>
-          </div>
+          </details>
         ) : null}
 
         {isTender && detail.match && detail.match.length ? (
@@ -372,7 +355,11 @@ export default function DetailPanel({ detail, onClose, badge }) {
                         <button className="prod-link" onClick={() => jumpTo("competitive", "products", productOwner(data, m.n))} title="Open this product in Products" type="button">{m.n}</button>
                       ) : m.n}
                     </span>
-                    <span className={`cm-fit ${m.fit}`}>{m.pct} fit</span>
+                    {/* functional test G18: a 0% / no-spec match says "Not assessed", never a percentage */}
+                    {(() => {
+                      const fw = matchFitWord(m);
+                      return <span className={`cm-fit ${fw.na ? "na" : m.fit}`}>{fw.word}</span>;
+                    })()}
                   </div>
                   {(m.lines || []).map((l, j) => (
                     <div className="cm-line" key={`${l[1]}-${j}`}>
@@ -407,6 +394,9 @@ export default function DetailPanel({ detail, onClose, badge }) {
             </div>
           </div>
         ) : null}
+
+        {/* review API only: what this card's prompts cost (RiskBasis without a basis draws only that) */}
+        <RiskBasis stats={detail.promptStats} />
       </div>
 
       {isVisible("chat") ? <AskBox suggest={detail.suggest} /> : null}

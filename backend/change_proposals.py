@@ -41,6 +41,30 @@ def fingerprint(kind: str, competitor_id: str, subject: str, field: str | None, 
     return "|".join((kind, str(competitor_id), norm(subject), norm(field), v))
 
 
+# A partner proposal's `field` is the model's own words ("teaming partner", "licence", "defence partner"); the stored
+# competitive_partnership.partner_type is the prompts/partnership.yml vocabulary. First rule that matches the field wins, then the
+# same rules on the value ("what the tie is"); nothing matched is Other. Order matters: a JV or a stake before the looser words.
+PARTNER_TYPES = (
+    ("Joint venture", r"joint[- ]?venture|\bjv\b|joint company"),
+    ("Acquisition", r"acqui|\bstake\b|shareholder|takeover"),
+    ("Teaming", r"teaming|consortium|\bbid\b|joint (?:bid|contract|award|offer)"),
+    ("MoU / strategic", r"\bmou\b|memorand|letter of intent|\bloi\b"),
+    ("Technology / ToT", r"licen[cs]|technolog|\btot\b|transfer|develop|research|universit|integrat|co-?production|assembl|locali[sz]|manufactur|production partner"),
+    ("Supplier", r"suppl|subcontract|vendor|\border|contract|service|maintenance|repair|overhaul|\bmro\b|distribut|dealer|marketing|training"),
+    ("MoU / strategic", r"strategic|cooperation|collaborat|alliance|framework"),
+)
+
+
+def partner_type(field: Any, value: Any = None) -> str:
+    """the partner_type vocabulary word for a proposal's free-form field (then its value); Other when neither says"""
+    for text in (field, value):
+        t = str(text or "").lower()
+        for word, rx in PARTNER_TYPES:
+            if re.search(rx, t):
+                return word
+    return "Other"
+
+
 def _one(cur, sql: str, args: tuple) -> dict | None:
     cur.execute(sql, args)
     r = cur.fetchone()
@@ -201,7 +225,7 @@ def accept(cur, proposal_id: str, user: str | None = None, value: str | None = N
         cur.execute("""INSERT INTO staging.competitive_partnership (relationship_id, partner_id, competitor_id, partner_name, partner_type, description,
                            status, view_relationship_action, as_of_date, source_count, source_note)
                        VALUES (%s, %s, %s, %s, %s, %s, 'announced', false, %s, 1, %s) ON CONFLICT DO NOTHING""",
-                    (rid, str(uuid.uuid5(NS, f"partner-id|{norm(subj)}")), cid, subj, field, None if v == subj else v,
+                    (rid, str(uuid.uuid5(NS, f"partner-id|{norm(subj)}")), cid, subj, partner_type(field, v), None if v == subj else v,
                      p["article_date"], f"From the news: {p['article_url']}"))
         _source(cur, "competitive_partnership", rid, "partner_name", p)
         applied = {"table": "competitive_partnership", "id": rid, "action": "insert"}
@@ -242,6 +266,14 @@ def _selftest() -> None:
     assert aliases("XM1776 Mobile Tactical Cannon (K9 Mobile Howitzer, K9MH)") & aliases("K9MH")
     assert aliases("COBRA - Personnel Carrier (One Manned Turret)") & aliases("COBRA")
     assert not aliases("K9 / K9A1 Thunder") & aliases("K10 ammunition resupply vehicle")
+    pt = {"JV": "Joint venture", "joint venture partner": "Joint venture", "teaming partner": "Teaming", "MoU / teaming": "Teaming",
+          "licence": "Technology / ToT", "final assembly partner": "Technology / ToT", "research partner (MoU)": "MoU / strategic",
+          "supplier": "Supplier", "maintenance, repair and overhaul": "Supplier", "distribution partner": "Supplier",
+          "cooperation partner": "MoU / strategic", "supply": "Supplier", "MoU": "MoU / strategic"}
+    for f, want in pt.items():
+        assert partner_type(f) == want, (f, partner_type(f), want)
+    assert partner_type("defence partner", "a 50/50 joint venture for rockets") == "Joint venture"
+    assert partner_type("partner type", "signed a deal") == "Other"
     print("change_proposals self-check ok")
 
 

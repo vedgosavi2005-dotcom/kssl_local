@@ -63,6 +63,7 @@ export const NEWS_GROUPS = {
   "Financial results": "Finance & markets",
   "Stock & market": "Finance & markets",
   "Leadership & corporate": "Leadership & corporate",
+  Investments: "Finance & markets",
 };
 export const NEWS_GROUP_ORDER = ["Government & contracts", "Products & technology", "Industry & partnerships", "Finance & markets", "Leadership & corporate"];
 const HIDDEN_NEWS = new Set(["Other", "Non-defence business"]);
@@ -70,6 +71,19 @@ const catsOf = (c) => String(c || "").split("·").map((x) => x.trim()).filter(Bo
 export const newsGroup = (category) => catsOf(category).map((c) => NEWS_GROUPS[c]).find(Boolean) || null;
 // not defence news: every category it carries is a hidden one (an unclassified article is kept)
 export const hiddenNews = (category) => { const c = catsOf(category); return c.length > 0 && c.every((x) => HIDDEN_NEWS.has(x)); };
+
+/* THE NEWS LIST'S CATEGORY FILTER (owner 2026-10-26). An article may carry several categories in its one field
+   ("Partnership / JV · Contract & order": two rows of one document folded by dedupeArticles, or a stored
+   "Facility & capacity · Investments"); each one is an option, so the article shows under every category it carries.
+   Options: the categories present in these articles, most articles first (ties by name), each with its count. */
+export function newsCategoryOptions(articles) {
+  const n = new Map();
+  (articles || []).forEach((a) => catsOf(a && a.category).filter((c) => c !== "—").forEach((c) => n.set(c, (n.get(c) || 0) + 1)));
+  return [...n.entries()].map(([value, count]) => ({ value, count, label: `${value} (${count})` }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+}
+/* "all" (or nothing) keeps every article; otherwise only the articles that carry that category */
+export const hasNewsCategory = (article, cat) => !cat || cat === "all" || catsOf(article && article.category).includes(cat);
 
 function shape(row, byUrl, i) {
   const d = (row.url && byUrl[row.url]) || null;

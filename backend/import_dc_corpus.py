@@ -317,21 +317,53 @@ SELECT c.document_key, c.company_id, c.relevance, c.mentions, c.in_title, c.owns
 FROM document_triage.document_company_signal_score c
 JOIN document_triage.document_priority_rank r USING (document_key)
 JOIN document_triage.document_priority_score s USING (document_key)
-WHERE c.company_id = ANY(%(companies)s)
-  AND c.relevance >= %(minrel)s
+WHERE c.company_id = %(company)s
+  AND c.document_key = ANY(%(keys)s)
   AND r.queue = ANY(%(queues)s)
   AND r.near_dup_of IS NULL
   AND s.document_kind = 'html_page'
   AND s.url IS NOT NULL AND s.document_id IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM document_triage.document_duplicate_source d WHERE d.duplicate_document_id = s.document_id)
+  AND ((s.doc_date >= %(start)s AND s.doc_date <= %(latest)s)
+       OR ((s.doc_date IS NULL OR s.doc_date > %(latest)s) AND s.ingested_at >= %(start_text)s))
 """
+# The cheap first step (index dcss_company_idx): one company's document keys above the relevance threshold.
+COMPANY_KEYS_SQL = ("SELECT document_key FROM document_triage.document_company_signal_score "
+                    "WHERE company_id = %s AND relevance >= %s")
+KEY_BATCH = 2000             # keys per candidate query: index lookups only, well inside the DC statement timeout
 
 
-def fetch_candidates(dc, companies: list[str], minrel: float) -> list[dict]:
+def fetch_duplicate_ids(dc) -> set:
+    """document_ids that are exact duplicates of another source (document_duplicate_source). The table has no index on
+    duplicate_document_id, so a NOT EXISTS per candidate scanned the whole index once per row (the full --count-only hit the
+    DC statement timeout); one sequential read of the column (~550k ids, ~15 s) is far cheaper."""
+    cur = dc.cursor()
+    cur.execute("SELECT duplicate_document_id FROM document_triage.document_duplicate_source")
+    return {r[0] for r in cur.fetchall()}
+
+
+def fetch_candidates(dc, companies: list[str], minrel: float, start: date | None = None, today: date | None = None,
+                     dup_ids: set | None = None, log=print) -> list[dict]:
+    """Per company: keys above `minrel` (cheap), then the joined candidate rows in KEY_BATCH chunks with the date pre-filter
+    pushed into SQL (the same window effective_date() applies afterwards; a pre-filter only, never stricter), then exact
+    duplicates dropped in Python."""
     import psycopg2.extras
+    start = start or date(1990, 1, 1)
+    today = today or date.today()
+    if dup_ids is None:
+        dup_ids = fetch_duplicate_ids(dc)
     cur = dc.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(CANDIDATE_SQL, {"companies": companies, "minrel": minrel, "queues": list(QUEUES)})
-    return [dict(r) for r in cur.fetchall()]
+    kcur = dc.cursor()
+    out: list[dict] = []
+    for company in companies:
+        kcur.execute(COMPANY_KEYS_SQL, (company, minrel))
+        keys = [r[0] for r in kcur.fetchall()]
+        n0 = len(out)
+        for off in range(0, len(keys), KEY_BATCH):
+            cur.execute(CANDIDATE_SQL, {"company": company, "keys": keys[off:off + KEY_BATCH], "queues": list(QUEUES),
+                                        "start": start, "latest": today + timedelta(days=1), "start_text": start.isoformat()})
+            out.extend(dict(r) for r in cur.fetchall() if r["document_id"] not in dup_ids)
+        log(f"   {company}: {len(keys)} keys >= {minrel}, {len(out) - n0} candidates in the date pre-filter", flush=True)
+    return out
 
 
 def fetch_texts(dc, ids: list[str]) -> dict:
@@ -411,7 +443,8 @@ def run(args) -> int:
         if not use:
             print("no mapped competitor matches --competitor", args.competitor)
             return 2
-    cand = fetch_candidates(dc, list(use), args.min_relevance)
+    print(f"\n== candidates per company (from {start}, relevance >= {args.min_relevance})", flush=True)
+    cand = fetch_candidates(dc, sorted(use), args.min_relevance, start, today)
     from backend.sources import is_blocked
     blocked_docs = {r["document_key"] for r in cand if is_blocked(r["url"])}
     cand = [r for r in cand if r["document_key"] not in blocked_docs]   # before the cap, so the cap refills
@@ -625,6 +658,39 @@ def selftest() -> None:
     keep, stat = select_per_competitor(rows, 3)
     assert keep == {"d0", "d1", "d2", "d5", "d9"} and stat == {"A": (6, 3), "B": (2, 2)}
     assert "dc_corpus" in merge_triage_sql() and "source_kind <> 'dc_corpus'" in merge_triage_sql()
+
+    class _FakeCur:                      # fetch_candidates without a DC: keys step, batched candidate step, dup filter
+        def __init__(self, log):
+            self.log, self.rows = log, []
+
+        def execute(self, sql, params):
+            self.log.append((sql, params))
+            if sql == COMPANY_KEYS_SQL:
+                self.rows = [(f"k{i}",) for i in range(5)]
+            else:
+                self.rows = [{"document_key": k, "document_id": "id_" + k} for k in params["keys"]]
+
+        def fetchall(self):
+            return self.rows
+
+    class _FakeDC:
+        def __init__(self):
+            self.log = []
+
+        def cursor(self, cursor_factory=None):
+            return _FakeCur(self.log)
+
+    global KEY_BATCH
+    fake, kb = _FakeDC(), KEY_BATCH
+    KEY_BATCH = 2
+    try:
+        got = fetch_candidates(fake, ["acme"], 0.6, date(2026, 1, 25), date(2026, 10, 25), dup_ids={"id_k3"}, log=lambda *a, **k: None)
+    finally:
+        KEY_BATCH = kb
+    assert [r["document_key"] for r in got] == ["k0", "k1", "k2", "k4"]                  # k3 is an exact duplicate
+    cand_calls = [p for s, p in fake.log if s == CANDIDATE_SQL]
+    assert len(cand_calls) == 3 and cand_calls[0]["start_text"] == "2026-01-25" and cand_calls[0]["latest"] == date(2026, 10, 26)
+    assert "NOT EXISTS" not in CANDIDATE_SQL and "%(keys)s" in CANDIDATE_SQL
     assert set(CORPUS_TO_COMPETITOR) and len(set(CORPUS_TO_COMPETITOR.values())) == len(CORPUS_TO_COMPETITOR)
     print("selftest ok")
 

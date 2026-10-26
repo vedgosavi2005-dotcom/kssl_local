@@ -219,7 +219,13 @@
   .pg-legend-title{display:none}
   .pg-legend-box .lg{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;
     color:#cbd5e1;line-height:1.25;padding:2px 4px;border-radius:4px;pointer-events:none;cursor:default}
-  .pg-legend-box .nd{width:7.5px;height:7.5px;border-radius:50%;flex-shrink:0;display:inline-block}
+  /* 11px, not 7.5px: at 7.5px a 1.5px ring left a 4.5px centre, so "Joint venture" read as a
+     light-blue outline while its node is a dark disc with a light rim. At 11px the dark fill
+     shows as it does on the graph (functional test G14, 2026-10-25). */
+  .pg-legend-box .nd{width:11px;height:11px;border-radius:50%;flex-shrink:0;display:inline-block;box-sizing:border-box}
+  /* a timeline step's own source chip, beside the step (functional test G14, 2026-10-25) */
+  .pg-step-src{margin-left:4px}
+  .pg-step-src .srcchip{font-size:10px;padding:0 5px;max-width:200px;vertical-align:1px}
   .pg-legend-box .lg-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* node selection: highlight, do not bury */
   .pg-node.sel circle{stroke:#e8b04a;stroke-width:3}
@@ -273,14 +279,48 @@
   .pg-drawer-head{flex-shrink:0;padding:14px 20px 12px;font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:700;color:var(--d-txt-3);border-bottom:1px solid var(--d-bg-2)}
   .pgd-tab{flex:1;padding:13px 8px;font-size:12px;font-weight:600;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--d-txt-3);cursor:pointer;font-family:inherit}
   .pgd-tab.active{color:var(--d-txt);border-bottom-color:#c0892b}
-  .pg-drawer-body{flex:1;min-height:0;overflow-y:auto;padding:18px 20px;color:#161614}
+  /* the drawer scrolls as one (.pg-drawer-scroll): a body that scrolled on its own squeezed the tie card into a
+     strip above the review bars and kept a scrolled list's position when a tie opened (2026-10-25) */
+  .pg-drawer-body{flex:none;padding:18px 20px;color:#161614}
+  .pg-drawer-scroll > *{flex-shrink:0}
   /* back-to-competitor breadcrumb when viewing a tie */
   .pg-tie-back{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--d-txt-3);cursor:pointer;margin-bottom:12px;padding:5px 10px;border:1px solid var(--d-bg-2);border-radius:6px}
   .pg-tie-back:hover{background:var(--d-bg-2);color:var(--d-txt)}
   /* tie-level read card */
-  .tie-hero{margin-bottom:16px}
-  .tie-hero .th-name{font-size:17px;font-weight:700;line-height:1.25;margin-bottom:4px;color:#161614}
-  .tie-hero .th-meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:var(--d-txt-3)}
+  /* relationship side card (owner 2026-10-25, BLUF like the signal drawer): eyebrow + WHO <-> WHO, grey chips, the
+     one-line read, the actions between rules, then each tie as a numbered section (partners.js tieHtml) */
+  .tie-read{display:flex;flex-direction:column;color:var(--l-txt)}
+  .tie-read .eyebrow{display:block;margin-bottom:7px}
+  .tie-hero{padding:0 40px 14px 0}
+  .tie-hero .th-name{font-size:19px;font-weight:700;line-height:1.25;letter-spacing:-.01em;margin-bottom:10px;color:var(--l-txt)}
+  .tie-hero .th-meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .tie-chip{font-family:var(--mono);font-size:10.5px;font-weight:600;background:var(--l-bg-2);color:var(--l-txt-2);padding:3px 8px;border-radius:3px;overflow-wrap:anywhere}
+  .tie-read .tie-tag{margin-left:0;padding:3px 7px;background:var(--l-bg);color:var(--l-txt-3);border:1px solid var(--l-line-2)}
+  .tie-bluf{font-size:13.5px;line-height:1.6;color:var(--l-txt)}
+  .tie-bluf .dirpill{margin-left:3px;vertical-align:1px}
+  .tie-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px 0;border-top:1px solid var(--l-line);border-bottom:1px solid var(--l-line)}
+  .tie-act{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--l-txt-2);background:var(--l-bg);border:1px solid var(--l-line-2);border-radius:5px;padding:5px 10px;cursor:pointer}
+  .tie-act:hover{background:var(--l-bg-2);color:var(--l-txt)}
+  .tie-sec{display:flex;flex-direction:column;gap:16px;padding:18px 0;border-bottom:1px solid var(--l-line)}
+  .tie-sec:last-child{border-bottom:none}
+  .tie-sec-h{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+  .tie-sec-t{display:inline-flex;align-items:baseline;gap:8px;font-size:15px;font-weight:700;line-height:1.35}
+  .tie-sec-t .rmark{width:9px;height:9px;border-radius:50%;flex-shrink:0;align-self:center}
+  .tie-blk .cd-prose + .cd-prose{margin-top:4px}
+  /* the signal drawer's folded timeline inside a tie: aligned with the other blocks, no extra rule (owner 2026-10-26) */
+  .tie-sec > .ctx-sec.cd-fold{padding:0;border-bottom:none}
+  .tie-gtag{color:var(--l-txt-3);font-weight:600}
+  /* the client read: .cd-kssl's left border and tint (threat red, watch amber); no stance is neutral grey */
+  .tie-mean{padding:12px 14px}
+  .cd-kssl.kssl-none{border-left-color:var(--l-line-2);background:var(--l-bg-1)}
+  .cd-kssl.kssl-none .eyebrow{color:var(--l-txt-3)}
+  .tie-ov{padding:12px 14px;background:#fdf4dc;border:1px solid #ecd28a;border-radius:6px}
+  .tie-ov-fx{font-size:12px;color:var(--l-txt-3);margin-top:4px}
+  .tie-steps{margin:0;padding-left:18px;font-size:12.5px;line-height:1.55;color:var(--l-txt-2)}
+  .tie-step-k{color:var(--l-txt-3)}
+  .tie-facts{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:12px;padding:10px 0;border-top:1px solid var(--l-line);border-bottom:1px solid var(--l-line)}
+  .tie-facts .tk{color:var(--l-txt-3)}
+  .tie-facts .tv{color:var(--l-txt);font-weight:600;overflow-wrap:anywhere}
   .tie-rel-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 9px;border-radius:11px;background:var(--d-bg-2)}
   .tie-block{margin-bottom:14px}
   .tie-block .tb-l{font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;font-weight:700;display:block;margin-bottom:6px}

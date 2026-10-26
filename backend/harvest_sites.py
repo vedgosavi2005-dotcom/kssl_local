@@ -153,6 +153,53 @@ SITES: list[Site] = [
     S("raphe.com", "https://www.raphe.com/", "newsroom", "P3", "Raphe mPhibr", **NC),
     S("walchand.com", "https://www.walchand.com/", "newsroom", "P3", "Walchandnagar Industries", **NC),
     S("zentechnologies.com", "https://www.zentechnologies.com/media.php", "newsroom", "P3", "Zen Technologies", **NC),
+    # ---- company newsrooms added 2026-10-25 (owner: every competitor's sections filled; company history back to 2023 via
+    #      the newsroom's own feed / sitemap). Recipes found by --probe are in RECIPES; a site that fails stays listed with its reason.
+    S("saab.com", "https://www.saab.com/newsroom", "newsroom", "P2", "SAAB"),
+    S("kongsberg.com", "https://www.kongsberg.com/newsroom/", "newsroom", "P2", "KONGSBERG"),
+    S("nammo.com", "https://www.nammo.com/news/", "newsroom", "P2", "Nammo"),
+    S("patriagroup.com", "https://www.patriagroup.com/newsroom", "newsroom", "P2", "Patria"),
+    S("diehl.com", "https://new.diehl.com/defence/en/press-media/news", "newsroom", "P2", "Diehl Defence"),
+    S("mbda-systems.com", "https://www.mbda-systems.com/press-releases/", "newsroom", "P2", "MBDA"),
+    S("naval-group.com", "https://www.naval-group.com/en/news", "newsroom", "P2", "Naval Group"),
+    S("news.northropgrumman.com", "https://news.northropgrumman.com/news/releases", "newsroom", "P2", "Northrop Grumman"),
+    S("l3harris.com", "https://www.l3harris.com/newsroom", "newsroom", "P2", "L3Harris"),
+    S("rtx.com", "https://www.rtx.com/news", "newsroom", "P2", "RTX (Raytheon)"),
+    S("babcockinternational.com", "https://www.babcockinternational.com/news/", "newsroom", "P2", "Babcock"),
+    S("otokar.com.tr", "https://www.otokar.com.tr/en/news", "newsroom", "P2", "Otokar"),
+    S("supacat.com", "https://www.supacat.com/news/", "newsroom", "P2", "Supacat"),
+    S("idvgroup.com", "https://www.idvgroup.com/news", "newsroom", "P2", "IDV (Iveco Defence)"),
+    S("roshel.com", "https://roshel.com/news", "newsroom", "P2", "Roshel"),
+    S("paramountgroup.com", "https://www.paramountgroup.com/media-centre/", "newsroom", "P2", "Paramount Group"),
+    S("uvisionuav.com", "https://uvisionuav.com/news/", "newsroom", "P2", "UVision Air"),
+    S("hii.com", "https://hii.com/news/", "newsroom", "P2", "Huntington Ingalls Industries"),
+    S("tkmsgroup.com", "https://www.tkmsgroup.com/news", "newsroom", "P2", "Thyssenkrupp Marine Systems"),
+    S("iai.co.il", "https://www.iai.co.il/news-media", "newsroom", "P2", "Israel Aerospace Industries (IAI)"),
+    S("poongsan.co.kr", "https://www.poongsan.co.kr/eng/", "newsroom", "P2", "Poongsan"),
+    S("sigsauer.com", "https://www.sigsauer.com/press-releases", "newsroom", "P2", "SIG Sauer"),
+    S("brahmos.com", "https://www.brahmos.com/", "newsroom", "P2", "BrahMos Aerospace"),
+    S("knds.fr", "https://www.knds.fr/en/news", "newsroom", "P2", "Nexter (KNDS France)"),
+    S("hsw.pl", "https://www.hsw.pl/aktualnosci", "newsroom", "P2", "Huta Stalowa Wola (HSW)"),
+    S("sssdefence.com", "https://sssdefence.com/", "newsroom", "P2", "SSS Defence"),
+    S("kalashnikovgroup.ru", "https://en.kalashnikovgroup.ru/media", "newsroom", "P2", "Kalashnikov Concern"),
+    # ---- partner newsrooms added 2026-10-26 (owner: maximise partner links): the companies most often paired with a competitor in
+    #      staging.harvest_candidate / competitive_partnership. Not competitors: their pages are kept only when they name one.
+    S("edgegroup.ae", "https://www.edgegroup.ae/news", "newsroom", "P3", "EDGE Group", **NC),
+    S("boeing.mediaroom.com", "https://boeing.mediaroom.com/news-releases-statements", "newsroom", "P3", "Boeing", **NC),
+    S("thalesgroup.com", "https://www.thalesgroup.com/en/worldwide/press_release", "newsroom", "P3", "Thales", **NC),
+    S("embraer.com", "https://embraer.com/global/en/news", "newsroom", "P3", "Embraer", **NC),
+    S("navantia.es", "https://www.navantia.es/en/news/", "newsroom", "P3", "Navantia", **NC),
+    S("indracompany.com", "https://www.indracompany.com/en/noticias", "newsroom", "P3", "Indra", **NC),
+    S("hensoldt.net", "https://www.hensoldt.net/news/", "newsroom", "P3", "Hensoldt", **NC),
+    S("stengg.com", "https://www.stengg.com/en/newsroom/", "newsroom", "P3", "ST Engineering", **NC),
+    S("airbus.com", "https://www.airbus.com/en/newsroom/press-releases", "newsroom", "P3", "Airbus", **NC),
+    S("qinetiq.com", "https://www.qinetiq.com/en/news", "newsroom", "P3", "QinetiQ", **NC),
+    S("renk.com", "https://www.renk.com/en/press/press-releases", "newsroom", "P3", "RENK Group", **NC),
+    S("arquus-defense.com", "https://www.arquus-defense.com/news", "newsroom", "P3", "Arquus", **NC),
+    S("safran-group.com", "https://www.safran-group.com/news", "newsroom", "P3", "Safran", **NC),
+    S("fincantieri.com", "https://www.fincantieri.com/en/media/press-releases/", "newsroom", "P3", "Fincantieri", **NC),
+    S("wbgroup.pl", "https://www.wbgroup.pl/en/news/", "newsroom", "P3", "WB Group", **NC),
+    S("allisontransmission.com", "https://allisontransmission.com/company/news", "newsroom", "P3", "Allison Transmission", **NC),
     # ---- government (tier 1)
     S("pib.gov.in", "https://www.pib.gov.in/allRel.aspx", "gov", "gov", "PIB - Ministry of Defence", api="pib"),
     S("mod.gov.in", "https://mod.gov.in/", "gov", "gov", "Ministry of Defence, India"),
@@ -286,6 +333,48 @@ RECIPES: dict[str, dict] = {
     "nibe.in": dict(walled="Cloudflare challenge ('Just a moment...') on every URL - farm target"),
     "smpp.co.in": dict(skip="TLS certificate does not verify (self-signed chain); not bypassed - farm/manual target"),
     "tataadvancedsystems.com": dict(skip="media-centre redirects to /public/media-centre which is 404; no news pages in sitemap/home"),
+    # ---- newsrooms added 2026-10-25 (probe: python -m backend.harvest_sites --site X --probe --from 2023-01-01)
+    "saab.com": dict(methods=("sitemap",), link_re=r"^https://www\.saab\.com/(newsroom/(press-releases|stories)|markets/[a-z-]+/(press|stories))/20\d\d/",
+                     notes="English press releases + stories (the /sv/ /de/ ... copies are left out)"),
+    "kongsberg.com": dict(methods=("sitemap",), link_re=r"^https://www\.kongsberg\.com/news/(news-archive|stories)/20\d\d/"),
+    "patriagroup.com": dict(methods=("feed", "sitemap"), link_re=r"/newsroom/news/20\d\d/", notes="Finnish copies share the path (no language marker)"),
+    "diehl.com": dict(methods=("sitemap",), sitemaps=("https://new.diehl.com/sitemap.xml",), link_re=r"new\.diehl\.com/defence/en/press-media/news/.",
+                      cdomains=("new.diehl.com", "diehl.com"), notes="defence division only (the group sitemap also holds metering / aviation / controls)"),
+    "mbda-systems.com": dict(exclude_re=r"mbda-systems\.com/(fr|it|de|es|country-[a-z]+)/|/our-company/|/newsroom$"),
+    "naval-group.com": dict(methods=("feed", "sitemap"), link_re=r"^https://www\.naval-group\.com/en/(?!presse/|actualites)[a-z0-9-]{25,}$",
+                            notes="English releases only (/en/presse/ holds French slugs)"),
+    "news.northropgrumman.com": dict(methods=("sitemap",), exclude_re=r"northropgrumman\.com/(media-contacts|multimedia|news-stream|personnel-announcements)$",
+                                     notes="Next.js newsroom: only the sitemap's ~40 latest releases are reachable without JavaScript"),
+    "l3harris.com": dict(methods=("feed", "sitemap"), link_re=r"/newsroom/(press-release|editorial)/20\d\d/"),
+    "rtx.com": dict(methods=("sitemap",), link_re=r"^https://www\.rtx\.com/news/news-center/20\d\d/\d\d/\d\d/(?!rtxs?-(collins|pratt))",
+                    notes="RTX + Raytheon releases; Collins Aerospace / Pratt & Whitney (civil) items left out"),
+    "babcockinternational.com": dict(walled="http 403 on newsroom and feed (WAF) - farm target"),
+    "supacat.com": dict(walled="http 403 on newsroom and feed (WAF) - farm target"),
+    "iai.co.il": dict(walled="bot wall (http 247 challenge on every page) - farm target"),
+    "otokar.com.tr": dict(methods=("sitemap",), link_re=r"/news/daily-news/[a-z0-9-]+$"),
+    "paramountgroup.com": dict(methods=("sitemap",), link_re=r"/media-centre/news/[a-z0-9-]+/?$"),
+    "uvisionuav.com": dict(exclude_re=r"(engineer|manager|inspector|controller|technician|specialist|developer|analyst|planner|operator|"
+                                      r"assistant|coordinator|accountant|buyer|administrator|hands-on|-conference-)"),
+    "hii.com": dict(methods=("sitemap",), link_re=r"^https://hii\.com/news/[a-z0-9-]+$", exclude_re=r"hiring-event"),
+    "tkmsgroup.com": dict(link_re=r"/news/article/[a-z0-9-]+$", notes="tkms.com now points at an unrelated WordPress site; the group newsroom is tkmsgroup.com"),
+    "poongsan.co.kr": dict(skip="no English news listing (sitemap = 5 corporate pages); covered by DC corpus + Google News"),
+    "sigsauer.com": dict(skip="no press-release section (http 404 on /press-releases, /news, /sitemap.xml)"),
+    "brahmos.com": dict(skip="no news listing found (empty sitemap, /newsroom.php 404)"),
+    "knds.fr": dict(skip="redirects to knds.com, already harvested as the KNDS group newsroom"),
+    "hsw.pl": dict(link_re=r"/aktualnosci/"),
+    "sssdefence.com": dict(methods=("listing",), listing=("https://www.sssdefence.com/news",), list_max=1, external=True,
+                           notes="news page = press-coverage links to third-party articles (like adanidefence.com)"),
+    "kalashnikovgroup.ru": dict(skip="host unreachable from this PC (timeouts)"),
+    # partner newsrooms (2026-10-26)
+    "edgegroup.ae": dict(walled="http 403 on the newsroom (WAF) - farm target"),
+    "safran-group.com": dict(walled="http 403 on the newsroom (WAF) - farm target"),
+    "thalesgroup.com": dict(walled="bot wall on the press-release listing - farm target"),
+    "allisontransmission.com": dict(skip="no news listing found (http 404 on /company/news)"),
+    "embraer.com": dict(methods=("sitemap",), link_re=r"mediatype=NEWS&detail=\d+"),
+    "navantia.es": dict(methods=("sitemap",), link_re=r"/en/news/press-releases/."),
+    "fincantieri.com": dict(methods=("sitemap",), link_re=r"/en/newsroom/press-releases/."),
+    "renk.com": dict(methods=("sitemap",), link_re=r"/en/newsroom/news/."),
+    "indracompany.com": dict(methods=("sitemap",), link_re=r"indragroup\.com/en/news/.", cdomains=("indragroup.com",)),
 }
 
 
@@ -650,6 +739,8 @@ def extract_body(page_html: str) -> str:
 
 
 _TIME_RE = re.compile(r"""<time\b[^>]*?datetime\s*=\s*["']([^"']+)["']""", re.I)
+_SHOWN_RE = re.compile(r"""<\w+\b[^>]*?itemprop\s*=\s*["']datePublished["'][^>]*?(?:datetime|content)\s*=\s*["']([^"']+)["']"""
+                       r"""|<\w+\b[^>]*?(?:datetime|content)\s*=\s*["']([^"']+)["'][^>]*?itemprop\s*=\s*["']datePublished["']""", re.I)
 _DATE_CLASS_RE = re.compile(r"""<(\w+)\b[^>]*\b(?:class|itemprop)\s*=\s*["']([^"']*)["'][^>]*>\s*([^<]{4,60}?)\s*</\1>""", re.I)
 _DATE_LABEL_RE = re.compile(r">\s*(?:date|published(?:\s+on)?|posted(?:\s+on)?|release\s+date)\s*:\s*(?:</\w+>)?\s*([^<]{4,40}?)\s*<", re.I)
 _DATE_CLASS_NAME = re.compile(r"\b(date|publish\w*|posted|pubdate|datepublished)\b", re.I)
@@ -678,7 +769,11 @@ def read_page(page_html: str, final_url: str) -> Page:
     except Exception:
         pass
     d, src = None, ""
-    cands = [("meta", v) for k, v in m.meta if k in _DATE_META]
+    # 2026-10-25 (owner, test G6): the date PRINTED on the article, <time datetime itemprop="datePublished">, comes first: israeldefense.co.il
+    # moves article:published_time when it re-publishes (node 71464: meta 15 Oct, page 11 Oct). Only when the page prints one such date.
+    shown = {a or b for a, b in _SHOWN_RE.findall(page_html[:400_000]) if parse_date(a or b)}      # src "meta": a declared date
+    cands = [("meta", v) for v in shown][:1] if len({parse_date(v) for v in shown}) == 1 else []
+    cands += [("meta", v) for k, v in m.meta if k in _DATE_META]
     cands.append(("ld/meta", info.published))
     for o in _ld_objects(m.ld):
         for key in ("datePublished", "dateCreated", "uploadDate"):
@@ -1217,7 +1312,7 @@ def pull_pib(site, ctx, st):
 
 def pull_ddp(site, ctx, st):
     """ddpmod.gov.in: "What's New" is a table (title | PDF | language | publish date - end date); one notice per row."""
-    url = "https://www.ddpmod.gov.in/en/ministry/whats-new?items_per_page=50&page=0"
+    url = "https://www.ddpmod.gov.in/en/department/whats-new?items_per_page=50"
     r, why = ctx.get(url)
     if r is None:
         st.note += f" [api: {why}]"
@@ -1788,6 +1883,10 @@ def _selftest():
     clock = date.today().strftime("%B %d, %Y")
     p8 = read_page(f'<html><body><span class="header-date">{clock}</span><p>' + "Words " * 100 + '</p></body></html>', "https://z.test/story")
     assert p8.date is None or p8.date_src not in ("class", "label"), p8
+    # israeldefense.co.il: the re-publish stamp in article:published_time loses to the date printed on the page (G6, 2026-10-25)
+    idf = ('<html><head><meta property="article:published_time" content="2026-10-15T10:12:48+0300" /></head><body><h1>New USV</h1>'
+           '<time datetime="2026-10-11T21:31:00+03:00" itemprop="datePublished">11/10/2026</time><p>' + "Words " * 100 + '</p></body></html>')
+    assert read_page(idf, "https://www.israeldefense.co.il/en/node/71464").date == date(2026, 10, 11)
     # knds.com listing: Next.js flight data, escaped quotes; publishedAt (site settings) is never read
     emb = embedded_dates('self.__next_f.push([1,"{\\"publishedAt\\":\\"2025-09-11T13:14:04Z\\",\\"posts\\":{\\"data\\":[{\\"id\\":1,'
                          '\\"slug\\":\\"knds-a\\",\\"title\\":\\"A\\",\\"publicationDate\\":\\"2026-10-14\\"},'

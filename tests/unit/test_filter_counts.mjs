@@ -239,6 +239,23 @@ for (const [page, label, want, what] of [
   if (!missing.length && !padded.length) ok(`${page} ${what}: options are exactly what the rows carry`);
 }
 
+/* The revenue dropdowns hold the same rule: the "All" number counts the options. Profile
+   advertised its company count here ("All revenue tiers (49)" over 4 tiers) while
+   Products counted tiers (functional test G10, 2026-10-25). A disabled "no tier on
+   record" line is a note, not an option. */
+for (const [page, label] of [
+  ["profile", "Filter competitors by revenue"],
+  ["products", "Filter companies by revenue"],
+]) {
+  const opts = selectOptions(page, label);
+  if (!opts) { fail(`${page}: no revenue filter (aria-label "${label}")`); continue; }
+  const [all, ...rest] = opts;
+  const real = rest.filter((o) => !/^No revenue tier/.test(o));
+  const n = advertised(all);
+  if (n !== real.length) fail(`${page} revenue: advertises ${n}, offers ${real.length}`);
+  else ok(`${page} revenue: "${all}" over ${real.length} options`);
+}
+
 /* ------------------------------------------------------ 2. tender pipeline ---- */
 for (const [which, want] of [["country", WANT.openTenderCountries], ["cat", WANT.openTenderCats]]) {
   const rows = menuRows("tenders", which);

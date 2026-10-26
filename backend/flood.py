@@ -69,8 +69,10 @@ def candidate_id(competitor_id: str, url: str) -> str:
 
 
 def make_candidate(doc: dict, competitor_id: str) -> tuple:
+    from backend.news import host_of, strip_site_suffix
     via = "dc" if doc["source_kind"] == "dc_corpus" else "site"
-    return (candidate_id(competitor_id, doc["url"]), competitor_id, (doc["title"] or "").strip()[:300], doc["url"], doc["published_at"],
+    title = strip_site_suffix(doc["title"] or "", doc["source_name"] or "", host_of(doc["url"] or ""))   # "... | KNDS Group" -> the headline (G8)
+    return (candidate_id(competitor_id, doc["url"]), competitor_id, title.strip()[:300], doc["url"], doc["published_at"],
             (doc["source_name"] or None) and doc["source_name"][:200], doc["source_tier"], via)
 
 
@@ -84,10 +86,14 @@ def cmd_candidates(dry_run: bool) -> None:
                      AND cardinality(competitor_ids) > 0                                          -- partnership / project / moment never became company news AND length(coalesce(body_text, '')) >= %s
                      AND NOT (processed_by ? 'flood_candidate') ORDER BY published_at DESC NULLS LAST""", (MIN_BODY,))
     docs = cur.fetchall()
-    rows, ids, skipped = [], [], {"blocked": 0, "no_competitor": 0, "no_title": 0}
+    from backend.news import is_listing_page
+    rows, ids, skipped = [], [], {"blocked": 0, "no_competitor": 0, "no_title": 0, "listing_page": 0}
     for d in docs:
         if sources.is_blocked(d["url"]):
             skipped["blocked"] += 1
+            continue
+        if is_listing_page(d["url"], d["title"] or ""):          # a page that lists stories is not company news (G8 2026-10-25)
+            skipped["listing_page"] += 1
             continue
         if not (d["title"] or "").strip():
             skipped["no_title"] += 1
@@ -284,6 +290,8 @@ def _selftest() -> None:
     assert candidate_id(a, "https://x.test/1") == candidate_id(a, "https://x.test/1") != candidate_id(b, "https://x.test/1")
     assert make_candidate({"source_kind": "dc_corpus", "title": " T ", "url": "u", "published_at": None, "source_name": "S", "source_tier": "primary"}, a)[-1] == "dc"
     assert make_candidate({"source_kind": "gov", "title": "T", "url": "u", "published_at": None, "source_name": None, "source_tier": None}, a)[-1] == "site"
+    assert make_candidate({"source_kind": "dc_corpus", "title": "KNDS THL20 TURRETS SELECTED FOR INDIA | KNDS Group", "url": "https://knds.com/en/x",
+                           "published_at": None, "source_name": "knds.com", "source_tier": "primary"}, a)[2] == "KNDS THL20 TURRETS SELECTED FOR INDIA"
     assert order_index("Adani Defence & Aerospace") == 0 and order_index("unknown co") == len(PRIORITY)
     print("flood self-check ok")
 

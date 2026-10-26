@@ -64,7 +64,8 @@ for (const [name, make] of [["fixture", clone], ["empty ui tables", noUi]]) {
   assert.equal(tech.hideFilterButtons, true);
 
   const mk = d.overviewConfig.market;
-  assert.deepEqual(metricsFor(mk, "market", d).filter((x) => !x.blank).map((x) => x.l), ["Latest tenders", "Strong fits", "Tender value", "Perceived opportunities"]);
+  // "Strong-fit tenders" (was "Strong fits"): the stored count is tenders only (functional test G17, 2026-10-25)
+  assert.deepEqual(metricsFor(mk, "market", d).filter((x) => !x.blank).map((x) => x.l), ["Latest tenders", "Strong-fit tenders", "Tender value", "Perceived opportunities"]);
   assert.equal(mk.title, "Top opportunity");
   assert.deepEqual(mk.filters.map((f) => f.l), ["All", "Latest Tenders", "Perceived Opportunities"]);
   assert.deepEqual(mk.tagWord, { tender: "TENDER", opportunity: "OPPORTUNITY", requirement: "OPPORTUNITY" });

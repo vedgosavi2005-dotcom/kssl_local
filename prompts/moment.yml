@@ -56,6 +56,7 @@ subject:
         FROM staging.source_document d
         WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 120
           AND coalesce(d.body_text, '') <> ''
+          AND NOT coalesce((d.triage->>'listing')::boolean, false)   -- a page that lists stories is no source (G8: moves sourced to naval-group.com/en/news)
         ORDER BY (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment')) DESC,                       -- this lane's unread routed pages first, newest first (owner 2026-10-24)
                  CASE WHEN (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment')) THEN coalesce(d.published_at, d.fetched_at) END DESC NULLS LAST, CASE WHEN (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment')) THEN d.doc_id END,
                  (CASE WHEN d.triage->'route' ? 'moment' THEN 1 ELSE 0 END) DESC,
@@ -68,6 +69,7 @@ subject:
         FROM staging.source_document d
         WHERE '{{subject.competitor_id}}'::uuid = ANY(d.competitor_ids) AND coalesce(d.published_at::date, d.fetched_at::date) >= current_date - 120 AND coalesce(d.body_text, '') <> ''
           AND (d.triage->'route' ? 'moment' AND NOT (coalesce(d.processed_by, '{}'::jsonb) ? 'moment'))
+          AND NOT coalesce((d.triage->>'listing')::boolean, false)
         ORDER BY coalesce(d.published_at, d.fetched_at) DESC NULLS LAST, d.doc_id LIMIT 40 OFFSET 9
     - from: sql                  # 3. which views have stored rows for this competitor
       query: |
@@ -209,3 +211,4 @@ output:
 derive:
   - sources_filter          # drop what rests on a blocked source (wiki, blog, forum, social media, wire, aggregator)
   - moment_grade               # grade from the label of the signal the moment points at
+  - moment_news_category       # the company news list shows a news category (prompts/news_category.py, G5)

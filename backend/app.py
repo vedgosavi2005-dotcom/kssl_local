@@ -8,6 +8,8 @@ An empty database therefore produces empty arrays and maps throughout the UI.
 
 import json
 import os
+import threading
+import time
 import uuid as _uuid
 from typing import Any
 
@@ -18,11 +20,11 @@ from fastapi.responses import JSONResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
-from backend.areas import a_competitive, b_products, c_network, d_market_tech, e_ui_port
+from backend.areas import a_competitive, b_products, c_network, d_market_tech, e_ui_port, f_sipri
 from backend import review
 from backend.common import json_value
 
-AREAS = (a_competitive, b_products, c_network, d_market_tech, e_ui_port)  # a first: others read competitors
+AREAS = (a_competitive, b_products, c_network, d_market_tech, e_ui_port, f_sipri)  # a first: others read competitors
 
 
 # Two databases (db/make_databases.sh): the live backend reads the serving DB (KSSL_SERVING_DSN,
@@ -34,6 +36,7 @@ SOURCE_SCHEMA = {"ui": "staging_ui", "serving": "staging"} if REVIEW else {"ui":
 
 app = FastAPI(title="KSSL PostgreSQL Dataset API", docs_url=None, redoc_url=None)
 from backend.news import router as news_router; app.include_router(news_router)  # noqa: E402,E702
+from backend import auth  # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)      # the dataset JSON compresses ~5x
 app.add_middleware(
     CORSMiddleware,
@@ -50,6 +53,18 @@ async def writes_need_header(request, call_next):
     basic auth on the review host, or 127.0.0.1)."""
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-kssl-write") != "1":
         return JSONResponse(status_code=403, content={"detail": "writes need the X-KSSL-Write: 1 header"})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def signed_in_only(request, call_next):
+    """The API lock (backend/auth.py): with KSSL_LOGIN_REQUIRED=1 on the live API, data needs a sign-in session (or the
+    service token); the review API is never locked here (basic auth on its host)."""
+    if auth.required(REVIEW) and not auth.allowed(request.url.path, request.cookies.get(auth.COOKIE),
+                                                   request.headers.get("x-kssl-service")):
+        # no-store: a cache in front (CloudFront) must never keep a refusal and serve it to a signed-in user
+        return JSONResponse(status_code=401, content={"detail": "sign in first", "error": "sign in first"},
+                            headers={"Cache-Control": "no-store"})
     return await call_next(request)
 
 
@@ -95,6 +110,10 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
                                              -- raw layer / bookkeeping: prompt inputs, never displayed
                                              'tender_raw', 'source_document', 'news_candidate', 'prompt_run', 'spec_dictionary',
                                              'source_link')
+                      -- the SIPRI raw copy (db/setup/46_sipri_raw.sql), read by backend/sipri_geo.py / sipri_ui.py only; the two
+                      -- SIPRI setup tables (48_sipri_ui_tables.sql) are read
+                      AND table_name NOT IN ('sipri_arms_transfer', 'sipri_top100', 'sipri_top100_total', 'sipri_milex',
+                                             'sipri_export_value', 'sipri_armament', 'sipri_country', 'sipri_dataset')
                     ORDER BY table_name
                     """,
                     (source,),
@@ -193,16 +212,63 @@ def swap_links(o: Any, links: dict[str, str]) -> Any:
     return o
 
 
-@app.get("/api/dataset")
-def dataset():
-    try:
+# THE DATASET IS BUILT ONCE AND SERVED FROM MEMORY (2026-10-25): a build takes ~20 s (load, area builders, the spec sheets, the
+# review statuses) and FastAPI's encoder added more on 31 MB, so a busy machine passed the page's 30 s limit ("request to
+# /dataset timed out"). The JSON bytes are kept for DATASET_TTL_S and dropped at once by any write to /api/review* (an Approve
+# must show at once); a pipeline that writes the DB directly shows within the TTL. The first build starts with the API.
+# ponytail: one cache per process, one build at a time (a lock); per-key caching if the dataset ever gets parameters.
+DATASET_TTL_S = 60
+_dataset_cache: dict[str, Any] = {"at": 0.0, "body": None}
+_dataset_lock = threading.Lock()
+
+
+def _json_default(v: Any) -> Any:
+    out = json_value(v)
+    return out if out is not v else str(v)
+
+
+def _dataset_bytes() -> bytes:
+    with _dataset_lock:
+        if _dataset_cache["body"] is not None and time.monotonic() - _dataset_cache["at"] < DATASET_TTL_S:
+            return _dataset_cache["body"]
         database = load_all_tables()
         payload = build_dataset(database)
         payload["databaseSchema"] = load_schema_manifest()
         if REVIEW:
             with review.session() as (st, sv):
                 payload["review"] = review.statuses(st, sv)
-        return swap_links(payload, archive_links())
+        body = json.dumps(swap_links(payload, archive_links()), ensure_ascii=False, separators=(",", ":"),
+                          default=_json_default).encode("utf-8")
+        _dataset_cache.update(at=time.monotonic(), body=body)
+        return body
+
+
+def dataset_changed() -> None:
+    _dataset_cache["at"] = 0.0
+
+
+@app.on_event("startup")
+def _warm_dataset() -> None:
+    def warm():
+        try:
+            _dataset_bytes()
+        except Exception as exc:  # noqa: BLE001 -- the first request reports it
+            print(f"[dataset] warm-up failed: {exc}", flush=True)
+    threading.Thread(target=warm, daemon=True).start()
+
+
+@app.middleware("http")
+async def review_writes_refresh_dataset(request, call_next):
+    response = await call_next(request)
+    if request.method == "POST" and request.url.path.startswith("/api/review") and response.status_code < 400:
+        dataset_changed()
+    return response
+
+
+@app.get("/api/dataset")
+def dataset():
+    try:
+        return Response(content=_dataset_bytes(), media_type="application/json")
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(status_code=503, content={"error": f"PostgreSQL dataset unavailable: {exc}"})
 
@@ -347,15 +413,54 @@ def _password_ok(password: str, stored: str) -> bool:
         return False
 
 
+def _https(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+def _terms_ok(user: str) -> bool:
+    with connect() as conn, conn.cursor() as cur:
+        return auth.terms_accepted(cur, user)
+
+
 @app.post("/api/login")
-def login(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def login(request: Request, response: Response, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """A good password signs in: the session cookie (backend/auth.py) when the lock is configured, and whether this user has
+    accepted the current terms (the login page shows them first when not)."""
     if REVIEW:
         raise HTTPException(status_code=404, detail="the review site has no login")
     user = str(body.get("user") or "").strip()[:60]
     stored = _login_users().get(user)
     if not stored or not _password_ok(str(body.get("password") or ""), stored):
         raise HTTPException(status_code=401, detail="Wrong user or password")
-    return {"user": user}
+    if os.environ.get("KSSL_SESSION_SECRET"):
+        auth.set_cookie(response, user, _https(request))
+    return {"user": user, "termsAccepted": _terms_ok(user), "termsVersion": auth.TERMS_VERSION}
+
+
+@app.get("/api/session")
+def session(request: Request) -> dict[str, Any]:
+    """who is signed in (401 when nobody): the page asks at start-up instead of trusting its own storage"""
+    user = auth.user_of(request.cookies.get(auth.COOKIE)) if os.environ.get("KSSL_SESSION_SECRET") else None
+    if not user:
+        raise HTTPException(status_code=401, detail="not signed in")
+    return {"user": user, "termsAccepted": _terms_ok(user), "termsVersion": auth.TERMS_VERSION}
+
+
+@app.post("/api/terms/accept")
+def terms_accept(request: Request) -> dict[str, Any]:
+    user = auth.user_of(request.cookies.get(auth.COOKIE)) if os.environ.get("KSSL_SESSION_SECRET") else None
+    if not user:
+        raise HTTPException(status_code=401, detail="not signed in")
+    with connect() as conn, conn.cursor() as cur:
+        auth.accept_terms(cur, user, request.headers.get("user-agent"))
+        conn.commit()
+    return {"user": user, "termsAccepted": True, "termsVersion": auth.TERMS_VERSION}
+
+
+@app.post("/api/logout")
+def logout(response: Response) -> dict[str, Any]:
+    response.delete_cookie(auth.COOKIE, path="/")
+    return {"ok": True}
 
 
 @app.post("/api/track")

@@ -1,14 +1,17 @@
 import { srcChips } from "../../lib/html.js";
+import { cardSpecsFor, isComponent } from "../../lib/cardSlots";
 import { showCuratedSources } from "../../lib/sources.js";
 import { clientShort, clientName as clientFullName, isPresenceLabel } from "../../lib/client.js";
 import { Fragment, useState, useMemo, useEffect } from "react";
+import { categoryImage } from "../../lib/categoryImage";
+import { nameMatches } from "../../lib/nameMatch";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { revenueOptions, revenueTierOf } from "../../lib/revenueFacet";
 import { useData } from "../../state/DataProvider";
 import { companyNews, productNews, namesProduct, feedSplit, NEWS_GROUP_ORDER } from "../../lib/news";
 import { formatLabel, formatSectorName, formatProductName } from "../../lib/profile";
 import { threatOf } from "../../lib/threat";
-import { productSpecs, specValueWithUnit, specRows } from "../../lib/specs";
+import { productSpecs, specValueWithUnit, productSheet, rowText } from "../../lib/specs";
 import { unescapeEntities } from "../../lib/html";
 import { companyCountries, facetOptionsByName } from "../../lib/countryFacet";
 import Thumb from "../../components/thumb/Thumb.jsx";
@@ -40,6 +43,8 @@ function writePulse(k, v) {
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
 import { REVIEW, Review } from "../../components/review/Review.jsx";
+
+const DEV_STATUS = new Set(["in development", "prototype", "concept", "in trials"]);
 
 /* Catalogue category order (user 2026-10-18): alphabetical, the catch-all "Other" (and "—" = no category) last. */
 const LAST_CATS = ["Other", "—"];
@@ -170,10 +175,6 @@ export function sameCompany(a, b) {
   return hit === small.size;
 }
 
-/* The figures a product card leads with: the first four rows of the product's own stored specs. */
-function cardSpecs(p) {
-  return Object.entries((p && p.specs) || {}).slice(0, 4);
-}
 
 /* The matchup stored for a product (serving.competitive_matchup, linked by matchupId): both sides as the
    dataset names them and the stored verdict as the reason. A product with no stored matchup has no
@@ -400,7 +401,7 @@ export default function Products() {
     const tokens = q.split(/\s+/).filter(Boolean);
     return companyRoster.filter((c) => {
       if (tokens.length > 0) {
-        const fullText = `${c.name || ""} ${c.sector || ""} ${c.hq || ""} ${c.cid || ""}`.toLowerCase();
+        const fullText = `${c.name || ""}`.toLowerCase(); // visible name only, not the hidden id/sector (functional test G4, 2026-10-25)
         if (!tokens.every((tok) => fullText.includes(tok))) return false;
       }
       if (sidebarCountryFilter !== "all" && !(c.countries || []).includes(sidebarCountryFilter))
@@ -410,6 +411,24 @@ export default function Products() {
       return true;
     });
   }, [companyRoster, companyQuery, searchQuery, sidebarCountryFilter, sidebarCategoryFilter, sidebarRevenueFilter]);
+
+  /* GLOBAL PRODUCT SEARCH (owner 2026-10-25): the sidebar box also finds products of every company, listed under the
+     matching companies; a click opens that company and the product. Two letters at least; the first 40 hits. */
+  const productHits = useMemo(() => {
+    if (companyQuery.trim().length < 2) return [];
+    const out = [];
+    for (const r of companyRoster) {
+      for (const pp of (data.competitors[r.cid] || {}).products || []) {
+        const name = typeof pp === "string" ? pp : pp && (pp.name || pp.n);
+        if (pp && pp.umbrella) continue;                       // a hidden family card is not a search hit either
+        // each typed word must start a word of the name ("loc" finds LOCUST, not "Block 20"; owner 2026-10-25)
+        if (name && nameMatches(name, companyQuery))
+          out.push({ cid: r.cid, company: r.name, name: String(name), shown: (pp && pp.displayName) || String(name) });
+        if (out.length >= 40) return out;
+      }
+    }
+    return out;
+  }, [companyQuery, companyRoster, data]);
 
   // Selected company details
   const selectedCompany = useMemo(() => {
@@ -467,6 +486,7 @@ export default function Products() {
         return hit || null;
       };
       (coOwn.products || []).forEach((obj) => {
+        if (obj && obj.umbrella) return;   // a family card beside its variant cards: the variants are shown (owner 2026-10-25)
         const nm = (obj && obj.name) || "";
         const pk = prodKey(nm);
         if (!nm || seen.has(nm.toLowerCase()) || seenKeys.some((k) => k === pk)) return;
@@ -486,6 +506,10 @@ export default function Products() {
           status: obj.status || "",
           specs: obj.specs && typeof obj.specs === "object" ? obj.specs : {},
           features: obj.features && typeof obj.features === "object" ? obj.features : {},
+          sheet: obj.sheet || null,             // the presented spec sheet (backend/spec_sheet.py); the drawer reads it
+          kind: obj.kind || null,               // backend/product_kind.py: in_development / service / ... (null = a product)
+          vs: obj.vs || null,                   // product type (product_class): splits components from products (lib/cardSlots)
+          displayName: obj.displayName || "",   // the name only, for the drawer heading; `name` stays the join key
           specSources: Array.isArray(obj.sources) ? obj.sources : (obj.source_url ? [obj.source_url] : []),
           tier: obj.tier || null,
           reason: mu ? mu.reason || "" : "",
@@ -538,6 +562,7 @@ export default function Products() {
 
       (co.products || []).forEach((pName) => {
         const obj = typeof pName === "string" ? { name: pName } : pName || {};
+        if (obj.umbrella) return;   // a family card beside its variant cards: the variants are shown (owner 2026-10-25)
         const name = obj.name || obj.n || "";
         const pk = prodKey(name);
         if (name && !seen.has(name.toLowerCase()) && !seenKeys.some((k) => sameProduct(k, pk))) {
@@ -566,6 +591,10 @@ export default function Products() {
             status: obj.status || "",
             specs: obj.specs && typeof obj.specs === "object" ? obj.specs : {},
             features: obj.features && typeof obj.features === "object" ? obj.features : {},
+            sheet: obj.sheet || null,             // the presented spec sheet (backend/spec_sheet.py); the drawer reads it
+            kind: obj.kind || null,               // backend/product_kind.py: in_development / service / ... (null = a product)
+            vs: obj.vs || null,                   // product type (product_class): splits components from products (lib/cardSlots)
+            displayName: obj.displayName || "",   // the name only, for the drawer heading; `name` stays the join key
             specSources: Array.isArray(obj.sources) ? obj.sources : (obj.source_url ? [obj.source_url] : []),
             tier: obj.tier || null,
             reason: "",
@@ -605,20 +634,25 @@ export default function Products() {
       if (!catMatch) return false;
       if (!q) return true;
 
-      const nameMatch = p.name.toLowerCase().includes(q);
-      const catTextMatch = p.category.toLowerCase().includes(q);
-      const specMatch = Object.entries(p.specs).some(
-        ([k, v]) => k.toLowerCase().includes(q) || String(v).toLowerCase().includes(q)
-      );
-
-      return nameMatch || catTextMatch || specMatch;
+      // the product's NAME only (owner 2026-10-25: "only the product or the company name should come up", never a hit from the
+      // specs, description or other stored text); every typed word must start a word of the name
+      return nameMatches(`${p.displayName || ""} ${p.name || ""}`, q);
     });
   }, [companyProducts, productSearch, categoryFilter]);
 
   // Group filtered products by Category
+  /* IN DEVELOPMENT / TESTING (owner 2026-10-25): the categories hold the fielded products; a product whose stored lifecycle
+     status (prompts/product_status) says it is not built yet sits in its own section under them. */
+  const isDev = (p) => DEV_STATUS.has(String(p.status || "").toLowerCase()) || p.kind === "in_development";
+  /* SERVICES (owner 2026-10-25): MRO, upgrade, training or engineering offered as a service (backend/product_kind.py) sit in
+     their own section too; on the review site the kinds hidden from the client (test one-offs, programmes, non-products)
+     stay in the catalogue with a tag on the card. */
+  const isService = (p) => p.kind === "service" && !isDev(p);
+  const devProducts = useMemo(() => filteredCompanyProducts.filter(isDev), [filteredCompanyProducts]);
+  const serviceProducts = useMemo(() => filteredCompanyProducts.filter(isService), [filteredCompanyProducts]);
   const groupedProducts = useMemo(() => {
     const groups = {};
-    [...filteredCompanyProducts].sort((a, b) => catOrder(a.category || "—", b.category || "—")).forEach((p) => {
+    [...filteredCompanyProducts].filter((p) => !isDev(p) && !isService(p)).sort((a, b) => catOrder(a.category || "—", b.category || "—")).forEach((p) => {
       /* British spelling, as formatCategoryTitle's own default -- this literal was the
          one American one left, so a product with no band grouped under "Defense
          Systems" beside "Defence Systems" headings everywhere else (FE 18). */
@@ -711,19 +745,20 @@ export default function Products() {
          claims to copy. The formatter this line used to name has never existed in
          this repo -- the ReferenceError threw inside a useMemo that runs on every
          render, so the whole Products view rendered nothing. */
-      const specRows = Object.entries(selectedProduct.specs || {}).map(([k, v]) => [k, String(v)]);
+      /* the same sections, rows and labels as the sheet on screen (productSheet), so the export cannot disagree with it */
+      const sheet = productSheet(selectedProduct);
+      const shownName = selectedProduct.displayName || selectedProduct.name;
       const newsRows = productNewsArticles.map((a) => [a.title, [a.source, a.ago, a.category].filter(Boolean).join(" · ")]);
       return {
-        title: `${selectedCompany.name} - ${selectedProduct.name}`,
+        title: `${selectedCompany.name} - ${shownName}`,
         subtitle: `${selectedProduct.category} · product technical specification`,
         sections: [
-          ...(selectedProduct.description ? [{ h: "Description", rows: selectedProduct.description.split("\n").filter(Boolean) }] : []),
-          {
-            h: "Technical specifications",
-            rows: specRows.length ? specRows : [`No measured figures are held for ${selectedProduct.name}.`],
-          },
-          ...(Object.keys(selectedProduct.features || {}).length
-            ? [{ h: "Features and capabilities", rows: Object.entries(selectedProduct.features).map(([k, v]) => [k, String(v)]) }]
+          ...(sheet.description.length ? [{ h: "Description", rows: sheet.description }] : []),
+          ...(sheet.sections.length
+            ? sheet.sections.map((s) => ({ h: s.title, rows: s.rows.map((r) => [r.label, rowText(r)]) }))
+            : [{ h: "Technical specifications", rows: [`No measured figures are held for ${shownName}.`] }]),
+          ...(sheet.features.length
+            ? [{ h: "Features and capabilities", rows: sheet.features.map((r) => (r.label ? [r.label, rowText(r)] : rowText(r))) }]
             : []),
           {
             h: `Latest news naming ${selectedProduct.name} (${productNewsArticles.length})`,
@@ -786,6 +821,73 @@ export default function Products() {
       selection: `${selectedCompany.name} Products`,
     });
   }, [setScope, selectedCompany]);
+
+  const oneCat = categoryFilter !== "all" && !productSearch.trim();   // inside one category, opened from its card
+  const categoryCard = ([catName, prodList]) => (
+    <button type="button" key={catName} className="product-card cat-card" onClick={() => setCategoryFilter(catName)}
+      title={`Open ${catName}`}
+      style={{ display: "flex", flexDirection: "column", textAlign: "left", background: "var(--d-bg-1)", border: "1px solid var(--d-line)",
+               borderRadius: "12px", cursor: "pointer", font: "inherit" }}>
+      {categoryImage(catName) ? <img className="cat-img" src={categoryImage(catName)} alt="" loading="lazy" /> : null}
+      <span className="cat-n">{catName}</span>
+      <span className="cat-c">{prodList.length} product{prodList.length === 1 ? "" : "s"}</span>
+      <span className="cat-ex">{prodList.slice(0, 3).map((p) => p.displayName || p.name).join(" · ")}{prodList.length > 3 ? " …" : ""}</span>
+    </button>
+  );
+  /* the development section by category too (owner 2026-10-25): cards on the company view, products once a category is open */
+  const byCategory = (list) => list.reduce((g, p) => ({ ...g, [p.category || "—"]: [...(g[p.category || "—"] || []), p] }), {});
+  const devGroups = byCategory(devProducts);
+  const serviceGroups = byCategory(serviceProducts);
+  const KIND_TAG = { test_asset: "Test asset", programme: "Programme", not_product: "Not a product" };
+  const productCard = (p) => (
+                        <div
+                          key={p.id}
+                          onClick={() => setSelectedProduct(p)}
+                          role="button"
+                          tabIndex={0}
+                          title={`Open ${p.name}`}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setSelectedProduct(p);
+                            }
+                          }}
+                          className="product-card"
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            justifyContent: "space-between",
+                            background: "var(--d-bg-1)",
+                            border: "1px solid var(--d-line)",
+                            borderRadius: "12px",
+                            overflow: "hidden",
+                            cursor: "pointer",
+                            transition: "transform .15s, box-shadow .15s, border-color .15s",
+                          }}
+                        >
+                          {oneCat && !KIND_TAG[p.kind] ? null : (
+                          <div className="pc-head">
+                            {oneCat ? null : <span className="pc-tag">{p.category || "—"}</span>}
+                            {KIND_TAG[p.kind] ? <span className="pc-tag pc-kind">{KIND_TAG[p.kind]}</span> : null}
+                          </div>
+                          )}
+                          <div className="pc-name" title={p.name}>{p.displayName || p.name}{p.status ? ` (${p.status})` : ""}</div>
+                          <dl className="pc-specs">
+                            {/* the same four labels on every card of a category (owner 2026-10-26): lib/cardSlots */}
+                            {cardSpecsFor(p).map(([k, v]) => (
+                              <div className="pc-spec" key={k}>
+                                <dt>{k}</dt>
+                                <dd title={v}>{v}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                          <div className="pc-foot">
+                            <span className="pc-dc" />
+                            <Review src={p._src} />
+                            <span className="pc-view">View specs →</span>
+                          </div>
+                        </div>
+  );
 
   return (
     <div className="pos-view v-products" style={{ gridTemplateColumns: "300px 1fr" }}>
@@ -853,7 +955,7 @@ export default function Products() {
             <span className="si">⌕</span>
             <input
               type="text"
-              placeholder="Search company…"
+              placeholder="Search company or product…"
               value={companyQuery}
               onChange={(e) => setCompanyQuery(e.target.value)}
             />
@@ -901,8 +1003,19 @@ export default function Products() {
               </span>
             </div>
           ))}
-          {!filteredCompanyRoster.length && (
-            <div className="cp-empty">no company matches “{companyQuery}”</div>
+          {productHits.length ? (
+            <>
+              <div className="ps-hits-h">Products ({productHits.length}{productHits.length >= 40 ? "+" : ""})</div>
+              {productHits.map((h) => (
+                <button type="button" className="ps-hit" key={`${h.cid}|${h.name}`}
+                  onClick={() => { setSelectedCid(h.cid); setSelectedProduct(null); setProductSearch(""); setCategoryFilter("all"); setPendingProduct(h.name); }}>
+                  {h.shown}<small>{h.company}</small>
+                </button>
+              ))}
+            </>
+          ) : null}
+          {!filteredCompanyRoster.length && !productHits.length && (
+            <div className="cp-empty">no company or product matches “{companyQuery}”</div>
           )}
         </div>
       </div>
@@ -942,7 +1055,8 @@ export default function Products() {
               >
                 <div>
                   <h3 style={{ fontSize: "20px", fontWeight: "700", color: "#ffffff", margin: 0 }}>
-                    {selectedCompany.name} - {selectedProduct.name}
+                    {/* the name only (owner 2026-10-25): company, role, customer and status text stay out of the heading */}
+                    {selectedCompany.name} - {selectedProduct.displayName || selectedProduct.name}
                     {selectedProduct.status ? ` (${selectedProduct.status})` : ""}
                   </h3>
                   <Review src={selectedProduct._src} />
@@ -970,130 +1084,101 @@ export default function Products() {
               </div>
 
 
-              {/* 1. DESCRIPTION (the product spec workbook's Description column, one line per point) */}
-              {selectedProduct.description ? (
-                <div>
-                  <div
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: "12px",
-                      letterSpacing: ".1em",
-                      textTransform: "uppercase",
-                      color: "var(--d-txt)",
-                      fontWeight: "700",
-                      marginBottom: "14px",
-                      paddingBottom: "8px",
-                      borderBottom: "1px solid var(--d-line)",
-                    }}
-                  >
-                    Description
-                  </div>
-                  <ul style={{ margin: 0, paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {selectedProduct.description.split("\n").filter(Boolean).map((line, i) => (
-                      <li key={i} style={{ fontSize: "13px", lineHeight: 1.55, color: "var(--d-txt)" }}>{line}</li>
-                    ))}
+              {/* THE SPEC SHEET (owner 2026-10-25): the API's presented sheet (backend/spec_sheet.py) -- Description, Key
+                  specifications in the category's standard order, Other specifications, Armament (a platform's carried
+                  weapons), Features and capabilities. Every row has a label; a packed value is one row with a list in the
+                  value cell. No placeholder, pipeline or source text reaches it (sources stay in Trace). */}
+              {(() => {
+                const sheet = productSheet(selectedProduct);
+                const head = {
+                  fontFamily: "var(--mono)",
+                  fontSize: "12px",
+                  letterSpacing: ".1em",
+                  textTransform: "uppercase",
+                  color: "var(--d-txt)",
+                  fontWeight: "700",
+                  marginBottom: "14px",
+                  paddingBottom: "8px",
+                  borderBottom: "1px solid var(--d-line)",
+                };
+                const cell = (r) => (r.values ? (
+                  <ul style={{ margin: 0, paddingLeft: "16px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {r.values.map((v, i) => <li key={i}>{v}</li>)}
                   </ul>
-                </div>
-              ) : null}
+                ) : r.value);
+                return (
+                  <>
+                    {/* 1. DESCRIPTION (the product spec workbook's Description column, one line per point) */}
+                    {sheet.description.length ? (
+                      <div>
+                        <div style={head}>Description</div>
+                        <ul style={{ margin: 0, paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {sheet.description.map((line, i) => (
+                            <li key={i} style={{ fontSize: "13px", lineHeight: 1.55, color: "var(--d-txt)" }}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
 
-              {/* 2. TECHNICAL SPECIFICATIONS */}
-              <div>
-                <div
-                  style={{
-                    fontFamily: "var(--mono)",
-                    fontSize: "12px",
-                    letterSpacing: ".1em",
-                    textTransform: "uppercase",
-                    color: "var(--d-txt)",
-                    fontWeight: "700",
-                    marginBottom: "14px",
-                    paddingBottom: "8px",
-                    borderBottom: "1px solid var(--d-line)",
-                  }}
-                >
-                  Technical specifications
-                </div>
-
-                <div
-                  style={{
-                    border: "1px solid var(--d-line)",
-                    borderRadius: "6px",
-                    overflow: "hidden",
-                  }}
-                >
-                  {specRows((selectedProduct && selectedProduct.specs) || {}).map((r, idx, arr) => r.caption ? (
-                    /* a caveat the source attached to the figures below it */
-                    <div
-                      key={`c${idx}`}
-                      style={{
-                        padding: "10px 18px",
-                        background: "var(--d-bg-1)",
-                        borderBottom: "1px solid var(--d-line)",
-                        fontSize: "12px",
-                        fontStyle: "italic",
-                        color: "var(--d-txt-3)",
-                      }}
-                    >
-                      {r.caption}
-                    </div>
-                  ) : (
-                    <div
-                      key={idx}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "220px 1fr",
-                        gap: "16px",
-                        padding: "12px 18px",
-                        background: idx % 2 === 0 ? "var(--d-bg-2)" : "var(--d-bg-1)",
-                        borderBottom: idx < arr.length - 1 ? "1px solid var(--d-line)" : "none",
-                        fontSize: "13px",
-                        alignItems: "center",
-                      }}
-                    >
-                      <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600" }}>
-                        {r.label}
-                      </span>
-                      <span style={{ color: "#ffffff", fontWeight: "600" }}>
-                        {r.value}
-                      </span>
-                    </div>
-                  ))}
-                  {/* no measured figure on record (the product's stated features, if any, are listed below) */}
-                  {!Object.keys((selectedProduct && selectedProduct.specs) || {}).length ? (
-                    <div style={{ padding: "12px 18px", fontSize: "13px", color: "var(--d-txt-3)" }}>
-                      No measured figures on record for this product.
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-
-              {/* 2b. FEATURES AND CAPABILITIES: the descriptive spec rows (the backend splits them from the measured figures) */}
-              {Object.keys(selectedProduct.features || {}).length ? (
-                <div>
-                  <div
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: "12px",
-                      letterSpacing: ".1em",
-                      textTransform: "uppercase",
-                      color: "var(--d-txt)",
-                      fontWeight: "700",
-                      marginBottom: "14px",
-                      paddingBottom: "8px",
-                      borderBottom: "1px solid var(--d-line)",
-                    }}
-                  >
-                    Features and capabilities
-                  </div>
-                  <ul style={{ margin: 0, paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {Object.entries(selectedProduct.features).map(([label, val]) => (
-                      <li key={label} style={{ fontSize: "13px", lineHeight: 1.55, color: "var(--d-txt)" }}>
-                        <span style={{ color: "var(--d-txt-3)", fontWeight: 600 }}>{label}: </span>{val}
-                      </li>
+                    {/* 2. KEY / OTHER SPECIFICATIONS, ARMAMENT */}
+                    {sheet.sections.map((s) => (
+                      <div key={s.key}>
+                        <div style={head}>{s.title}</div>
+                        <div style={{ border: "1px solid var(--d-line)", borderRadius: "6px", overflow: "hidden" }}>
+                          {s.rows.map((r, idx, arr) => (
+                            <div
+                              key={idx}
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns: "220px 1fr",
+                                gap: "16px",
+                                padding: "12px 18px",
+                                background: idx % 2 === 0 ? "var(--d-bg-2)" : "var(--d-bg-1)",
+                                borderBottom: idx < arr.length - 1 ? "1px solid var(--d-line)" : "none",
+                                fontSize: "13px",
+                                alignItems: r.values ? "start" : "center",
+                              }}
+                            >
+                              <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--d-txt-3)", fontWeight: "600" }}>
+                                {r.label}
+                              </span>
+                              <span style={{ color: "#ffffff", fontWeight: "600" }}>{cell(r)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     ))}
-                  </ul>
-                </div>
-              ) : null}
+                    {/* no measured figure on record (the product's stated features, if any, are listed below) */}
+                    {!sheet.sections.length ? (
+                      <div>
+                        <div style={head}>Key specifications</div>
+                        <div style={{ border: "1px solid var(--d-line)", borderRadius: "6px", padding: "12px 18px", fontSize: "13px", color: "var(--d-txt-3)" }}>
+                          No measured figures on record for this product.
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* 2b. FEATURES AND CAPABILITIES: the descriptive rows (the backend splits them from the measured figures) */}
+                    {sheet.features.length ? (
+                      <div>
+                        <div style={head}>Features and capabilities</div>
+                        <ul style={{ margin: 0, paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {sheet.features.map((r, i) => (
+                            <li key={i} style={{ fontSize: "13px", lineHeight: 1.55, color: "var(--d-txt)" }}>
+                              {r.label ? <span style={{ color: "var(--d-txt-3)", fontWeight: 600 }}>{r.label}: </span> : null}
+                              {r.values ? (
+                                <ul style={{ margin: "4px 0 0", paddingLeft: "16px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                                  {r.values.map((v, j) => <li key={j}>{v}</li>)}
+                                </ul>
+                              ) : r.value}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
 
               {/* 2c. SOURCES: a product record is curated, so its sources show on the review site only (lib/sources.js) */}
               {showCuratedSources && selectedProduct ? (() => {
@@ -1360,7 +1445,7 @@ export default function Products() {
               <div style={{ display: "flex", gap: "10px", alignItems: "center", marginLeft: "auto", flexWrap: "wrap" }}>
                 <input
                   type="text"
-                  placeholder="Search products or specs..."
+                  placeholder="Search products..."
                   value={productSearch}
                   onChange={(e) => setProductSearch(e.target.value)}
                   style={{
@@ -1404,14 +1489,25 @@ export default function Products() {
               </div>
             </div>
 
-            {/* LINE BY LINE PRODUCTS LIST GROUPED BY CATEGORY */}
+            {/* CATEGORIES FIRST (owner 2026-10-25): a company opens on one card per category; a click opens that category's
+                products by setting the category filter, and "All categories" comes back here. A product search skips the cards. */}
+            {!productSearch.trim() && categoryFilter === "all" ? (
+              <div className="product-cards-grid">
+                {Object.entries(groupedProducts).map(categoryCard)}
+              </div>
+            ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "40px" }}>
-              {Object.keys(groupedProducts).length > 0 ? (
+              {categoryFilter !== "all" && !productSearch.trim() ? (
+                <button type="button" className="cat-back" onClick={() => setCategoryFilter("all")}>← All categories</button>
+              ) : null}
+              {Object.keys(groupedProducts).length > 0 || devProducts.length ? (
                 Object.entries(groupedProducts).map(([catName, prodList]) => {
                   const open = !collapsedCats.has(catName);
                   return (
                   <div key={catName} style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
-                    {/* Category Title -- click to collapse / expand this category's list */}
+                    {/* Category Title -- click to collapse / expand this category's list; not drawn inside one category, which its
+                        card already named (owner 2026-10-25) */}
+                    {oneCat ? null : (
                     <button
                       type="button"
                       onClick={() => toggleCat(catName)}
@@ -1435,64 +1531,26 @@ export default function Products() {
                         {prodList.length}
                       </span>
                     </button>
+                    )}
 
-                    {/* Product cards: 3 cards in one row, name at top and view specs at the bottom corner (no image) */}
-                    {open ? (
-                    <div
-                      className="product-cards-grid"
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                        gap: "28px",
-                      }}
-                    >
-                      {prodList.map((p) => (
-                        <div
-                          key={p.id}
-                          onClick={() => setSelectedProduct(p)}
-                          role="button"
-                          tabIndex={0}
-                          title={`Open ${p.name}`}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              setSelectedProduct(p);
-                            }
-                          }}
-                          className="product-card"
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            justifyContent: "space-between",
-                            background: "var(--d-bg-1)",
-                            border: "1px solid var(--d-line)",
-                            borderRadius: "12px",
-                            overflow: "hidden",
-                            cursor: "pointer",
-                            transition: "transform .15s, box-shadow .15s, border-color .15s",
-                          }}
-                        >
-                          <div className="pc-head">
-                            <span className="pc-tag">{p.category || "—"}</span>
-                          </div>
-                          <div className="pc-name" title={p.name}>{p.name}{p.status ? ` (${p.status})` : ""}</div>
-                          <dl className="pc-specs">
-                            {cardSpecs(p).map(([k, v]) => (
-                              <div className="pc-spec" key={k}>
-                                <dt>{k}</dt>
-                                <dd title={v}>{v}</dd>
-                              </div>
-                            ))}
-                          </dl>
-                          <div className="pc-foot">
-                            <span className="pc-dc" />
-                            <Review src={p._src} />
-                            <span className="pc-view">View specs →</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    ) : null}
+                    {/* Product cards: 4 cards in one row (profile.css), name at top and view specs at the bottom corner (no image) */}
+                    {/* the category's own products, then the parts and add-ons for them (a sight, a fuze, an aerostructure):
+                        owner 2026-10-26, "a red dot sight was put in Small Arms" */}
+                    {open || oneCat ? (() => {
+                      const main = prodList.filter((p) => !isComponent(p));
+                      const parts = prodList.filter(isComponent);
+                      return (
+                        <>
+                          {main.length ? <div className="product-cards-grid" style={{ display: "grid" }}>{main.map(productCard)}</div> : null}
+                          {parts.length ? (
+                            <>
+                              <div className="pc-sub-h"><span>Components &amp; accessories</span><span className="pc-sub-n">{parts.length}</span></div>
+                              <div className="product-cards-grid" style={{ display: "grid" }}>{parts.map(productCard)}</div>
+                            </>
+                          ) : null}
+                        </>
+                      );
+                    })() : null}
                   </div>
                   );
                 })
@@ -1512,6 +1570,42 @@ export default function Products() {
                 </div>
               )}
             </div>
+            )}
+
+            {devProducts.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "18px", marginTop: "40px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", borderBottom: "1px solid var(--d-line)", paddingBottom: "10px" }}>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: "13px", color: "var(--d-txt)", fontWeight: "600", letterSpacing: ".06em", textTransform: "uppercase" }}>
+                    In development and testing
+                  </span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", background: "var(--d-bg-2)", border: "1px solid var(--d-line)", padding: "1px 7px", borderRadius: "10px" }}>
+                    {devProducts.length}
+                  </span>
+                </div>
+                <div className="product-cards-grid">
+                  {categoryFilter === "all" && !productSearch.trim()
+                    ? Object.entries(devGroups).sort(([a], [b]) => catOrder(a, b)).map(categoryCard)
+                    : devProducts.map(productCard)}
+                </div>
+              </div>
+            ) : null}
+            {serviceProducts.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "18px", marginTop: "40px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", borderBottom: "1px solid var(--d-line)", paddingBottom: "10px" }}>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: "13px", color: "var(--d-txt)", fontWeight: "600", letterSpacing: ".06em", textTransform: "uppercase" }}>
+                    Services
+                  </span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", background: "var(--d-bg-2)", border: "1px solid var(--d-line)", padding: "1px 7px", borderRadius: "10px" }}>
+                    {serviceProducts.length}
+                  </span>
+                </div>
+                <div className="product-cards-grid">
+                  {categoryFilter === "all" && !productSearch.trim()
+                    ? Object.entries(serviceGroups).sort(([a], [b]) => catOrder(a, b)).map(categoryCard)
+                    : serviceProducts.map(productCard)}
+                </div>
+              </div>
+            ) : null}
           </>
         )}
       </div>

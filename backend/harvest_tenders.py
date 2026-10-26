@@ -147,7 +147,7 @@ def taxonomy():
                 else:
                     new.append((kind, m))
             for kw in weak.get(key, []):
-                new.append(("stem", re.compile(r"" + re.escape(fold(kw)))))
+                new.append(("stem", re.compile(r"\b" + re.escape(fold(kw)))))
             for kw in extra.get(key, []):
                 f = fold(kw)
                 if f in COMPOUND:        # German compounds: the stem is the END of the word ("artilleriemunition")

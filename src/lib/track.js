@@ -254,9 +254,10 @@ function start() {
     if (!loginSession || !user()) return;
     const last = Number(ls("kssl_last_active") || 0);
     if (last && Date.now() - last > LOGIN_IDLE_MS && endSession("idle", last)) {
-      ls("kssl_user", null);                     // auto logout (lib/login.js logout() does the same: clear the user, reload)
+      ls("kssl_user", null);                     // auto logout (lib/login.js logout() does the same: drop the session, reload)
       flush(true);
-      setTimeout(() => location.reload(), 300);
+      fetch("/api/logout", { method: "POST", headers: { "X-KSSL-Write": "1" } }).catch(() => {})
+        .finally(() => setTimeout(() => location.reload(), 300));
     }
   };
   if (loginSession && !user()) endSession("logout");                     // the user logged out: the app reloaded without one

@@ -121,6 +121,9 @@ export const REGIONS = /^(the )?(europe|africa|asia|middle east|latin america|so
 const REGION_ROWS = new Set(["Africa", "Europe", "Asia", "Middle East",
   "Latin America", "South America", "North America", "Global", "Worldwide"]);
 
+/* every spelling the table knows as a country (lib/projects.projectCountries reads customer text against it) */
+export const geoCountryNames = () => Object.keys(COUNTRY_COORDS);
+
 export function geoCountryCoords(countryName) {
   if (!countryName) return null;
   if (COUNTRY_COORDS[countryName]) return COUNTRY_COORDS[countryName];

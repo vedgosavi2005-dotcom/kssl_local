@@ -27,11 +27,17 @@
 .device-gate-box p { margin: 0 0 10px; font-size: 16px; }
 .device-gate-sub { color: #9a9a96; font-size: 14px !important; }
 /* temporary login (components/login/Login.jsx) */
-.login-box { display: flex; flex-direction: column; gap: 12px; text-align: left; width: 320px; }
-.login-box b { text-align: center; }
-.login-box label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #9a9a96; }
-.login-box input { background: #1d1d21; color: #e8e8e6; border: 1px solid #3a3a40; padding: 9px 10px; font-size: 14px; }
-.login-box button { background: #2a2a30; color: #fff; border: 1px solid #55555c; padding: 9px; font-size: 14px; cursor: pointer; }
-.login-box button:disabled { opacity: .5; cursor: default; }
-.login-err { color: #ff8a80; margin: 0; font-size: 13px; }
 .statusbox.user button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; padding: 0 0 0 6px; }
+
+/* the Ask Parallax widget (#pa-root) never shows over the loading / error screen (state/DataProvider.jsx) */
+body.kssl-booting #pa-root { display: none !important; }
+
+/* Paragraph text is justified across the app, like Ctrl+J in a document (owner 2026-10-26): every multi-line prose
+   block in the drawers, cards and profiles. Short labels, chips, titles and table cells are not prose and stay as they are. */
+.cd-prose, .cd-summary, .cd-bullets li, .cp-prose, .cp-body p, .sowhat, .ln-story-desc, .tie-read, .tie-bluf,
+.tgb-read, .tgb-lede, .ws-summary, .ga-acc-body, .gv-body, .gv-thesis-body, .gr-body, .lead-body, .an-body,
+.mug-desc, .pp2-desc, .tp-comp-desc, .sheet-text, .rk-summary, .rk-why, .rk-reading, .fc-summary, .gc-blk,
+.proj-gate-desc, .cm-desc, .cm-why, .ev-sum, .pj-e, .login-modal-body p {
+  text-align: justify;
+  hyphens: auto;
+}

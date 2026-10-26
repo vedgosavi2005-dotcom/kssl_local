@@ -81,6 +81,10 @@ build "$SRV" db/setup/04_serving_db.sql
 "${PSQL[@]}" -d "$SRV" < db/setup/32_activity_replay.sql       # activity.event: user_id, move / scroll (review session replay)
 "${PSQL[@]}" -d "$SRV" < db/setup/36_activity_sessions.sql     # activity.event: login / logout, v_login_sessions
 "${PSQL[@]}" -d "$SRV" < db/setup/37_activity_recording.sql    # activity.recording: page recordings (rrweb) for exact replay
+"${PSQL[@]}" -d "$SRV" < db/setup/42_terms_acceptance.sql      # activity.terms_acceptance: who accepted the login terms (live only)
+"${PSQL[@]}" -d "$STG" < db/setup/43_product_kind.sql          # competitive_product.product_kind (staging + serving schemas)
+"${PSQL[@]}" -d "$SRV" < db/setup/43_product_kind.sql
+"${PSQL[@]}" -d "$SRV" < db/setup/44_product_class_serving.sql   # serving.product_class: product types for "Compare any two"
 for d in "$STG" "$SRV"; do
     "${PSQL[@]}" -d "$d" -At -c "SELECT '$d: ' || string_agg(nspname || '=' || n, ' ') FROM (SELECT nspname, count(*) n FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE relkind = 'r' AND nspname IN ('ui','serving','staging','staging_ui') GROUP BY nspname ORDER BY nspname) t"
 done

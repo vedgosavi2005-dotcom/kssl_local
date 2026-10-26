@@ -70,7 +70,9 @@ assert.ok(!/CAT_META|counterRules|kva|genset|BAND|GEO_NOTGEN/i.test(src));
   const cmp = geo.geoProductCompare(x.compId, x.compProductId);
   assert.ok(cmp && cmp.title.includes(x.bf));
   for (const sp of x.specs.slice(0, 3)) assert.ok(cmp.html.includes(String(sp.l).replace(/&/g, "&amp;")), `spec row ${sp.l} is printed`);
-  assert.equal(geo.geoProductListHtml(fx.client.id, null), "", "the client has no counterpart list of its own");
+  // owner 2026-10-26: the client's own market lists its models with their rival counterparts, like the reference design
+  const own = geo.geoProductListHtml(fx.client.id, null, "India");
+  assert.ok(own === "" || /Rival counter/.test(own), "the client's list names rival counterparts");
   assert.equal(geo.geoProductCompare(x.compId, "no-such-product"), null);
 }
 

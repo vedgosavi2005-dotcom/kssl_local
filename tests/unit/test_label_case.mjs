@@ -55,10 +55,10 @@ eq(formatCompanyName("BAE Systems"), "BAE Systems", "R15: the company-name forma
 eq(formatLabel("bae systems"), "Bae Systems", "R15: a lower-case stored word is still raised by the label rule");
 eq(formatLabel("sam systems"), "Sam Systems", "T 20: a defence acronym typed in lower case is raised whole [no acronym list: stored casing, nothing corrected]");
 eq(formatLabel("Unmanned Aerial Vehicles (UAVs), Counter-Unmanned Aircraft Systems (C-UAS)"),
-   "Unmanned Aerial Vehicles (Uavs), Counter-Unmanned Aircraft Systems (C-UAS)",
-   "FE 12: an all-capitals token is kept (C-UAS); a mixed-case plural is cased by the label rule");
+   "Unmanned Aerial Vehicles (UAVs), Counter-Unmanned Aircraft Systems (C-UAS)",
+   "FE 12: an all-capitals token is kept (C-UAS); a plural acronym keeps its case (owner 2026-10-25: not 'Uavs')");
 eq(formatLabel("armored vehicles, MRAPs, counter-drone systems"),
-   "Armored Vehicles, Mraps, Counter-Drone Systems", "FE 12: MRAPs [no acronym list: stored casing, nothing corrected]");
+   "Armored Vehicles, MRAPs, Counter-Drone Systems", "FE 12: MRAPs, a plural acronym, keeps its case");
 eq(formatLabel("Synthetic Aperture Radar (SAR) satellites, Intelligence, Surveillance and Reconnaissance (ISR)"),
    "Synthetic Aperture Radar (SAR) Satellites, Intelligence, Surveillance And Reconnaissance (ISR)",
    "FE 12 / R15: ISR and SAR survive inside brackets, as stored");

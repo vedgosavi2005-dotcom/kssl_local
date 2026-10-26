@@ -114,7 +114,8 @@ test("only threat and watch verdicts render: an 'opportunity' (or unset) verdict
   }
   for (const t of by("threat")) {
     const h = html(t);
-    assert.ok(h.includes(words.threat) && h.includes("#b5341f"), "a threat verdict draws the stored threat word in the threat colour");
+    // the threat colour is the signal drawer's outlined tag (shell.css .dirpill.dir-threat)
+    assert.ok(h.includes(`<span class="dirpill dir-threat">${words.threat}</span>`), "a threat verdict draws the stored threat word in the threat tag");
   }
   for (const t of all.filter(({ p }) => !p.verdict)) {
     const tied = (t.c.partners || []).filter((x) => x.label === t.p.label);

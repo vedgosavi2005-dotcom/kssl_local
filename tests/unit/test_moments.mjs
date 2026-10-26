@@ -29,9 +29,9 @@ assert.equal(moments, 13, "of which 13 are moments");
 assert.equal(navCounts(d)["threat-analysis"], d.movementCards.length, "the rail counts the threat and watch cards Movement opens on");
 assert.ok(d.movementCards.every((c) => !c.noStance), "Movement holds threats and watches only");
 
-/* the page reads the same filter */
+/* the page (owner 2026-10-25: competitor -> events -> episodes) is built from threat / watch signals only, not every news row */
 const page = readFileSync("src/pages/competitive/ThreatAnalysis.jsx", "utf-8");
-assert.ok(/momentsOf\(news\[r\.cid\]\)/.test(page), "ThreatAnalysis builds its moves from momentsOf()");
-assert.ok(!/\(news\[r\.cid\] \|\| \[\]\)/.test(page), "ThreatAnalysis no longer maps every news row");
+assert.ok(/competitiveCards[\s\S]{0,40}\.filter\(\(c\) => stanceOf\(/.test(page), "ThreatAnalysis builds its episodes from threat / watch signals");
+assert.ok(!/competitorNews/.test(page), "ThreatAnalysis no longer maps every news row");
 
 console.log("ok - moment page and rail list only rows that carry a level (13 of 30 on the fixture)");

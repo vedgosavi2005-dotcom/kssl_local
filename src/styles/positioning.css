@@ -51,7 +51,10 @@
   .sb-unit{color:var(--l-txt-4);font-weight:400;font-family:var(--mono);font-size:10px}
   .sb-row{display:flex;align-items:center;gap:9px;margin:3px 0}
   .sb-track{flex:1;height:14px;background:var(--l-bg-2);position:relative;overflow:hidden}
-  .sb-cmprow{display:grid;grid-template-columns:64px 1fr auto;align-items:center;gap:9px;margin:4px 0;padding:2px 4px;border-radius:4px}
+  /* the name column grows to 120px and wraps instead of cutting "ELBIT SYS…"; the full
+     name is also the label's title (functional test G13, 2026-10-25) */
+  .sb-cmprow{display:grid;grid-template-columns:minmax(64px,120px) 1fr auto;align-items:center;gap:9px;margin:4px 0;padding:2px 4px;border-radius:4px}
+  .sb-cmprow .sb-who{white-space:normal;overflow:visible;overflow-wrap:anywhere;line-height:1.25}
   .sb-cmprow.win{background:transparent}
   .sb-who{font-size:9.5px;letter-spacing:.03em;text-transform:uppercase;color:var(--d-txt-3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sb-who.bf{color:#3b8d5c}.sb-who.comp{color:#c08a2b}
@@ -225,3 +228,18 @@
 .mu-compare .mu-compare-fields .mu-compare-btn { justify-self: start; }
 .mu-pick { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 6px; min-width: 0; }
 .mu-pick .mu-fsel { width: 100%; }
+/* Product Evaluation's two sections (owner 2026-10-25): KSSL pairings | Compare any two */
+.mu-sec-tabs { display: flex; border-bottom: 1px solid var(--d-line-2); flex-shrink: 0; }
+.mu-sec-tab {
+  flex: 1; padding: 11px 8px; background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--d-txt-3);
+}
+.mu-sec-tab:hover { color: var(--d-txt); }
+.mu-sec-tab.on { color: var(--d-txt); border-bottom-color: var(--d-txt); }
+.mu-cmp { display: flex; flex-direction: column; gap: 10px; }
+.mu-cmp-row { display: flex; flex-direction: column; gap: 4px; }
+.mu-cmp-l { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--d-txt-3); }
+.mu-cmp .mu-fsel { width: 100%; }
+.mu-cmp .mu-fsel:disabled { opacity: .5; cursor: default; }
+.mu-cmp-act { display: flex; gap: 8px; }
+.mu-cmp-act .mu-compare-btn { padding: 7px 14px; }

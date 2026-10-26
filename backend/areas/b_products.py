@@ -17,11 +17,13 @@ Vocabularies the UI expects (stored values are passed through, compared case-ins
   competitive_matchup.edge_score                  0-100, 50 = parity, higher = the client stronger
 """
 
+import os
 import re
 from collections import defaultdict
 from typing import Any
 
 from backend.common import slug, table, text
+from backend import spec_sheet
 
 
 _STATUS_IN_NAME = re.compile(r"develop|prototype|concept|trial|retired|cancel|terminat", re.I)
@@ -103,9 +105,11 @@ def _val(row: dict[str, Any], text_col: str, num_col: str) -> str | None:
 
 
 def _with_unit(value: str | None, unit: Any) -> str | None:
+    """The stored unit, once (audit 2026-10-25: spec_store keeps the unit in the value AND in `unit`, so "12,800 kg kg" was
+    on screen 676 times); a value that already states a unit gets none added."""
     if value is None:
         return None
-    return f"{value} {unit}" if unit not in (None, "") else value
+    return spec_sheet.with_unit(value, unit)
 
 
 def _src(tbl: str, key: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -131,6 +135,32 @@ def _hi(better_side: Any, cn: Any, kn: Any) -> bool | None:
     return better > worse
 
 
+_LEAD_UNIT = re.compile(r"(?i)^(?:(?:under|over|up to|about|approx(?:imately)?\.?|less than|more than|at least|max(?:imum)?)\s+)?[<>~≈]?\s*[\d.,]+(?:\s*(?:-|–|to)\s*[\d.,]+)?\s*([A-Za-z/°²]+)")
+
+
+def _unit_in(v: str) -> str | None:
+    """the unit of a value's leading figure ("90 cm unprepared" -> "cm"), when it is a known unit"""
+    m = _LEAD_UNIT.match(v or "")
+    return m.group(1) if m and spec_sheet._unit_of(m.group(1)) else None
+
+
+def _pair_values(comp: Any, client: Any, unit: Any, category: str, label: Any) -> tuple[Any, Any]:
+    """A comparison row's two shown values: source notes out (spec_sheet.clean_text), units standardised, and the competitor's figure
+    in the client side's unit when the row stores none and the two differ ("13,000 kg" next to "12.5 t" -> "13 t")."""
+    def tidy(v: Any, target: Any) -> Any:
+        if v in (None, ""):
+            return v
+        items = []
+        for i in spec_sheet.clean_text(v):
+            n = spec_sheet.normalise_units(i, category, text(label), target)
+            target = target or _unit_in(n)         # no stored unit: the first figure's unit holds for the rest of the value
+            if n not in items:                     # "90 cm; 900 mm" -> "90 cm" once both are in one unit
+                items.append(n)
+        return "; ".join(items) if items else None
+    k = tidy(client, unit)
+    return tidy(comp, unit or (_unit_in(k) if isinstance(k, str) else None)), k
+
+
 def build_matchups(database):
     # ▲ compared leads (kind compared / NULL) and ◆ stated capabilities (kind stated), both written by the matchup prompt only
     advantages: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"client": [], "competitor": [], "client_q": [], "competitor_q": []})
@@ -145,6 +175,7 @@ def build_matchups(database):
             q = "_q" if text(row.get("kind")).strip().lower() == "stated" else ""
             advantages[mid][side + q].append(row.get("advantage_text"))
 
+    cat_of = {text(r.get("matchup_id")): text(r.get("category_code")) for r in table(database, "serving", "competitive_matchup")}
     specs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     spec_rows = sorted(
         table(database, "serving", "competitive_matchup_specification"),
@@ -158,8 +189,11 @@ def build_matchups(database):
         specs[mid].append({
             "l": row.get("spec_label"),
             "u": row.get("unit"),
-            "cv": _val(row, "competitor_value_text", "competitor_value_numeric"),
-            "kv": _val(row, "client_value_text", "client_value_numeric"),
+            # both sides in one unit and without source notes (owner 2026-10-25: "a centimeter is compared with a meter", sources
+            # inside the figures); the numbers cn / kn the edge is computed from are untouched, the sources stay on the row (_src)
+            **dict(zip(("cv", "kv"), _pair_values(_val(row, "competitor_value_text", "competitor_value_numeric"),
+                                                  _val(row, "client_value_text", "client_value_numeric"),
+                                                  row.get("unit"), cat_of.get(mid, ""), row.get("spec_label")))),
             "cn": cn,
             "kn": kn,
             "hi": _hi(row.get("better_side"), cn, kn),
@@ -177,8 +211,9 @@ def build_matchups(database):
         mid = text(row.get("matchup_id"))
         if not mid:
             continue
-        # like-for-like only, and only what can be compared: a pair with no comparable spec and no verdict text is not shown
-        if not (row.get("comparable_spec_count") or 0) and not row.get("verdict"):
+        # like-for-like only, and only what can be compared: a pair with no verdict is not shown -- the verdict prompt found
+        # nothing comparable, or has not judged it yet (owner 2026-10-25: no "Not assessed" pairs on Product Evaluation)
+        if not text(row.get("verdict")).strip():
             continue
         category = row.get("category_code")
         if category not in (None, ""):
@@ -245,6 +280,67 @@ def _first_matchup(ids: list[str]) -> str | None:
     return ids[0] if ids else None
 
 
+def _sheet(rows: list[tuple[Any, Any, Any]], product: dict[str, Any], sub_type: Any, companies: Any, maker: Any) -> dict[str, Any]:
+    """The client-facing presentation of one product (owner 2026-10-25, backend/spec_sheet.py): displayName = the name only,
+    sheet = Description / Key specifications / Other specifications / Armament / Features and capabilities. Additive:
+    `name`, `specs` and `features` stay as before (other pages, search and the cards read them; `name` is the join key)."""
+    sheet = spec_sheet.present(rows, product.get("category"), product.get("name"), sub_type, maker)
+    desc = spec_sheet.clean_description(product.get("description"), maker)
+    out = {k: v for k, v in (("description", desc), *sheet.items()) if v}      # an empty section is not sent
+    # a stored short name (db/setup/47, backend/product_short_name.py) wins over the rule (owner 2026-10-26)
+    return {"displayName": product.get("short") or spec_sheet.display_name(product.get("name"), companies), "sheet": out}
+
+
+def _sub_types(database) -> dict[tuple[str, str], Any]:
+    """product_class.sub_type by (side, product id): staging only today, so the review view has it and the live one does not;
+    the armament split then falls back to the product name (spec_sheet.is_weapon_product)."""
+    return {(text(r.get("product_side")), text(r.get("product_id"))): r.get("sub_type") for r in table(database, "serving", "product_class")}
+
+
+def _vs_keys(database) -> dict[tuple[str, str], str]:
+    """product_class sub_type (+ role) by (side, product id): what "Compare any two" pairs on (owner 2026-10-25: the versus list
+    offers only products that can face the chosen one). Unknown sub_type = no key = not offered there."""
+    out = {}
+    for r in table(database, "serving", "product_class"):
+        st = text(r.get("sub_type")).strip().lower()
+        if st and st != "unknown":
+            out[(text(r.get("product_side")), text(r.get("product_id")))] = "/".join(x for x in (st, text(r.get("role")).strip().lower()) if x)
+    return out
+
+
+def _company_names(database, d) -> Any:
+    """Every company name a product name can carry ("(Hanwha Systems)", "(Thales Belgium; ...)"), as one regex."""
+    names = {"KSSL", "Kalyani", "Bharat Forge", "DRDO", "BEML", "Thales Belgium", "Hanwha Systems", "Hanwha Aerospace", "Hanwha Ocean"}
+    for r in table(database, "serving", "competitive_competitor"):
+        names |= {text(r.get(k)) for k in ("display_name", "short_name", "legal_name")}
+    for c in (d.get("competitors") or {}).values():
+        names |= {text(c.get("name")), text(c.get("legal"))}
+    return spec_sheet.company_re(n for n in names if n)
+
+
+def _makers(database, d) -> dict[str, Any]:
+    """{company id: spec_sheet.Maker} -- the company's own names, so "(Elbit)" after an Elbit figure reads as a citation."""
+    short = {text(r.get("competitor_id")): text(r.get("short_name")) for r in table(database, "serving", "competitive_competitor")}
+    return {cid: spec_sheet.Maker([c.get("name"), c.get("legal"), c.get("short"), short.get(cid)])
+            for cid, c in (d.get("competitors") or {}).items()}
+
+
+def mark_umbrellas(d, companies: Any = None) -> None:
+    """Family vs variants (owner 2026-10-25: VARIANT cards only): a family card with variant cards of the same company beside
+    it gets "umbrella": true and the Products grid leaves it out. Flagged, not deleted: the record, its id and its matchups
+    stay in the payload. Rules: spec_sheet.umbrella_ids (the owner-review list is made by the same function)."""
+    for c in (d.get("competitors") or {}).values():
+        prods = c.get("products") or []
+        hidden = spec_sheet.umbrella_ids(prods, companies)
+        for p in prods:
+            if p.get("id") in hidden:
+                p["umbrella"] = True
+
+
+HIDDEN_KINDS = {"test_asset", "programme", "not_product"}
+_REVIEW = os.environ.get("KSSL_VIEW", "").strip().lower() == "review"
+
+
 def build_competitor_products(database, d, matchups):
     """competitive_product (+ _specification, _program, _news) -> competitors[cid].products."""
     specs = _by(table(database, "serving", "competitive_product_specification"), "product_id")
@@ -256,17 +352,23 @@ def build_competitor_products(database, d, matchups):
             pair_ids[m["compProductId"]].append(mid)
 
     competitors = d.get("competitors", {})
+    sub_types, companies, makers = _sub_types(database), _company_names(database, d), _makers(database, d)
+    vs_keys = _vs_keys(database)
     for row in table(database, "serving", "competitive_product"):
         pid = text(row.get("product_id"))
         cid = text(row.get("competitor_id"))
         if not pid or cid not in competitors:
             continue
         spec_rows = sorted(specs.get(pid, []), key=lambda r: text(r.get("spec_label")).lower())
-        quant, qual = split_specs([(r.get("spec_label"), r.get("spec_value"), r.get("unit")) for r in spec_rows])
+        raw = [(r.get("spec_label"), r.get("spec_value"), r.get("unit")) for r in spec_rows]
+        quant, qual = split_specs(raw)
         if not quant and not qual:                # user 2026-10-18: a product with no spec on record (or only "not published" notes) is not
             continue                              # listed; it shows again once a spec is stored
         if _NOT_A_PRODUCT.search(text(row.get("product_name"))):     # the workbook row says it is a capability / partnership, not a product
             continue
+        kind = text(row.get("product_kind")) or None
+        if kind in HIDDEN_KINDS and not _REVIEW:  # owner 2026-10-25: a test one-off, a programme or a non-product is not shown to
+            continue                              # the client (backend/product_kind.py); the review site keeps it, tagged
         news_rows = sorted(news.get(pid, []), key=lambda r: text(r.get("published_date")), reverse=True)
         urls = []
         for r in spec_rows:
@@ -278,6 +380,7 @@ def build_competitor_products(database, d, matchups):
             "name": row.get("product_name"),
             "description": row.get("description"),
             "status": _status(row),
+            "kind": kind,                         # product | in_development | service | test_asset | programme | not_product | None
             "category": row.get("category"),
             "country": row.get("country"),
             "specs": quant,                       # measured figures only (Technical specifications)
@@ -301,6 +404,10 @@ def build_competitor_products(database, d, matchups):
             "matchupId": _first_matchup(pair_ids.get(pid, [])),
             "matchupIds": pair_ids.get(pid, []),
             "_src": _src("competitive_product", "product_id", row),
+            "vs": vs_keys.get(("competitor", pid)),
+            **_sheet(raw, {"name": row.get("product_name"), "category": row.get("category"), "description": row.get("description"),
+                           "short": text(row.get("short_name")) or None},
+                     sub_types.get(("competitor", pid)), companies, makers.get(cid)),
         })
 
 
@@ -315,13 +422,16 @@ def build_client_products(database, d, matchups):
             pair_ids[m["clientProductId"]].append(mid)
 
     competitors = d.get("competitors", {})
+    sub_types, companies, makers = _sub_types(database), _company_names(database, d), _makers(database, d)
+    vs_keys = _vs_keys(database)
     for row in table(database, "serving", "client_product"):
         pid = text(row.get("client_product_id"))
         client_id = text(row.get("client_id"))
         if not pid or client_id not in competitors:
             continue
         spec_rows = sorted(specs.get(pid, []), key=lambda r: (r.get("display_order") or 0))
-        quant, qual = split_specs([(r.get("spec_name"), _val(r, "value_text", "value_numeric"), r.get("unit")) for r in spec_rows])
+        raw = [(r.get("spec_name"), _val(r, "value_text", "value_numeric"), r.get("unit")) for r in spec_rows]
+        quant, qual = split_specs(raw)
         if not quant and not qual:                # the same rule for the client's own catalogue (user 2026-10-18)
             continue
         src_rows = sources.get(pid, [])
@@ -345,7 +455,25 @@ def build_client_products(database, d, matchups):
             "matchupId": _first_matchup(pair_ids.get(pid, [])),
             "matchupIds": pair_ids.get(pid, []),
             "_src": _src("client_product", "client_product_id", row),
+            "vs": vs_keys.get(("client", pid)),
+            **_sheet(raw, {"name": row.get("product_name"), "category": row.get("category"), "description": row.get("description"),
+                           "short": text(row.get("short_name")) or None},
+                     sub_types.get(("client", pid)), companies, makers.get(client_id)),
         })
+
+
+def distinct_display_names(d) -> None:
+    """two products of one company never share a display name: where shortening made two different names one ("SMAW"), both
+    keep their stored name (owner review 2026-10-25)"""
+    for co in (d.get("competitors") or {}).values():
+        seen: dict[str, list] = defaultdict(list)
+        for p in co.get("products") or []:
+            if isinstance(p, dict) and p.get("displayName"):
+                seen[p["displayName"].casefold()].append(p)
+        for same in seen.values():
+            if len({text(p.get("name")) for p in same}) > 1:
+                for p in same:
+                    p["displayName"] = p.get("name")
 
 
 def build(database, d):
@@ -353,11 +481,28 @@ def build(database, d):
     d.update({"matchups": matchups, "POS_CATS": pos_cats, "CAT_KEY": cat_key})
     build_competitor_products(database, d, matchups)
     build_client_products(database, d, matchups)
+    mark_umbrellas(d, _company_names(database, d))
+    distinct_display_names(d)
+    short = {text(p.get("id")): p.get("displayName") for co in (d.get("competitors") or {}).values()
+             for p in co.get("products") or [] if isinstance(p, dict) and p.get("displayName")}
+    for m in matchups.values():                  # the short names the Products page shows (display only; comp / bf stay the keys)
+        m["compName"] = short.get(text(m.get("compProductId")))
+        m["bfName"] = short.get(text(m.get("clientProductId")))
     d["KSSL_CATS"] = sorted({r.get("category") for r in table(database, "serving", "client_product") if r.get("category")},
                             key=lambda c: c.lower())
 
 
+def _selftest_pairs() -> None:
+    assert _pair_values("1.2 m", "90 cm", None, "Protected & Armoured Vehicles", "Fording") == ("120 cm", "90 cm")   # one unit per row
+    assert _pair_values("13,000 kg", "12.5 t", None, "Artillery", "Weight") == ("13 t", "12.5 t")
+    assert _pair_values("18 t (Army Recognition 2024)", "12.5 t", "t", "Artillery", "Weight")[0] == "18 t"          # no source note
+    assert _pair_values(None, "6 to 8", None, "Artillery", "Crew") == (None, "6 to 8")
+    assert _pair_values("13,000 kg", "Under 15 t", None, "Artillery", "Weight")[0] == "13 t"                   # "Under 15 t" sets t
+    assert _pair_values("1.2 m unprepared", "90 cm; 900 mm", None, "Protected & Armoured Vehicles", "Fording depth") ==         ("120 cm unprepared", "90 cm")
+
+
 def _selftest() -> None:
+    _selftest_pairs()
     cases = [("Numeric range/weight/accuracy", "not given in primary sources read (secondary reports quote different figures, not used)", None, "note"),
              ("Type", "bolt-on guidance/wing kit for unguided warheads", None, "qual"), ("Range", "250-350 km (CSIS)", None, "quant"),
              ("Search sector", "120", None, "quant"), ("Radar", "ELM-2022/2025 Multi-Mission Radar integrated with IFF", None, "qual"),
@@ -371,8 +516,15 @@ def _selftest() -> None:
     assert spec_kind("Warhead", "blast fragmentation (MBDA); mass not disclosed") == ("qual", "blast fragmentation (MBDA)")
     assert split_specs([("• Range", "30 km", None), ("Type", "towed", None), ("Note", "not published", None)]) == ({"Range": "30 km"}, {"Type": "towed"})
     assert split_specs([("Note", "Round 200 g", None), ("Note", "Length 146 mm", None)])[0] == {"Note": "Length 146 mm; Round 200 g"}
+    assert split_specs([("GVW", "12,800 kg", "kg"), ("Range", "48", "km")])[0] == {"GVW": "12,800 kg", "Range": "48 km"}   # the unit once
+    spec_sheet._selftest()                     # the spec sheet presenter: units, labels, sections, display names, families
+    fam = {"id": "f", "name": "F-35 Lightning II (F-35A / F-35B / F-35C)", "category": "Aircraft & Aerostructures",
+           "description": "Program/common-systems row for the F-35 family"}
+    d = {"competitors": {"lm": {"products": [fam] + [{"id": v, "name": f"F-35{v} Lightning II", "category": "Aircraft & Aerostructures"} for v in "ABC"]}}}
+    mark_umbrellas(d)
+    assert [p.get("umbrella") for p in d["competitors"]["lm"]["products"]] == [True, None, None, None]
     print("b_products self-check ok")
 
 
 if __name__ == "__main__":
-    _selftest()
+    _selftest()                                  # python -m backend.areas.b_products [--selftest]

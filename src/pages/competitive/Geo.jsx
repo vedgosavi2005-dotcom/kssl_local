@@ -17,6 +17,7 @@ import Thumb from "../../components/thumb/Thumb.jsx";
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
 import { REVIEW, ReviewList } from "../../components/review/Review";
+import { SipriBudget } from "../../components/sipri/SipriFigures.jsx";
 
 /* Two dropdowns resolve to one of three lists — countries for a rival, rivals in a
    country, or the products for a pair — and every product opens a detail column.
@@ -149,8 +150,17 @@ export default function Geo() {
     if (backMode) setBack({ mode: backMode, arg: backArg });
   };
 
-  useEffect(() => { setCmp(null); }, [pair && pair.cid, pair && pair.country]);
-  const cmpProd = pair && cmp && cmp.prod ? geo.geoProductCompare(pair.cid, cmp.prod) : null;
+  /* KSSL's own market opens on its first matched model, its comparison on the right, as in the frontend team's reference
+     (owner 2026-10-26); a rival's market keeps opening with nothing picked */
+  useEffect(() => {
+    const c = pair && (data.geoComps || []).find((x) => x.id === pair.cid);
+    if (!c || !c.isBf) { setCmp(null); return; }
+    const rows = geo.geoClientProducts(pair.country);
+    const first = rows.find((r) => r.x) || rows[0];
+    setCmp(first ? { prod: first.p.id } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pair && pair.cid, pair && pair.country]);
+  const cmpProd = pair && cmp && cmp.prod ? geo.geoProductCompare(pair.cid, cmp.prod, pair.country) : null;
   const prods = pair ? geo.productsFor(pair.cid, pair.country) : [];
   const prod = prodIndex !== null && prods ? prods[prodIndex] : null;
 
@@ -319,7 +329,8 @@ export default function Geo() {
             }</span></div><span class="ri-chev">›</span></div>`;
           })
           .join("");
-      return own ? ownHead + prodHtml + ovPanel : geo.geoProductListHtml(pair.cid, cmp && cmp.prod) + prodHtml;
+      if (own) return geo.geoProductListHtml(pair.cid, cmp && cmp.prod, pair.country) || ownHead + prodHtml + ovPanel;
+      return geo.geoProductListHtml(pair.cid, cmp && cmp.prod) + prodHtml;
     }
     if (resolved.kind === "countries") {
       const c = data.geoComps.find((x) => x.id === resolved.cid);
@@ -848,6 +859,10 @@ export default function Geo() {
                     {head.sub}
                   </div>
                 )}
+              </div>
+              {/* the country's defence spending (data.sipriMilex, owner 2026-10-26); nothing when SIPRI has no figure */}
+              <div style={{ paddingRight: "440px" }}>
+                <SipriBudget data={data} country={pair ? pair.country : resolved.kind === "competitors" ? resolved.country : null} />
               </div>
             </div>
 

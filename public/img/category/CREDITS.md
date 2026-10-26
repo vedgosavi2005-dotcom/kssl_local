@@ -1,0 +1,21 @@
+# Category images
+
+Default pictures for the product categories (Products page category cards; a move with no article image).
+All are public-domain photos from Wikimedia Commons (mostly U.S. Department of Defense works), resized to 800 px.
+
+| File | Source | Licence | Author |
+|---|---|---|---|
+| aircraft.jpg | [File:F-16 Fighting Falcon.jpg](https://commons.wikimedia.org/wiki/File:F-16_Fighting_Falcon.jpg) | Public domain | Staff Sgt. Cherie A. Thurlby |
+| ammunition.jpg | [File:Artillery munitions 160920-A-YZ990-006.jpg](https://commons.wikimedia.org/wiki/File:Artillery_munitions_160920-A-YZ990-006.jpg) | Public domain | U.S. Army photo by 2nd Lt. Gabriel Jenko, 1st Battalion, 82nd Field Artillery Regiment, 1st Armored Brigade Combat Team, |
+| artillery.jpg | [File:M777 howitzer rear.jpg](https://commons.wikimedia.org/wiki/File:M777_howitzer_rear.jpg) | Public domain | Sgt. Jose E. Guillen |
+| c4isr.jpg | [File:CAB radio operators provide link to MND-B ground Soldiers DVIDS31040.jpg](https://commons.wikimedia.org/wiki/File:CAB_radio_operators_provide_link_to_MND-B_ground_Soldiers_DVIDS31040.jpg) | Public domain | Spc. Creighton Holub |
+| components.jpg | [File:US Navy 070822-N-8923M-142 Machinery Repairman 2nd Class Patrick Koenig machines metal on a lathe in the machine shop of Nimitz-class aircraft carrier USS Harry S. Truman (CVN 75).jpg](https://commons.wikimedia.org/wiki/File:US_Navy_070822-N-8923M-142_Machinery_Repairman_2nd_Class_Patrick_Koenig_machines_metal_on_a_lathe_in_the_machine_shop_of_Nimitz-class_aircraft_carrier_USS_Harry_S._Truman_(CVN_75).jpg) | Public domain | U.S. Navy photo by Seaman Kevin T. Murray Jr. |
+| missiles.jpg | [File:74th Patriot Regiment missile launch.jpg](https://commons.wikimedia.org/wiki/File:74th_Patriot_Regiment_missile_launch.jpg) | Public domain | Courtesy Photo |
+| mro.jpg | [File:U S Army Soldiers perform maintenance on an M1 Abrams (9406471).jpg](https://commons.wikimedia.org/wiki/File:U_S_Army_Soldiers_perform_maintenance_on_an_M1_Abrams_(9406471).jpg) | Public domain | U.S. Army photo by Pfc. Gabrie |
+| naval.jpg | [File:US Navy 030329-N-6141B-005 The guided missile destroyer USS Arleigh Burke (DDG 51) conducts underway operations in support of Operation Iraqi Freedom.jpg](https://commons.wikimedia.org/wiki/File:US_Navy_030329-N-6141B-005_The_guided_missile_destroyer_USS_Arleigh_Burke_(DDG_51)_conducts_underway_operations_in_support_of_Operation_Iraqi_Freedom.jpg) | Public domain | U.S. Navy photo by Chief Journalist Alan J. Baribeau. |
+| other.jpg | [File:CLR-2 convoy tests logistics envelope 130822-M-ZB219-143.jpg](https://commons.wikimedia.org/wiki/File:CLR-2_convoy_tests_logistics_envelope_130822-M-ZB219-143.jpg) | Public domain | Cpl. Paul Peterson |
+| sensors.jpg | [File:Q-53 Counterfire Target Acquisition Radar.jpg](https://commons.wikimedia.org/wiki/File:Q-53_Counterfire_Target_Acquisition_Radar.jpg) | Public domain | US ARMY |
+| small-arms.jpg | [File:424TH Air Base Squadron on range indoor-M9 pistol and M4 rifle (6357464).jpg](https://commons.wikimedia.org/wiki/File:424TH_Air_Base_Squadron_on_range_indoor-M9_pistol_and_M4_rifle_(6357464).jpg) | Public domain | U.S. Army photo by Pascal Deme |
+| training.jpg | [File:A C-5 Galaxy aircraft simulator in the Tactical Training Squadron's new training center - DPLA - 112641b381f196ea7e1631eda212446a.jpeg](https://commons.wikimedia.org/wiki/File:A_C-5_Galaxy_aircraft_simulator_in_the_Tactical_Training_Squadron%27s_new_training_center_-_DPLA_-_112641b381f196ea7e1631eda212446a.jpeg) | Public domain | Department of Defense. American Forces Information Service. Defense Visual Information Center. 1994 |
+| uav.jpg | [File:MQ-9 Reaper UAV (cropped).jpg](https://commons.wikimedia.org/wiki/File:MQ-9_Reaper_UAV_(cropped).jpg) | Public domain | Lt. Col. Leslie Pratt |
+| vehicles.jpg | [File:A Stryker armored vehicle manned by U.S. Soldiers with the 2nd Cavalry Regiment moves in a convoy during exercise Saber Junction near Hohenfels, Germany 121023-A-ZR192-004.jpg](https://commons.wikimedia.org/wiki/File:A_Stryker_armored_vehicle_manned_by_U.S._Soldiers_with_the_2nd_Cavalry_Regiment_moves_in_a_convoy_during_exercise_Saber_Junction_near_Hohenfels,_Germany_121023-A-ZR192-004.jpg) | Public domain | Spc. Joshua Edwards |

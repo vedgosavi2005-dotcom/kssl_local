@@ -154,7 +154,8 @@ export function safeUrl(url) {
   return /^(https?|mailto)$/i.test(m[1]) ? raw : "";
 }
 
-export function srcChips(srcs, extraClass) {
+/* `opts.full`: keep the whole label (the Projects card shows full source titles, owner 2026-10-25: no "…" in the card) */
+export function srcChips(srcs, extraClass, opts) {
   if (!srcs || !srcs.length) return "";
   const seen = {};
   const usedLabel = {};
@@ -174,7 +175,7 @@ export function srcChips(srcs, extraClass) {
       lab = withHint && !usedLabel[withHint] ? withHint : `${base} (${n})`;
       usedLabel[lab] = (usedLabel[lab] || 0) + 1;
     }
-    if (lab.length > 34) lab = `${lab.slice(0, 33)}…`;
+    if (lab.length > 34 && !(opts && opts.full)) lab = `${lab.slice(0, 33)}…`;
     // stopPropagation so a chip inside a clickable tile/row doesn't trigger its handler
     const safe = safeUrl(s.url);
     if (safe) {

@@ -4,6 +4,8 @@
     python -m backend.attribute_documents --dry-run             (counts only)
     python -m backend.attribute_documents                       (write: unattributed rows, status 'new')
     python -m backend.attribute_documents --check-dc            (precision / recall against the DC corpus attribution; no write)
+    python -m backend.attribute_documents --recheck [--dry-run] (re-read the 'no_match' rows with today's names; only a row that now
+                                                                 names a competitor is written, the rest stay 'no_match')
 
 Rule (the same as backend/news.py for a headline): a document is about a competitor when its title or the first ~2,000 characters
 of its body name the competitor -- an alias from db/news_aliases.csv (+ the names stored in the DB) always counts, a conditional
@@ -133,7 +135,7 @@ def own_site_competitors(cur, subjects) -> dict[str, str]:
     return out
 
 
-def run(dry_run=False, check_dc=False, batch=500) -> dict:
+def run(dry_run=False, check_dc=False, batch=500, recheck=False) -> dict:
     import psycopg2
     import psycopg2.extras
     dsn = os.environ.get("KSSL_STAGING_DSN") or "postgresql://kssl:kssl@127.0.0.1:55432/kssl_staging"
@@ -143,13 +145,18 @@ def run(dry_run=False, check_dc=False, batch=500) -> dict:
     subjects, names = load_subjects(cur)
     matcher = Matcher(subjects)
     own = own_site_competitors(cur, subjects)
-    where = "status = 'new'" if not check_dc else "source_kind = 'dc_corpus'"
+    # a recheck never touches a blocked page (backend/sources.py PURGED: blogs / aggregators keep 'no_match' + triage.blocked on purpose)
+    where = ("source_kind = 'dc_corpus'" if check_dc else
+             "status = 'no_match' AND NOT coalesce(triage ? 'blocked', false)" if recheck else "status = 'new'")
     cur.execute(f"SELECT count(*) AS n FROM staging.source_document WHERE {where}")
     total = cur.fetchone()["n"]
     print("pass 1: page-furniture lines ...", flush=True)
     bcur = conn.cursor(name="boiler")
     bcur.itersize = 500
-    bcur.execute(f"SELECT source_name, left(body_text, 12000) FROM staging.source_document WHERE {where}")
+    # furniture is learnt from every stored page of the sources involved on a recheck (a subset alone repeats its side lists
+    # less often, so a "latest news" line would no longer count as furniture and would attribute the page)
+    bwhere = f"source_name IN (SELECT DISTINCT source_name FROM staging.source_document WHERE {where})" if recheck else where
+    bcur.execute(f"SELECT source_name, left(body_text, 12000) FROM staging.source_document WHERE {bwhere}")
     boiler = boilerplate_lines((r[0] if not isinstance(r, dict) else r["source_name"], r[1] if not isinstance(r, dict) else r["left"]) for r in bcur)
     bcur.close()
     print(f"  {len(boiler)} furniture lines", flush=True)
@@ -177,6 +184,8 @@ def run(dry_run=False, check_dc=False, batch=500) -> dict:
                 dc["docs_agree"] += have == got
                 continue
             stats["attributed" if hits else "no_match"] += 1
+            if recheck and not hits:
+                continue                     # still no competitor: the row stays as it is
             stats["mentions_client"] += mc
             for cid, how in hits.items():
                 stats["per_competitor"][names[cid]] += 1
@@ -223,13 +232,14 @@ def main(argv=None) -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--check-dc", action="store_true")
+    ap.add_argument("--recheck", action="store_true", help="re-read the 'no_match' rows (after a names / aliases change)")
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if a.selftest:
         _selftest()
         return 0
-    out = run(a.dry_run, a.check_dc)
+    out = run(a.dry_run, a.check_dc, recheck=a.recheck)
     st, dc = out["stats"], out["dc_check"]
     print()
     if a.check_dc:

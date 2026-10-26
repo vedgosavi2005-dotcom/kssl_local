@@ -245,7 +245,7 @@ task: |
      "Combat weight", "Crew"), value = the figure, unit = its unit.
    - leadership: a person appointed to or leaving a role. subject = the person, field = the role, value = appointed | left,
      effective_date when stated.
-   - partner: a company it now works with. subject = the partner, field = partner type (JV, supplier, licence, teaming...),
+   - partner: a company it now works with. subject = the partner, field = partner type, one of Joint venture | Acquisition | Technology / ToT | Teaming | Supplier | MoU / strategic,
      value = what the tie is.
    - location: a plant, site or country presence. subject = the site (or the country), field = facility | footprint, value = the country.
    - company_fact: field = employee_count_text | revenue_text | headquarters | starting_year_text | industry_sector, value = the fact.
@@ -376,4 +376,4 @@ output:                          # what the loader accepts; anything else is rej
       published_date: subject.published_date
       category: subject.category
 
-derive: [signal_dedupe, signal_label, product_news_merge, story_link]
+derive: [signal_dedupe, signal_label, signal_text_tidy, product_news_merge, story_link]

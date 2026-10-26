@@ -82,7 +82,12 @@ export function marketLane() {
     title: "Top opportunity",
     metrics: withBlanks([
       { key: "latest_tenders", l: "Latest tenders", act: "open" },
-      { key: "strong_fits", l: "Strong fits", act: "fit" },
+      /* "Strong-fit TENDERS", not "Strong fits": the stored count (market_rollups.metrics) is open tenders graded strong
+         (3 or more checked requirement lines) and its door filters the tender feed, while the "Projects to win" table
+         grades pre-tender projects on another basis -- so the tile read 0 beside a STRONG project row. Relabelled rather
+         than adding projects to the count: two different grades in one number would explain neither, and the door could
+         not open the projects (functional test G17, 2026-10-25). */
+      { key: "strong_fits", l: "Strong-fit tenders", act: "fit" },
       { key: "tender_value", l: "Tender value", act: "valued" },
       { key: "perceived_opportunities", l: "Perceived opportunities", act: "opps" },
     ]),
@@ -121,10 +126,11 @@ export function momentStance(level) {
 }
 
 /* ---- Market Intelligence tabs ------------------------------------------------------------------------------------ */
+/* the four tabs of the Cummins Market Intelligence page (owner 2026-10-26: "take the Cummins market section"); the
+   by-category cut lives on in the open tab's Demand split pie, which filters the list by category */
 export const MARKET_SECTIONS = [
   { id: "outlook", label: "Market outlook" },
-  { id: "active", label: "Number of active tenders" },
-  { id: "category", label: "By category" },
+  { id: "active", label: "Open tenders and projects" },
   { id: "awarded", label: "Awarded" },
   { id: "closed", label: "Closed" },
 ];
@@ -173,11 +179,9 @@ export const PARTNER_CATEGORIES = [
     aliases: ["distribution", "distributor", "dealer", "reseller", "integration"],
     def: "Sells, stocks or services {rival}'s products in an assigned market: {rival}'s route to market there." },
   { key: "supplier", group: "supply", label: "Supplier", short: "Supplier", overlapKind: "supplier",
-    aliases: ["component-supplier", "manufacturing", "oem", "framework-supplier"],
-    def: "{rival} buys parts, materials or major components from this company; a shared supplier can tighten {client}'s own supply." },
-  { key: "supply-customer", group: "supply", label: "Supply / customer", short: "Supply", overlapKind: "supplier",
-    aliases: ["supply"],
-    def: "Buys from or sells to {rival} on ordinary commercial supply terms." },
+    aliases: ["component-supplier", "manufacturing", "oem", "framework-supplier", "supply-customer", "supply"],
+    // either direction since "Supply / customer" was folded in (prompts/partnership.yml, 2026-10-25)
+    def: "{rival} buys parts, products or services from this company, or sells them to it, under a contract or order; a shared supplier can tighten {client}'s own supply." },
   { key: "localization-partner", group: "supply", label: "Localization partner", short: "Local", overlapKind: "supplier",
     aliases: ["localization", "local"],
     def: "Licensed or equipped to make, assemble or source {rival}'s products inside the country, which counts toward local-content rules." },
@@ -190,11 +194,15 @@ export const PARTNER_CATEGORIES = [
   { key: "joint-venture", group: "tech", label: "Joint venture", short: "JV", overlapKind: "technology",
     aliases: ["jv"],
     def: "A jointly owned company with shared investment and control." },
+  { key: "teaming", group: "tech", label: "Teaming", short: "Teaming", overlapKind: "technology",
+    aliases: ["teaming-agreement", "consortium"],
+    // its own kind since 2026-10-25 (owner): it had shown the MoU definition
+    def: "{rival} and this company bid for, or deliver, one contract or programme together, each bringing its own part." },
   { key: "acquisition-stake", group: "tech", label: "Acquisition / stake", short: "Acquisition", overlapKind: "technology",
     aliases: ["acquisition", "acq"],
     def: "{rival} owns, or has bought into, the other party (or the reverse)." },
   { key: "mou-strategic", group: "tech", label: "MoU / strategic", short: "MoU", overlapKind: "technology",
-    aliases: ["mou", "strategic", "teaming"],
+    aliases: ["mou", "strategic"],
     def: "A memorandum or strategic agreement: stated intent to cooperate, not yet a supply, licence or ownership contract." },
   { key: "key-account", group: "buyer", label: "Key account", short: "Account", overlapKind: "",
     aliases: ["account", "customer"],

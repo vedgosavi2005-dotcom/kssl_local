@@ -36,10 +36,11 @@ const NAMES = ["helicopters", "air defense systems", "launched effects", "nag ca
 
 // 1. the rule raises only
 for (const n of NAMES) {
-  const out = titleCaseHeadline(n);
+  const out = titleCaseHeadline(n, true);   // the product rule (formatProductName)
   if (out.toUpperCase() !== n.toUpperCase())
     fail(`the rule damaged ${JSON.stringify(n)} -> ${JSON.stringify(out)}`);
-  if (/(^| )[a-z]/.test(out))
+  // a unit ("cal", "mm") and a small joining word ("for") stay as written (owner 2026-10-25); any other lower-case word is raised
+  if (/(^| )(?!(?:mm|cm|km|m|kg|g|gr|lb|lbs|t|kn|hp|kw|nm|cal|in|a|an|and|as|at|but|by|for|from|in|nor|of|on|or|per|the|to|via|vs|with)\b)[a-z]/.test(out))
     fail(`still lower-cased after the rule: ${JSON.stringify(out)}`);
 }
 

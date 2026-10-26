@@ -17,6 +17,9 @@ const TABS = [
 export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTender }) {
   const [tab, setTab] = useState("adv");
   const dossierRef = useRef(null);
+  // the Products page's short names (owner 2026-10-25); the stored full names stay the keys
+  const compShow = m.compName ? `${m.compBy ? `${m.compBy} · ` : ""}${m.compName}` : m.comp;
+  const bfShow = m.bfName || m.bf;
 
   // a new matchup resets the panel to its default tab and scrolls to top
   useEffect(() => {
@@ -75,20 +78,23 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
           </span>
           <div className="matchup">
             <div className="side comp">
-              <div className="pn">{m.comp}</div>
+              <div className="pn">{compShow}</div>
             </div>
             <span className="vsbadge">VS</span>
             <div className="side bf">
-              <div className="pn">{m.bf}</div>
+              <div className="pn">{bfShow}</div>
             </div>
           </div>
           <Review src={m._src} />
         </div>
 
-        {/* verdict always visible */}
+        {/* verdict always visible. A matchup the verdict step has not run on yet (12 of 55
+            today) said "—", which read like a broken field; it now says so in words
+            (functional test G13, 2026-10-25). */}
         <div className="mu-sec" style={{ background: "var(--l-bg-2)" }}>
           <div className="pos-takeaway">
-            <span className="tl">{m.verdictH || "—"}</span>
+            <span className="tl">{m.verdictH || (m.verdict ? "" : "Verdict")}</span>
+            {!m.verdictH && !m.verdict ? <span>Not assessed yet.</span> : null}
             <span dangerouslySetInnerHTML={{ __html: (m.verdict || "").replace(/\s*Based only on values sourced for both products\.?/i, "").replace(/\s*on \d+ of \d+ comparable field\(s\)/i, "").trim() }} />
           </div>
         </div>
@@ -114,12 +120,12 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
                   sides of one comparison read as different kinds of thing. The operator
                   asked for both to be a plain label, so the navigation, the anchor and
                   the underline are gone. */}
-              <div className="pp2-name">{m.comp}</div>
+              <div className="pp2-name">{compShow}</div>
               <div className="pp2-line comp" />
               {compDesc ? <div className="pp2-desc">{compDesc}</div> : null}
             </div>
             <div className="pp2-col bf">
-              <div className="pp2-name">{m.bf}</div>
+              <div className="pp2-name">{bfShow}</div>
               <div className="pp2-line bf" />
               {bfDesc ? <div className="pp2-desc">{bfDesc}</div> : null}
             </div>
@@ -202,8 +208,8 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
         <div className={`mu-panel${tab === "specs" ? " on" : ""}`} data-panel="specs">
           <div className="mu-sec">
             <div className="spec-head">
-              <span className="sh-comp">{m.comp}</span>
-              <span className="sh-bf">{m.bf}</span>
+              <span className="sh-comp">{compShow}</span>
+              <span className="sh-bf">{bfShow}</span>
             </div>
             <HtmlBlock html={specPanelHtml(m)} />
           </div>
@@ -218,7 +224,7 @@ export default function MatchupDossier({ m, data, gapModel, onClose, onJumpToTen
             return null;
           };
           const urls = (pr) => (pr ? [...new Set([...(pr.sources || []), pr.source_url].filter((u) => typeof u === "string" && /^https?:\/\//i.test(u)))] : []);
-          const rows = [[m.comp, urls(prodOf(m.compProductId))], [m.bf, urls(prodOf(m.clientProductId))]];
+          const rows = [[compShow, urls(prodOf(m.compProductId))], [bfShow, urls(prodOf(m.clientProductId))]];
           return (
             <div className="mu-sec">
               <span className="eyebrow" style={{ display: "block", marginBottom: "8px" }}>Sources</span>

@@ -274,6 +274,12 @@
   .cd-kssl{border-left:3px solid var(--watch);background:rgba(224,160,32,.07)}
   .cd-kssl .eyebrow{color:var(--watch-badge);margin-bottom:8px}
   .cd-kssl .cd-prose{color:var(--l-txt)}
+  /* the timeline folds shut (owner 25 Oct): the heading is the button, a caret shows the state */
+  .cd-fold > summary{cursor:pointer;list-style:none;margin-bottom:0}
+  .cd-fold > summary::-webkit-details-marker{display:none}
+  .cd-fold > summary::before{content:"▸";display:inline-block;margin-right:6px;transition:transform .15s}
+  .cd-fold[open] > summary::before{transform:rotate(90deg)}
+  .cd-fold[open] > summary{margin-bottom:12px}
   .cd-kssl.kssl-threat{border-left-color:var(--threat);background:rgba(240,89,60,.07)}
   .cd-kssl.kssl-threat .eyebrow{color:var(--threat-badge)}
   .cd-kssl.kssl-opportunity,.cd-kssl.kssl-adoptable,
@@ -460,7 +466,9 @@
    sentence in its tooltip, and now says so with its own left edge instead of a
    character. Same affordance, same hover reveal, nothing sitting between the label and
    its value. */
-.cd-frow.sourced{cursor:help}  /* left-edge line removed at operator's request; tooltip proof stays */
+/* the help cursor only where a tooltip exists: tender glance rows are .sourced with no title, so the cursor promised a
+   proof that never appeared (functional test G20, 2026-10-25) */
+.cd-frow.sourced[title]{cursor:help}  /* left-edge line removed at operator's request; tooltip proof stays */
 
 /* the gloss under an "At a glance" label: what the FIELD means, never what the row says */
 .cd-fk-def{display:block;font-size:10px;line-height:1.35;color:var(--l-txt-3);opacity:.7;

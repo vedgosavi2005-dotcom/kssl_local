@@ -5,7 +5,7 @@ import MatchupDossier from "../../components/matchupDossier/MatchupDossier";
 import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { advantageText } from "../../lib/specs";
-import { buildProductIndex, compareProducts } from "../../lib/compareProducts";
+import { catalogue, companiesFacing, compareProducts, productsFacingCompany, rivalsOf } from "../../lib/compareProducts";
 import { specParts } from "../../lib/specs";
 
 // a packed value ("a; b; c") as one line per figure
@@ -75,6 +75,49 @@ function CompareView({ a, b, onClose }) {
     </div>
   );
 }
+/* "Compare any two products" (owner 2026-10-25): company -> a company that makes the same kind of
+   products -> a product -> a rival product that can face it. Each list only offers what has an
+   answer on the other side, so a choice never leads to an empty list. */
+function ComparePicker({ items, tabs, onCompare, onClear }) {
+  const [coA, setCoA] = useState("");
+  const [coB, setCoB] = useState("");
+  const [pA, setPA] = useState("");
+  const [pB, setPB] = useState("");
+  const companiesA = useMemo(() => companiesFacing(items), [items]);
+  const companiesB = useMemo(() => (coA ? companiesFacing(items, coA) : []), [items, coA]);
+  const listA = useMemo(() => (coA && coB ? productsFacingCompany(items, coA, coB) : []), [items, coA, coB]);
+  const a = listA.find((p) => p.key === pA);
+  const listB = useMemo(() => rivalsOf(items, a, coB), [items, a, coB]);
+  const clear = () => { setCoA(""); setCoB(""); setPA(""); setPB(""); onClear(); };
+  const pick = (label, value, onChange, options, disabled, hint) => (
+    <label className="mu-cmp-row">
+      <span className="mu-cmp-l">{label}</span>
+      <select className="mu-fsel" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{disabled ? hint : `Choose (${options.length})`}</option>
+        {options.map((o) => <option key={o.v} value={o.v}>{o.t}</option>)}
+      </select>
+    </label>
+  );
+  const cos = (l) => l.map((c) => ({ v: c, t: c }));
+  const prods = (l) => l.map((p) => ({ v: p.key, t: p.name }));
+  return (
+    <div className="mu-list">
+      {tabs}
+      <div className="mu-list-h mu-cmp">
+        <span className="eyebrow">Compare Any Two Products</span>
+        {pick("1. Company", coA, (v) => { setCoA(v); setCoB(""); setPA(""); setPB(""); }, cos(companiesA), false, "")}
+        {pick("2. Against company", coB, (v) => { setCoB(v); setPA(""); setPB(""); }, cos(companiesB), !coA, "Choose the first company")}
+        {pick(`3. ${coA || "Company"} product`, pA, (v) => { setPA(v); setPB(""); }, prods(listA), !coB, "Choose the second company")}
+        {pick(`4. ${coB || "Rival"} product`, pB, setPB, prods(listB), !pA, "Choose the first product")}
+        <div className="mu-cmp-act">
+          <button type="button" className="mu-compare-btn" disabled={!pA || !pB} onClick={() => onCompare(pA, pB)}>Compare</button>
+          <button type="button" className="mu-compare-btn" disabled={!coA} onClick={clear}>Clear</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. This page
    persisted to localStorage, which survives the tab, the browser and the machine's
    next reboot -- so a company opened once was still the landing selection weeks
@@ -142,13 +185,22 @@ export default function Positioning() {
      a matched pair closes it; a comparison closes the matched pair. */
   const clientShortName = clientShort();
   const products = useMemo(
-    () => buildProductIndex(data.matchups, clientShortName, data.competitors, data.client && data.client.id),
-    [data.matchups, data.competitors, data.client, clientShortName],
+    () => catalogue(data.competitors, data.client && data.client.id, clientShortName),
+    [data.competitors, data.client, clientShortName],
   );
+  const [section, setSection] = useState("pairs");      // "pairs" (KSSL pairings) | "any" (compare any two)
   const [compare, setCompare] = useState(null);
   const byKey = useMemo(() => new Map(products.map((p) => [p.key, p])), [products]);
   const cmpA = compare && byKey.get(compare.a);
   const cmpB = compare && byKey.get(compare.b);
+  const tabs = (
+    <div className="mu-sec-tabs" role="tablist">
+      {[["pairs", `${clientShortName} pairings`], ["any", "Compare any two"]].map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={section === k}
+          className={`mu-sec-tab${section === k ? " on" : ""}`} onClick={() => setSection(k)}>{l}</button>
+      ))}
+    </div>
+  );
 
   /* What the header's Copy / Export / Print act on: the open matchup -- its verdict,
      every spec row as served, both advantage lists -- or, with nothing selected, the
@@ -224,17 +276,20 @@ export default function Positioning() {
   useHeaderReport(report);
 
   return (
-    <div className={`pos-view v-positioning ${m || (cmpA && cmpB) ? "has-sel" : "no-sel"}`}>
-      <MatchupList
-        data={data}
-        onSelect={(id) => { setCompare(null); select(id); }}
-        selected={selected}
-        products={products}
-        compare={compare}
-        onCompare={(a, b) => { setSelected(null); setCompare({ a, b }); }}
-      />
-      {cmpA && cmpB ? (
-        <CompareView a={cmpA} b={cmpB} onClose={() => setCompare(null)} />
+    <div className={`pos-view v-positioning ${(section === "pairs" ? m : cmpA && cmpB) ? "has-sel" : "no-sel"}`}>
+      {section === "pairs" ? (
+        <MatchupList data={data} onSelect={select} selected={selected} tabs={tabs} />
+      ) : (
+        <ComparePicker items={products} tabs={tabs} onCompare={(a, b) => setCompare({ a, b })} onClear={() => setCompare(null)} />
+      )}
+      {section === "any" ? (
+        cmpA && cmpB ? (
+          <CompareView a={cmpA} b={cmpB} onClose={() => setCompare(null)} />
+        ) : (
+          <div className="mu-dossier"><div className="mu-d-h"><span className="eyebrow">Compare any two products</span>
+            <div className="matchup"><div className="side comp"><div className="pn">Choose two products</div></div>
+              <span className="vsbadge">VS</span><div className="side bf"><div className="pn">—</div></div></div></div></div>
+        )
       ) : m ? (
         <MatchupDossier
           data={data}

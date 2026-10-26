@@ -1,5 +1,6 @@
 -- code_label rows for codes the prompts actually write (red-team audit 2026-10-18). The prompt enums are the source of truth:
---   competitive_partnership.partner_type        prompts/partnership.yml (the code_label list had drifted: JV, Licence / ToT, ...)
+--   competitive_partnership.partner_type        prompts/partnership.yml (the code_label list had drifted: JV, Licence / ToT, ...;
+--                                               'Supply / customer' folded into Supplier 2026-10-25, so its label goes inactive)
 --   competitive_geo_company_presence.activity_type   prompts/geo.yml (code_label had Manufactures / Sells / Sources)
 --   story_step.label_after / step_type          prompts/story.py (opportunity stages, project stages, planned / production steps)
 -- Labels that no stored row and no prompt uses any more are set inactive (kept for history). Idempotent; staging_ui only
@@ -17,7 +18,6 @@ BEGIN
     ('competitive_partnership', 'partner_type', 'Technology / ToT', 'Technology / ToT', 3),
     ('competitive_partnership', 'partner_type', 'Teaming', 'Teaming', 4),
     ('competitive_partnership', 'partner_type', 'Supplier', 'Supplier', 5),
-    ('competitive_partnership', 'partner_type', 'Supply / customer', 'Supply / customer', 6),
     ('competitive_partnership', 'partner_type', 'MoU / strategic', 'MoU / strategic', 7),
     ('competitive_partnership', 'partner_type', 'Other', 'Other', 8),
     ('competitive_geo_company_presence', 'activity_type', 'Local production', 'Local production', 1),
@@ -48,6 +48,6 @@ BEGIN
   -- labels no prompt writes any more
   UPDATE staging_ui.code_label SET is_active = false
    WHERE (table_name, column_name) IN (('competitive_partnership', 'partner_type'), ('competitive_geo_company_presence', 'activity_type'))
-     AND code NOT IN ('Joint venture', 'Acquisition', 'Technology / ToT', 'Teaming', 'Supplier', 'Supply / customer', 'MoU / strategic', 'Other',
+     AND code NOT IN ('Joint venture', 'Acquisition', 'Technology / ToT', 'Teaming', 'Supplier', 'MoU / strategic', 'Other',
                       'Local production', 'Licensed production', 'Export', 'Sales and service', 'Sourcing');
 END $vocab$;

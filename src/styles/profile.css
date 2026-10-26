@@ -734,11 +734,16 @@
   text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
 .cp-meta-tv{color:var(--d-txt);font-weight:600}
 
-/* Products page: portfolio product cards (3 per row, clean vertical hierarchy: name at top, image below, bottom-corner view specs) */
+/* Products page: portfolio product cards and category cards, 4 per row (owner 2026-10-25), name at top, bottom-corner view specs */
 .product-cards-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 28px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+}
+@media (max-width: 1400px) {
+  .product-cards-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
 }
 @media (max-width: 1040px) {
   .product-cards-grid {
@@ -756,6 +761,24 @@
 .product-card {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
 }
+/* a category card: opens that category's products */
+.pc-kind { margin-left: auto; color: var(--watch-badge, #e0a020); }   /* review only: a kind hidden from the client */
+.product-card.cat-card { padding: 0 0 18px; gap: 8px; min-height: 120px; overflow: hidden; justify-content: flex-start; }
+.product-card.cat-card > span { padding: 0 18px; }
+.product-card.cat-card .cat-img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; display: block; margin: 0 0 6px; background: var(--d-bg-2); }
+.product-card.cat-card:not(:has(.cat-img)) { padding-top: 18px; }
+.cat-card .cat-n { font-size: 16px; font-weight: 700; color: var(--d-txt); }
+.cat-card .cat-c { font-family: var(--mono); font-size: 12px; color: var(--d-txt-3); }
+.cat-card .cat-ex { font-size: 12px; color: var(--d-txt-2); line-height: 1.45; }
+.cat-back { align-self: flex-start; background: none; border: 1px solid var(--d-line); color: var(--d-txt-2); font: inherit;
+  font-family: var(--mono); font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+.cat-back:hover { color: var(--d-txt); border-color: var(--d-txt-3); }
+/* global search: products of every company that match the sidebar query */
+.ps-hits-h { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--d-txt-3); padding: 14px 16px 6px; }
+.ps-hit { display: block; width: 100%; text-align: left; background: none; border: none; border-bottom: 1px solid var(--d-line); padding: 9px 16px;
+  cursor: pointer; font: inherit; color: var(--d-txt); }
+.ps-hit:hover { background: var(--d-bg-2); }
+.ps-hit small { display: block; color: var(--d-txt-3); font-size: 11.5px; margin-top: 2px; }
 
 .product-card:hover,
 .product-card:focus-visible {
@@ -871,3 +894,7 @@ a.ln-feed-card:hover .ln-feed-title { text-decoration: underline; }
 .ln-grid .ln-feed-item:not(.ln-top-story) .ln-feed-info .ln-feed-title { height: calc(1.4em * 3); }
 .ln-feed-info .ln-feed-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ln-feed-info .ln-feed-src { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: auto; }
+/* a category's parts and add-ons, under its own products (owner 2026-10-26) */
+.pc-sub-h { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--d-line);
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--d-txt-2); }
+.pc-sub-n { font-size: 11px; color: var(--d-txt-3); background: var(--d-bg-2); border: 1px solid var(--d-line); padding: 1px 7px; border-radius: 10px; }

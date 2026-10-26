@@ -18,13 +18,17 @@ const out = {};
 const browser = await chromium.launch();
 const page = await browser.newPage();
 for (const url of LISTINGS) {
-  await page.goto(url, { waitUntil: "networkidle", timeout: 120000 });
+  // 2026-10-25: "networkidle" never comes any more (analytics keep polling): wait for the cards instead
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.waitForSelector("article", { timeout: 60000 });
+  await page.waitForLoadState("load", { timeout: 120000 }).catch(() => {});
+  await page.waitForTimeout(5000);          // the "Load more" button only works once the page is hydrated
   for (let i = 0; i < 60; i++) {
     const more = page.getByRole("button", { name: /load more/i });
     if (!(await more.count()) || !(await more.first().isVisible())) break;
     const before = await page.locator("article").count();
     await more.first().click();
-    await page.waitForFunction((n) => document.querySelectorAll("article").length > n, before, { timeout: 20000 }).catch(() => {});
+    await page.waitForFunction((n) => document.querySelectorAll("article").length > n, before, { timeout: 45000 }).catch(() => {});
     if ((await page.locator("article").count()) === before) break;
   }
   const cards = await page.locator("article").evaluateAll((els) =>

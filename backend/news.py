@@ -88,7 +88,20 @@ from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsp
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
-from fastapi import APIRouter, HTTPException, Query
+try:
+    from fastapi import APIRouter, HTTPException, Query
+except ImportError:              # a search-only worker on a host without FastAPI (backend/news_sources.py --job-file): no API routes
+    class HTTPException(Exception):
+        def __init__(self, status_code=500, detail=""):
+            super().__init__(detail)
+
+    def Query(default=None, **_kw):          # noqa: N802 (FastAPI's name)
+        return default
+
+    class APIRouter:
+        def _route(self, *_a, **_kw):
+            return lambda f: f
+        get = post = put = delete = _route
 
 from backend.sources import classify_reason, client_domains, desktop_host, hard_to_fetch, host_of, outlet_rank
 
@@ -497,9 +510,84 @@ def clean_url(url: str) -> str:
     return urlunsplit((scheme, netloc, path, urlencode(q), ""))
 
 
+def url_key(url: str) -> str:
+    """One key for the spellings of one page: scheme, "www.", a default port and a trailing slash ignored
+    (G8 2026-10-25: navalnews .../iris-t-slm-naval-missiles and .../iris-t-slm-naval-missiles/ were two Diehl news rows)."""
+    u = (url or "").strip()
+    u = re.sub(r"^[a-z][a-z0-9+.-]*://", "", u, flags=re.I)
+    host, sep, rest = u.partition("/")
+    host = re.sub(r":(?:80|443)$", "", host.lower())
+    host = host[4:] if host.startswith("www.") else host
+    return (host + sep + rest).rstrip("/")
+
+
 def is_homepage(url: str) -> bool:
     path = urlsplit(url).path.strip("/")
     return path in ("", "index.html", "index.php", "en", "home", "news")
+
+
+# A page that LISTS stories (G8 2026-10-25: three TKMS / Naval Group moves were sourced to naval-group.com/en/news, whose
+# <title> is "News page 1 on 42 | Naval Group"). Narrow on purpose (src/lib/articleUrl.js: a false positive hides a real
+# article): the title says it is a listing, or the whole path (after a language code) is one collection word.
+_LISTING_TITLE = re.compile(r"\bpage \d+ (?:on|of) \d+\b|(?-i:(?:^|\s)Archives)(?:\s*$|\s+[|\-–—]\s)", re.I)   # WordPress "X Archives"
+_LISTING_PATH = re.compile(r"(?:[a-z]{2}(?:-[a-z]{2})?/)?(?:news|press|media|newsroom|press-?releases?|press-?room|"
+                           r"news-?room|actualites|news-and-media|media-centre|media-center|latest-news)", re.I)
+
+
+_ARTICLE_QUERY = re.compile(r"(?:^|&)(?:id|h|p|nid|newsid|prid|article|articleid|post|seq|no|idx|slug|story|uid|key)=[^&]", re.I)
+
+
+def is_listing_page(url: str, title: str = "") -> bool:
+    if _LISTING_TITLE.search(title or ""):
+        return True
+    try:
+        sp = urlsplit(url or "")
+    except ValueError:
+        return False
+    if _ARTICLE_QUERY.search(sp.query):                                     # /news/?h=Cancellation-of-Spike...&id=259 is one story
+        return False
+    path = sp.path.strip("/")
+    return bool(path) and bool(_LISTING_PATH.fullmatch(path))
+
+
+_SITE_SEP = re.compile(r"\s+(?:\||-|–|—|::)\s+")
+
+
+def _site_keys(*names: str) -> list[str]:
+    """Compact lower-case keys of a site: its publisher name(s) and the host's brand label (knds.com -> "knds")."""
+    keys = []
+    for n in names:
+        n = (n or "").strip().lower()
+        if not n:
+            continue
+        if "." in n and " " not in n:                                        # a host: www.army-technology.com -> armytechnology
+            labels = [x for x in n.split(".") if x not in ("www", "en", "m", "com", "co", "org", "net", "eu", "in", "uk", "it", "pl", "de", "fr", "gov", "mil", "il", "kr")]
+            n = labels[-1] if labels else ""
+        k = re.sub(r"[^a-z0-9]", "", n)
+        if len(k) >= 3:
+            keys.append(k)
+    return keys
+
+
+def strip_site_suffix(title: str, *site_names: str) -> str:
+    """Drop trailing " | SITE" / " - SITE" / " – SITE" parts that name the publishing site (its publisher name or host
+    brand) or are a pager ("Page 4 of 5"): "KNDS THL20 TURRETS SELECTED ... | KNDS Group" -> "KNDS THL20 TURRETS SELECTED ...".
+    A part that does not name the site stops the stripping; the headline is kept whole when fewer than 3 words would remain."""
+    title = (title or "").strip()
+    keys = _site_keys(*site_names)
+    out = title
+    while True:
+        parts = _SITE_SEP.split(out)
+        if len(parts) < 2:
+            break
+        last = parts[-1]
+        lk = re.sub(r"[^a-z0-9]", "", html.unescape(last).lower())
+        pager = re.fullmatch(r"page \d+ (?:of|on) \d+", last.strip().lower())
+        if not lk or not (pager or any(k in lk or (len(lk) >= 4 and lk in k) for k in keys)):
+            break
+        m = list(_SITE_SEP.finditer(out))[-1]
+        out = out[: m.start()].rstrip()
+    return out if len(out.split()) >= 3 else title
 
 
 # ----------------------------------------------------------------------------- page parse
@@ -1019,17 +1107,21 @@ def _process(it: Item, subj: Subject, company_domains, fetch_images):
 
 
 def queries_for(name: str, product: str = "", rng: tuple[date, date] | None = None, aliases=(), cond=(),
-                variants=(), lean: bool = False) -> list[str]:
+                variants=(), lean: bool = False, qualified: bool = False) -> list[str]:
     """Google News queries, in order of priority. Full set: the defence-qualified name, the bare name, the aliases
     in one OR query, the conditional aliases (with a defence word) in another. lean=True drops the defence-qualified
     query (NOT a subset of the bare name's results: measured 5-15% of allowlisted items come only from it, so the
     job does not use lean; kept for tests and quick probes).
-    Products: the exact name, its looser forms (`variants`), and with the company name."""
+    Products: the exact name, its looser forms (`variants`), and with the company name; qualified=True (an ordinary word such
+    as "Puma", backend/product_targets.py) keeps only the queries that carry the company name."""
     ops = f" {date_ops(rng)}" if rng else ""
     q = lambda names: "(" + " OR ".join(f'"{a}"' for a in names) + ")"
     if product:
         qs = [f'"{product}"'] if lean else [f'"{product}" "{name}" defence OR defense', f'"{product}" {name}', f'"{product}"']
-        qs += [f'"{v}"' for v in variants if v != product]
+        if qualified:
+            qs = [f'"{product}" "{name}" defence OR defense', f'"{product}" "{name}"']
+        else:
+            qs += [f'"{v}"' for v in variants if v != product]
     else:
         qs = [] if lean else [f'"{name}" defence OR defense']
         qs.append(f'"{name}"')
@@ -1088,7 +1180,7 @@ def search_window(qfn, rng: tuple[date, date], deep: bool = False, errors: list 
 
 def collect(name: str, aliases=(), product: str = "", company_domains=(), limit=None,
             fetch_images=True, workers=WORKERS, rng: tuple[date, date] | None = None, spec: Subject | None = None,
-            slice_days: int = SLICE_DAYS) -> list[Item]:
+            slice_days: int = SLICE_DAYS, qualified: bool = False) -> list[Item]:
     """Search, resolve and filter news for a company (or one of its products) in `rng`.
     spec: the company's Subject (aliases file); without it only `name` + `aliases` count. limit None = everything
     (backfills); the range is searched in `slice_days`-day windows, merged by link."""
@@ -1101,7 +1193,7 @@ def collect(name: str, aliases=(), product: str = "", company_domains=(), limit=
 
     def qfn(r, deep):
         # the defence-qualified query is kept in every window: it finds 5-15% items the bare name does not (measured)
-        return queries_for(name, product, r, aliases=spec.aliases, cond=spec.cond, variants=pq, lean=False)
+        return queries_for(name, product, r, aliases=spec.aliases, cond=spec.cond, variants=pq, lean=False, qualified=qualified)
 
     windows = day_slices(rng, slice_days)
     errors: list[str] = []
@@ -1301,9 +1393,10 @@ def renormalise(cur) -> dict:
     return n
 
 
-def load_subject(competitor_id: str, products: bool):
-    """(Subject, [(product_id, product_name)]) of a competitor: names from staging.competitive_competitor, aliases,
-    co-terms, masks and own domains from db/news_aliases.csv."""
+def load_subject(competitor_id: str, products: bool, targets: bool = False):
+    """(Subject, [(product_id, product_name, search_name, qualified)]) of a competitor: names from staging.competitive_competitor,
+    aliases, co-terms, masks and own domains from db/news_aliases.csv. targets=True: only the targeted base systems of
+    backend/product_targets.py (owner 2026-10-25), each searched by its cleaned name."""
     conn = _connect()
     try:
         with conn, conn.cursor() as cur:
@@ -1314,10 +1407,16 @@ def load_subject(competitor_id: str, products: bool):
                 raise LookupError(f"competitor {competitor_id} not found")
             subj = subject_for(competitor_id, *(x or "" for x in row))
             prods = []
-            if products:
+            if targets:
+                import psycopg2.extras
+                from backend.product_targets import targets as product_targets
+                rows, _ = product_targets(conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
+                prods = [(r["product_id"], r["product_name"], r["search"], r["qualified"]) for r in rows
+                         if r["competitor_id"] == str(competitor_id)]
+            elif products:
                 cur.execute("SELECT product_id::text, product_name FROM staging.competitive_product "
                             "WHERE competitor_id = %s ORDER BY product_name", (competitor_id,))
-                prods = cur.fetchall()
+                prods = [(pi, pn, pn, False) for pi, pn in cur.fetchall()]
             return subj, prods
     finally:
         conn.close()
@@ -1334,18 +1433,23 @@ def competitor_ids() -> list[str]:
 
 
 def refresh(competitor_id: str, products=False, limit=None, dry_run=False, rng=None,
-            company_domains=(), log=None) -> dict:
+            company_domains=(), log=None, targets=False, skip_company=False) -> dict:
     """Fetch and store news for one competitor (and optionally its products) inside `rng`.
     limit None: a daily run keeps DAILY_LIMIT per company / product, a backfill has no limit."""
     t0 = time.monotonic()
     rng = rng or date_range()
-    subj, prods = load_subject(competitor_id, products)
+    subj, prods = load_subject(competitor_id, products, targets)
     name, limit = subj.display or subj.search, effective_limit(limit, rng)
     runs = []
-    for kind, label, pid, product in [("company", name, None, "")] + [("product", pn, pi, pn) for pi, pn in prods]:
+    # targeted products: one window over the whole range (a window that hits the RSS cap is still halved), so a rarely
+    # reported product costs 2-3 queries instead of 3 per 2-day slice
+    pslice = max(SLICE_DAYS, (rng[1] - rng[0]).days + 1) if targets else SLICE_DAYS
+    todo = [] if skip_company else [("company", name, None, "", False, SLICE_DAYS)]
+    todo += [("product", pn, pi, ps, pq, pslice) for pi, pn, ps, pq in prods]
+    for kind, label, pid, product, qual, sdays in todo:
         t1 = time.monotonic()
         items = collect(subj.search, product=product, company_domains=company_domains, limit=limit,
-                        fetch_images=not dry_run, rng=rng, spec=subj)
+                        fetch_images=not dry_run, rng=rng, spec=subj, slice_days=sdays, qualified=qual)
         runs.append((kind, label, pid, items, round(time.monotonic() - t1, 1)))
     out = {"competitor_id": competitor_id, "name": name, "dry_run": dry_run, "runs": []}
     conn = None if dry_run else _connect()
@@ -1376,11 +1480,12 @@ def _item_dict(i: Item) -> dict:
             "match_via": i.match_via or None, "page_note": i.page_note or None}
 
 
-def refresh_many(competitor_id: str, products=False, limit=None, dry_run=False, rng=None, company_domains=(), log=None):
+def refresh_many(competitor_id: str, products=False, limit=None, dry_run=False, rng=None, company_domains=(), log=None,
+                 targets=False, skip_company=False):
     ids = competitor_ids() if competitor_id == "all" else [competitor_id]
     out = []
     for c in ids:
-        out.append(refresh(c, products, limit, dry_run, rng, company_domains, log))
+        out.append(refresh(c, products, limit, dry_run, rng, company_domains, log, targets, skip_company))
         if _rss_state["streak"] >= RSS_BLOCKED_STREAK:
             raise RuntimeError(f"Google News is refusing searches (http 503 'Sorry...'): {_rss_state['streak']} in a row after "
                                f"{len(out)} competitor(s). Stop, wait (minutes to hours) and run the same range again; "
@@ -1563,6 +1668,32 @@ def _selftest():
     assert strip_publisher("Veland wins order - The Hindu", "The Hindu") == "Veland wins order"
     assert strip_publisher("Veland wins order - Other Paper", "The Hindu") == "Veland wins order - Other Paper"
     assert strip_publisher("- CHOSUNBIZ", "Chosunbiz") == "- CHOSUNBIZ" and strip_publisher("", "x") == ""
+    # --- site suffix of a page <title> (G8 2026-10-25): publisher name or host brand; a pager; a non-site part stops it
+    assert strip_site_suffix("KNDS THL20 TURRETS SELECTED FOR INDIA | KNDS Group", "knds.com") == "KNDS THL20 TURRETS SELECTED FOR INDIA"
+    assert strip_site_suffix("Achzarit Heavy Armoured Personnel Carrier - Army Technology", "army-technology.com") == "Achzarit Heavy Armoured Personnel Carrier"
+    assert strip_site_suffix("Hanwha accelerates U.S. production - CHOSUNBIZ", "Chosunbiz") == "Hanwha accelerates U.S. production"
+    assert strip_site_suffix("60 Flights and Counting: Launched Effects | L3Harris® Fast. Forward.", "l3harris.com") == "60 Flights and Counting: Launched Effects"
+    assert strip_site_suffix("Patria wins order - Finland acts | Patria", "patriagroup.com") == "Patria wins order - Finland acts"
+    assert strip_site_suffix("Veland wins order - Other Paper", "The Hindu", "thehindu.com") == "Veland wins order - Other Paper"
+    assert strip_site_suffix("Ammunition | Diehl Defence", "new.diehl.com") == "Ammunition | Diehl Defence"     # < 3 words left: kept
+    assert strip_site_suffix("Nordvik wins big order", "x.com") == "Nordvik wins big order" and strip_site_suffix("", "x") == ""
+    assert strip_site_suffix("Elbit wins big order | Page 2 of 9 | Elbit Systems", "elbitsystems.com") == "Elbit wins big order"
+    # --- one key per page spelling (G8)
+    assert url_key("https://www.navalnews.com/a/b/") == url_key("http://navalnews.com/a/b") == "navalnews.com/a/b"
+    assert url_key("http://www.supacat.com:80/") == url_key("https://supacat.com/") == "supacat.com"
+    assert url_key("https://x.test/a?id=1") != url_key("https://x.test/a?id=2") and url_key("") == ""
+    # --- listing pages (G8): title says so, or the whole path is one collection word
+    assert is_listing_page("https://www.naval-group.com/en/news", "News page 1 on 42 |  Naval Group")
+    assert is_listing_page("https://www.naval-group.com/en/news") and is_listing_page("https://x.test/press-releases/")
+    assert is_listing_page("https://www.navalnews.com/x/aerovironment/", "AeroVironment Archives - Naval News")
+    assert is_listing_page("https://joint-forces.com/tag/6x6/page/4", "6x6 Archives | Page 4 of 5 | Joint Forces News")
+    assert not is_listing_page("https://www.naval-group.com/en/netherlands-and-naval-group-extend-industrial-cooperation-agreement",
+                               "The Netherlands and Naval Group extend the Industrial Cooperation Agreement | Naval Group")
+    assert not is_listing_page("https://www.army-technology.com/projects/piranhav/", "Piranha V - Army Technology")
+    assert not is_listing_page("https://www.spslandforces.com/news/?h=Cancellation-of-Spike-discouraging-for-FDI-in-defence&id=259",
+                               "Cancellation of Spike – discouraging for FDI in defence")
+    assert is_listing_page("https://www.patriagroup.com/newsroom?language=465&page=84&region=all")
+    assert not is_listing_page("https://x.test/news/2026/archive-of-tank-trials-reopened", "Army reopens its tank archive")
     assert parse_rss(b"<rss><channel><item><title>Veland tank trial - ETINFRA</title><link>https://x.test/a</link>"
                      b"<source url='https://x.test'>EtInfra</source></item></channel></rss>")[0]["title"] == "Veland tank trial"
     # --- urls: https preferred, mobile host -> desktop host, tracking and amp removed
@@ -1615,6 +1746,8 @@ def _selftest():
     ql = queries_for("Veland", "", (d, d), aliases=["VLS"], lean=True)
     assert len(ql) == 2 and ql[0].startswith('"Veland" after:')                                   # lean: no defence-qualified query
     assert queries_for("Veland", "Zel-9 Falcon-T", (d, d), variants=["zel 9 falcon"], lean=True)[0].startswith('"Zel-9 Falcon-T" after:')
+    qq = queries_for("Veland", "Puma", (d, d), variants=["puma x"], qualified=True)                 # an ordinary word: company name always
+    assert len(qq) == 2 and all('"Veland"' in x for x in qq)
     # --- products: a trailing variant letter / mark is optional ("K9 Vajra-T" ~ "K9 Vajra")
     assert product_names("Zel-9 Falcon-T")[:2] == ["Zel-9 Falcon-T", "zel 9 falcon"]
     assert "pinaka" in product_names("Pinaka Mk-II") and product_names("AK-203") == ["AK-203"] and product_names("T-90") == ["T-90"]
@@ -1736,6 +1869,9 @@ def main(argv=None):
     ap.add_argument("--alias", action="append", default=[], help="with --name: other names")
     ap.add_argument("--product", action="append", default=[], help="with --name: product name(s) to search")
     ap.add_argument("--products", action="store_true", help="with --competitor: also fetch news for its products")
+    ap.add_argument("--product-targets", action="store_true",
+                    help="with --competitor: products = the targeted base systems of backend/product_targets.py (not every catalogue row)")
+    ap.add_argument("--products-only", action="store_true", help="with --products / --product-targets: skip the company search")
     ap.add_argument("--domain", action="append", default=[], help="company's own domain(s) -> tier primary")
     ap.add_argument("--client", action="store_true", help="with --name: the subject is the client, so kssl.in / bharatforge.com / kalyanigroup.com are primary")
     ap.add_argument("--date", help="a single day, YYYY-MM-DD")
@@ -1780,7 +1916,8 @@ def main(argv=None):
             print_table("product" if prod else "company", prod or a.name, items)
         return 0
 
-    for res in refresh_many(a.competitor, a.products, a.limit, a.dry_run, rng, a.domain, print_table):
+    for res in refresh_many(a.competitor, a.products or a.product_targets, a.limit, a.dry_run, rng, a.domain, print_table,
+                            targets=a.product_targets, skip_company=a.products_only):
         for r in res["runs"]:
             print(f"   {r['kind']} {r['name']}: seen {r['seen']}, kept {r['kept']}, candidates saved {r['saved']}, {r['seconds']}s"
                   + (f", SEARCHES FAILED {r['search_failed']} (Google refused: not 'no news', run again)" if r.get("search_failed") else "")

@@ -142,3 +142,11 @@
 .ti-simple table.ovt-fixed .ti-title,.ti-simple table.ovt-fixed .ovt-buyer{max-width:100%}
 .ovt .clamp3,.ovt .od-main.clamp3{display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:normal}
 .ovt table.ovt-fixed td.ovt-t > :first-child{display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:normal}
+/* Market outlook (Cummins port): the "Data:" line under each table, the row's own link to its tenders, panel tender links */
+.ovt .ovt-data{display:block;margin-top:8px;max-width:none}
+.ovt td.ovt-t .od-seg-link{display:block;margin-top:4px;font:inherit;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--d-txt-3);background:none;border:0;padding:0;cursor:pointer}
+.ovt td.ovt-t .od-seg-link:hover{color:var(--d-txt);text-decoration:underline}
+.olr-tender-link{font:inherit;color:inherit;font-weight:inherit;text-align:left;background:none;border:0;padding:0;cursor:pointer;line-height:inherit}
+.olr-tender-link:hover{text-decoration:underline}
+.olr-tender-link:focus-visible{outline:2px solid #b77918;outline-offset:3px}
+.ovt ol.ovt-srcs{margin:0;padding-left:18px}.ovt ol.ovt-srcs li+li{margin-top:6px}

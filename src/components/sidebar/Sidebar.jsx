@@ -1,13 +1,10 @@
 import { useAppState } from "../../state/AppState";
 import { railFor } from "../../lib/route";
-import { useData } from "../../state/DataProvider";
 
 /* The left rail. One section per pillar in the original markup, shown and hidden;
-   here only the active pillar's rail is rendered at all. Counts come from
-   navCounts() — every one is computed from the loaded corpus, never hardcoded. */
+   here only the active pillar's rail is rendered at all. No counts (owner 2026-10-25). */
 export default function Sidebar() {
   const { pillar, view, setView } = useAppState();
-  const { counts } = useData();
   const items = railFor(pillar);
 
   const row = (item) => (
@@ -35,7 +32,7 @@ export default function Sidebar() {
           itself with its own highlight (.svc.active in shell.css: filled ground plus the
           left border), so the dot was a second, fainter copy of a state the row shows
           anyway. */}
-      <span className="ct">{counts[item.view] ?? "—"}</span>
+      {/* no count on the rail rows (owner 2026-10-25: "remove all the numbers from this sidebar") */}
     </div>
   );
 

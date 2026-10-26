@@ -407,11 +407,17 @@ class Loader:
         value = tmp.get(matchcol)
         if not value:
             return None
-        self.cur.execute(f"SELECT {keycol} AS id FROM staging.{table} WHERE lower(trim({matchcol}::text)) = lower(trim(%s)) LIMIT 1", (str(value),))
+        new_id = self.stable_id(table, keycol, str(value).strip().casefold())
+        # two runs loading at once (the flood's parallel workers) both missed the name and both inserted it: GM Defense and BC Customs
+        # were in technology_company twice (2026-10-25). A transaction lock per (table, id) makes the second run wait for the first
+        # and then find its row.
+        self.cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"find_or_create:{table}:{new_id}",))
+        self.cur.execute(f"SELECT {keycol} AS id FROM staging.{table} WHERE lower(trim({matchcol}::text)) = lower(trim(%s)) "
+                         f"OR {keycol}::text = %s LIMIT 1", (str(value), str(new_id)))
         r = self.cur.fetchone()
         if r:
             return r["id"]
-        tmp.cols[keycol] = self.stable_id(table, keycol, str(value).strip().casefold())
+        tmp.cols[keycol] = new_id
         return self._insert_created(tmp, table, f"{table}: {value}")
 
     def _insert_created(self, tmp: Row, table: str, label: str):

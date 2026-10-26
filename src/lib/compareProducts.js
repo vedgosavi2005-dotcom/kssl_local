@@ -1,72 +1,63 @@
-/* FREE PRODUCT COMPARISON for the Positioning page: any two products, not only the
-   pairs the pipeline matched.
+/* "COMPARE ANY TWO PRODUCTS" on Product Evaluation (owner 2026-10-25): pick a company, then a
+   second company that makes the same kind of products, then a product, then a rival product
+   that can face it. "Can face it" = the same product type (product.vs: product_class sub_type
+   and role, e.g. "fighter_multirole", "apc_wheeled/apc_6x6_8x8"). A product with no type, a
+   service, a family card or a hidden kind is not offered: there is nothing to put against it.
 
-   The catalogue is built from the served matchups -- the only place product specs live.
-   Each matchup carries BOTH products' figures (rival: cv/cn, client: kv/kn), so every
-   rival and every client product that appears in any matchup becomes one entry, its spec
-   rows merged across all the matchups it appears in (first measured value wins).
-
-   A row decides a winner only when both sides carry a number and the field has a
-   direction (`hi`: true = higher is better, false = lower is better). Gaps under 3% are a
-   tie -- the same deadband the edge index uses. Two numbers more than 50x apart are
-   almost always the same quantity in different units (17.7 t against 18000 kg); that row
-   is flagged, not scored. */
+   A row decides a winner only when both sides carry a number and the field has a direction
+   (`hi`). Catalogue specs are text with no direction, so they are shown, not scored. Two
+   numbers more than 50x apart are almost always the same quantity in different units; that
+   row is flagged, not scored. */
 import { EDGE_DEADBAND } from "./edge.js";
 
-const SKIP = new Set(["Product (sourced)"]);
 const UNIT_RATIO = 50;
+const NOT_OFFERED = new Set(["service", "test_asset", "programme", "not_product"]);
+const SHEET_SECTIONS = ["key", "other", "armament"];
 
-// "KNDS · CAESAR 6x6" -> { maker: "KNDS", name: "CAESAR 6x6" }
-function split(label, fallbackMaker) {
-  const s = String(label || "").trim();
-  const i = s.indexOf(" · ");
-  if (i > 0) return { maker: s.slice(0, i).trim(), name: s.slice(i + 3).trim() };
-  return { maker: fallbackMaker || "", name: s };
+/* every product that can be put in a comparison, from the served catalogue */
+export function catalogue(competitors, clientCid, clientLabel) {
+  const out = [];
+  Object.entries(competitors || {}).forEach(([cid, co]) => {
+    const maker = String(cid) === String(clientCid) ? clientLabel : co.name;
+    (co.products || []).forEach((p) => {
+      if (!p || !p.vs || p.umbrella || NOT_OFFERED.has(p.kind)) return;
+      const specs = {};
+      SHEET_SECTIONS.forEach((s) => ((p.sheet && p.sheet[s]) || []).forEach((r) => {
+        if (!r || !r.l || specs[r.l]) return;
+        const v = Array.isArray(r.v) ? r.v.join("; ") : r.v;
+        if (v != null && v !== "") specs[r.l] = { v: String(v), n: null, hi: null, u: "" };
+      }));
+      out.push({ key: String(p.id), name: p.displayName || p.name, maker, cat: p.category || "", country: p.country || co.country || "", vs: p.vs, specs });
+    });
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function buildProductIndex(matchups, clientLabel, competitors = null, clientCid = null) {
-  const byKey = new Map();
-  const add = (side, label, maker, cat, country, spec, v, n) => {
-    const { maker: mk, name } = split(label, maker);
-    if (!name || /^—?$/.test(name) || /present$/i.test(name)) return;
-    const key = `${side}|${(mk || "").toLowerCase()}|${name.toLowerCase()}`;
-    let e = byKey.get(key);
-    if (!e) {
-      e = { key, side, name, maker: side === "client" ? clientLabel : mk || maker || "", cat: cat || "", country: country || "", specs: {} };
-      byKey.set(key, e);
-    }
-    if (!spec || SKIP.has(spec.l)) return;
-    const cur = e.specs[spec.l];
-    const hasNum = typeof n === "number" && isFinite(n);
-    if (!cur || (cur.n == null && hasNum)) {
-      e.specs[spec.l] = { v: v == null || v === "" ? null : String(v), n: hasNum ? n : null, hi: spec.hi ?? null, u: spec.u || "" };
-    }
-  };
-  Object.values(matchups || {}).forEach((m) => {
-    const specs = m.specs && m.specs.length ? m.specs : [null];
-    specs.forEach((s) => {
-      add("rival", m.comp, m.compBy, m.cat, m.country, s, s && s.cv, s && s.cn);
-      add("client", m.bf || m.anchor, clientLabel, m.cat, "", s, s && s.kv, s && s.kn);
-    });
+const typesOf = (items, maker) => new Set(items.filter((p) => p.maker === maker).map((p) => p.vs));
+
+/* the companies that make at least one product of a type `maker` also makes (all companies with a
+   rival anywhere when `maker` is empty) */
+export function companiesFacing(items, maker = "") {
+  const byType = new Map();
+  items.forEach((p) => byType.set(p.vs, (byType.get(p.vs) || new Set()).add(p.maker)));
+  const mine = maker ? typesOf(items, maker) : null;
+  const out = new Set();
+  byType.forEach((makers, vs) => {
+    if (makers.size < 2 || (mine && !mine.has(vs))) return;
+    makers.forEach((m) => { if (m !== maker) out.add(m); });
   });
-  /* Then the whole served catalogue (owner 22 Oct: "compare any two" must offer every product, not only
-     the matched pairs). A catalogue spec is text with no direction, so it is shown, never scored.
-     ponytail: a product already listed from a matchup under the same name is not repeated; the same
-     product spelled differently in the two places appears twice. */
-  const named = new Set([...byKey.values()].map((e) => `${e.side}|${e.name.toLowerCase()}`));
-  Object.entries(competitors || {}).forEach(([cid, co]) => {
-    const side = String(cid) === String(clientCid) ? "client" : "rival";
-    (co.products || []).forEach((p) => {
-      const nm = String((p && p.name) || "").trim();
-      if (!nm || named.has(`${side}|${nm.toLowerCase()}`)) return;
-      const label = side === "client" ? nm : `${co.name} · ${nm}`;
-      const specs = Object.entries(p.specs || {});
-      (specs.length ? specs : [[null, null]]).forEach(([l, v]) =>
-        add(side, label, co.name, p.category || co.sector, p.country || co.country, l ? { l } : null, v, null));
-    });
-  });
-  return [...byKey.values()].sort((a, b) =>
-    (a.side === b.side ? 0 : a.side === "client" ? -1 : 1) || a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name));
+  return [...out].sort((a, b) => a.localeCompare(b));
+}
+
+/* makerA's products that makerB has an answer to */
+export function productsFacingCompany(items, makerA, makerB) {
+  const theirs = typesOf(items, makerB);
+  return items.filter((p) => p.maker === makerA && theirs.has(p.vs));
+}
+
+/* makerB's products of the same type as product a */
+export function rivalsOf(items, a, makerB) {
+  return a ? items.filter((p) => p.maker === makerB && p.vs === a.vs && p.key !== a.key) : [];
 }
 
 export function compareProducts(a, b) {

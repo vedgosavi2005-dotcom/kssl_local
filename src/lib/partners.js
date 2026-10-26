@@ -17,6 +17,8 @@ import { countryFlagDisc } from "./countryFlags.js";
 import { categoryDisc } from "./categorySymbols.js";
 import { buildCategories, verdictOf, impactText } from "./partnerCategories.js";
 import { stanceWords, OVERLAP_KINDS } from "./chrome.js";
+import { tieValueParts } from "./tieValue.js";
+import { formatDate } from "../utils/formatDate.js";
 
 /* THE CLIENT ROSTER AND A RIVAL'S PARTNER ROWS DO NOT SHARE A KEY SPACE.
    KSSL_PARTNERS is reference data and carries `plp_01`..`plp_03` with cid null; the rows
@@ -1141,20 +1143,36 @@ const PG_IMG_ONERROR =
           return [l1, l2];
         }
       }
-      const lines = [];
-      let cur = "";
-      for (const w of words) {
-        if (!cur) {
-          cur = w;
-        } else if ((cur + " " + w).length <= maxLen) {
-          cur += " " + w;
-        } else {
-          lines.push(cur);
-          cur = w;
+      const greedy = (width) => {
+        const out = [];
+        let cur = "";
+        for (const w of words) {
+          if (!cur) {
+            cur = w;
+          } else if ((cur + " " + w).length <= width) {
+            cur += " " + w;
+          } else {
+            out.push(cur);
+            cur = w;
+          }
         }
+        if (cur) out.push(cur);
+        return out;
+      };
+      /* Three lines, not two (functional test G14, 2026-10-25): slice(0, 2) dropped the rest
+         without a mark, so "Ministry of Defence and Veteran Affairs" read "Ministry of /
+         Defence and". A name that needs more than three lines at this width is tried a
+         little wider; only past that does the third line end in "…" -- the node's <title>
+         carries the full name. */
+      let lines = greedy(maxLen);
+      for (const extra of [4, 8]) {
+        if (lines.length <= 3) break;
+        lines = greedy(maxLen + extra);
       }
-      if (cur) lines.push(cur);
-      return lines.slice(0, 2);
+      if (lines.length <= 3) return lines;
+      const kept = lines.slice(0, 3);
+      kept[2] = `${kept[2].length > maxLen + 8 ? kept[2].slice(0, maxLen + 7) : kept[2]}…`;
+      return kept;
     }
 
     const defs =
@@ -1374,39 +1392,16 @@ const PG_IMG_ONERROR =
     // Shows ONLY the competitor (root), the clicked flag/category (focus), and its connected partners.
     // No other flags/categories are shown, keeping the canvas completely clean and focused.
     const rootX = 480;
-    const rootY = 410;
+    let rootY = 410;
     const rootR = 34;
 
     const focusX = 480;
-    const focusY = 250;
+    let focusY = 250;
     const FOCUS_R = 32;
 
     let edges = "";
     let nodes = "";
     const popK = v.anim === "children" ? " pgx-pop" : "";
-
-    // 1. Focused sub-branch stem & hub connecting competitor to clicked flag
-    edges += `<line class="pg-edge pgx-spoke pgx-focus" data-type="${escAttr(focus.key)}" x1="${f1(rootX)}" y1="${f1(rootY - rootR)}" x2="${f1(focusX)}" y2="${f1(focusY + FOCUS_R + 4)}" style="stroke:${focus.color || "#0ea5e9"};stroke-width:2.8px;opacity:1" />`;
-
-    const focusDiscSvg = byRegion
-      ? countryFlagDisc(
-          focus.label || focus.key,
-          focusX,
-          focusY,
-          FOCUS_R,
-          "#ffffff",
-          'filter="url(#pgxGlow)"',
-          `pgx-flag-focus-${escAttr(focus.key).replace(/[^a-zA-Z0-9_-]/g, "_")}`
-        )
-      : categoryDisc(focus.key, focusX, focusY, FOCUS_R, focus.fill, "#ffffff", 'filter="url(#pgxGlow)"');
-
-    nodes +=
-      `<g class="pg-node pg-type pgx-focus" data-type="${escAttr(focus.key)}" style="cursor:pointer">` +
-      `<title>${esc(focus.label)} - click to return to all ${byRegion ? "regions" : "categories"}</title>` +
-      focusDiscSvg +
-      `<text class="lbl-ptr-title" style="font-size:13px;font-weight:800;letter-spacing:0.04em" x="${f1(focusX)}" y="${f1(focusY + FOCUS_R + 17)}" text-anchor="middle">${esc(focus.label.toUpperCase())}</text>` +
-      (byRegion ? "" : `<text class="lbl-ptr-sub" style="font-size:10px;font-weight:700;fill:${focus.color};letter-spacing:0.06em" x="${f1(focusX)}" y="${f1(focusY + FOCUS_R + 30)}" text-anchor="middle">${focus.nodes.length} PARTNERS</text>`) +
-      `</g>`;
 
     // 3. Partner children (leaves) fanning out in expansive single arc
     const k = Math.min(focus.nodes.length, 16);
@@ -1524,6 +1519,44 @@ const PG_IMG_ONERROR =
       }
       if (!moved) break;
     }
+
+    /* TOOLBAR CLEARANCE (functional test G14, 2026-10-25). The zoom / group toolbar sits
+       over the top of the canvas, and the top leaf's label (raised further by the
+       stagger) ran under it: "Dongfeng Motor Group" was half hidden by the Categories
+       menu. When any label box starts above TOP_SAFE the whole focus layout -- leaves,
+       hub and company -- moves down by the shortfall, up to the room left under the
+       company's own name. */
+    const TOP_SAFE = 52;
+    const topY = kids.length ? Math.min(...kids.map((kd) => getBox(kd).y0)) : TOP_SAFE;
+    const dropY = topY < TOP_SAFE ? Math.min(TOP_SAFE - topY, 58) : 0;
+    if (dropY) {
+      kids.forEach((kd) => { kd.y += dropY; kd.ly += dropY; });
+      focusY += dropY;
+      rootY += dropY;
+    }
+
+    // 1. Focused sub-branch stem & hub connecting competitor to clicked flag
+    edges += `<line class="pg-edge pgx-spoke pgx-focus" data-type="${escAttr(focus.key)}" x1="${f1(rootX)}" y1="${f1(rootY - rootR)}" x2="${f1(focusX)}" y2="${f1(focusY + FOCUS_R + 4)}" style="stroke:${focus.color || "#0ea5e9"};stroke-width:2.8px;opacity:1" />`;
+
+    const focusDiscSvg = byRegion
+      ? countryFlagDisc(
+          focus.label || focus.key,
+          focusX,
+          focusY,
+          FOCUS_R,
+          "#ffffff",
+          'filter="url(#pgxGlow)"',
+          `pgx-flag-focus-${escAttr(focus.key).replace(/[^a-zA-Z0-9_-]/g, "_")}`
+        )
+      : categoryDisc(focus.key, focusX, focusY, FOCUS_R, focus.fill, "#ffffff", 'filter="url(#pgxGlow)"');
+
+    nodes +=
+      `<g class="pg-node pg-type pgx-focus" data-type="${escAttr(focus.key)}" style="cursor:pointer">` +
+      `<title>${esc(focus.label)} - click to return to all ${byRegion ? "regions" : "categories"}</title>` +
+      focusDiscSvg +
+      `<text class="lbl-ptr-title" style="font-size:13px;font-weight:800;letter-spacing:0.04em" x="${f1(focusX)}" y="${f1(focusY + FOCUS_R + 17)}" text-anchor="middle">${esc(focus.label.toUpperCase())}</text>` +
+      (byRegion ? "" : `<text class="lbl-ptr-sub" style="font-size:10px;font-weight:700;fill:${focus.color};letter-spacing:0.06em" x="${f1(focusX)}" y="${f1(focusY + FOCUS_R + 30)}" text-anchor="middle">${focus.nodes.length} PARTNERS</text>`) +
+      `</g>`;
 
     // Render kids edges & nodes
     kids.forEach((kd, i) => {
@@ -1782,34 +1815,31 @@ const PG_IMG_ONERROR =
     };
     /* a verdict is a stance: threat or watch, nothing else (a stored third value draws no verdict at all) */
     const RANK = { threat: 2, watch: 1 };
-    const VERDICT_STYLE = {
-      threat: ["#fdecea", "#b5341f", "#f3b8ae"],
-      watch: ["#fdf4dc", "#8a6212", "#ecd28a"],
-    };
     const WORDS = stanceWords();   // the two stance words: threat, watch
-    const pill = (text, [bg, fg, br]) =>
-      `<span style="font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; background: ${bg}; color: ${fg}; border: 1px solid ${br}; padding: 3px 8px; border-radius: 4px; white-space: nowrap;">${esc(text)}</span>`;
-    const chip = (text) =>
-      `<span style="font-family: var(--mono); font-size: 10.5px; font-weight: 600; background: #f0efea; color: #3d3d39; padding: 3px 8px; border-radius: 3px; overflow-wrap: anywhere;">${esc(text)}</span>`;
-    const label = (t) =>
-      `<div style="font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #6b6a63; margin-bottom: 3px;">${t}</div>`;
+    // the stance tag: outlined, in the stance colour -- the signal drawer's tag (shell.css .dirpill)
+    const pill = (v) => (v && WORDS[v] ? `<span class="dirpill dir-${v}">${esc(WORDS[v])}</span>` : "");
+    const chip = (text) => `<span class="tie-chip">${esc(text)}</span>`;
+    const label = (t) => `<span class="eyebrow">${t}</span>`;
     const NO = String(clientName);
+    const STATUS_WORD = { active: "Active", announced: "Announced", ended: "Ended", exploring: "In talks" };
 
     const verdicts = rows.map((r) => verdictOf(r)).filter(Boolean);
     const net = verdicts.sort((x, y) => RANK[y] - RANK[x])[0] || null;
     const types = [...new Set(rows.map((r) => real(r.ptype) || categoryOf(r.rel).label))];
     const where = partnerCountries.length ? partnerCountries : [real(p.country)].filter(Boolean);
 
-    let h = `<div style="display: flex; flex-direction: column; gap: 14px;">`;
-
-    // WHO <-> WHO, in one line, with the verdict for the client
-    h += `<div class="tie-hero">` +
-      `<div class="th-name" style="color: #161614;">${esc(c.name)} ↔ ${esc(partnerName)}</div>` +
-      `<div class="th-meta" style="flex-wrap: wrap; gap: 6px;">${types.map(chip).join("")}${statusTag(p)}${confTag(p)}${where.length ? `<span>${esc(where.join(", "))}</span>` : ""}</div>` +
-      `<div style="font-size: 12.5px; color: #3d3d39; line-height: 1.5; margin-top: 8px;">` +
-      `${esc(partnerName)} has ${rows.length} ${rows.length === 1 ? "tie" : "ties"} with ${esc(c.name)}: ${esc(types.join("; "))}.` +
-      (net && WORDS[net] ? ` Read for ${esc(NO)}: ${pill(WORDS[net], VERDICT_STYLE[net])}` : "") +
+    /* RELATIONSHIP SIDE CARD (owner 2026-10-25, "like the images", BLUF like the signal drawer): the eyebrow and
+       WHO <-> WHO, grey chips (each tie type, the partner's country), then the bottom line in one sentence with the
+       read for the client, the actions, and then each tie as a numbered section. */
+    let h = `<div class="tie-read">`;
+    h += `<div class="tie-hero">${label("Relationship")}` +
+      `<div class="th-name">${esc(c.name)} ↔ ${esc(partnerName)}</div>` +
+      `<div class="th-meta">${types.map(chip).join("")}${where.map(chip).join("")}${statusTag(p)}${confTag(p)}</div>` +
+      `<div class="tie-bluf">${esc(partnerName)} has ${rows.length} ${rows.length === 1 ? "tie" : "ties"} with ${esc(c.name)}: ${esc(types.join("; "))}.` +
+      (net ? ` Read for ${esc(NO)}: ${pill(net)}` : "") +
       `</div></div>`;
+    // the card's one action: back to the company's partners (the "‹ Back" that sat over the title, same handler)
+    h += `<div class="tie-actions"><button type="button" class="tie-act" data-back="1">‹ All partners of ${esc(c.name)}</button></div>`;
 
     rows.forEach((r, i) => {
       const cat = categoryOf(r.rel);
@@ -1817,33 +1847,35 @@ const PG_IMG_ONERROR =
       const verdict = verdictOf(r);
       const impact = impactText(r);
       const note = real(r.note) || pgThinNote(r, c.name);
-      // the served tie carries one source url in `src` (379 of 381 rows); `srcs` is the older list shape
+      const steps = Array.isArray(r.steps) ? r.steps : [];
+      // what the tie is about: the label of its first dated step ("F135 final assembly agreement"), when there is one
+      const subject = real((steps.find((t) => real(t.label)) || {}).label);
+      /* sources: each step's own url under its publisher's name; the served tie's one `src` url (379 of 381 rows),
+         or the older `srcs` list, when the tie has no step with a url */
+      const stepSrcs = steps.filter((t) => t && t.url).map((t) => ({ label: t.publisher || "", url: t.url }));
       const listed = (r.srcs || []).filter((x) => x && x.url);
-      const srcs = listed.length ? listed : /^https?:\/\//i.test(String(r.src || "")) ? [{ label: "Source", url: r.src }] : [];
-      const facts = [
-        ["Relationship", typeLabel],
-        ["Territory", real(r.country)],
-        ["Since", real(r.date)],
-        ["Deal value", real(r.deal)],
-      ].filter(([, v]) => v);
+      const srcs = stepSrcs.length ? stepSrcs : listed.length ? listed : /^https?:\/\//i.test(String(r.src || "")) ? [{ label: "Source", url: r.src }] : [];
 
-      h += `<div style="background: #ffffff; color: #161614; border: 1px solid #e2e0d8; border-radius: 8px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">`;
-      h += `<div style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">` +
-        `<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700;"><span class="rmark rel-${escAll(r.rel || "other")}" style="width: 10px; height: 10px; border-radius: 50%; background: ${cat.color};"></span>${rows.length > 1 ? `${i + 1}. ` : ""}${esc(typeLabel)}${real(r.country) ? ` · ${esc(r.country)}` : ""}</span>` +
-        (verdict && WORDS[verdict] ? pill(WORDS[verdict], VERDICT_STYLE[verdict]) : "") + `</div>`;
+      h += `<section class="tie-sec">`;
+      h += `<div class="tie-sec-h"><span class="tie-sec-t"><span class="rmark" style="background: ${cat.color};"></span>` +
+        `<span>${i + 1}. ${esc(typeLabel)}${subject ? ` · ${esc(subject)}` : ""}</span></span>${pill(verdict)}</div>`;
 
       // what this kind of tie IS, in plain words
-      h += `<div>${label("What this kind of tie means")}<div style="font-size: 12.5px; color: #3d3d39; line-height: 1.55;"><b>${esc(typeLabel)}</b>: ${esc(categoryDef(r.rel, c.name))}</div></div>`;
+      h += `<div class="tie-blk">${label("What this kind of tie means")}<div class="cd-prose"><b>${esc(typeLabel)}</b>: ${esc(categoryDef(r.rel, c.name, NO))}</div></div>`;
 
-      if (note) h += `<div>${label(`What the record says`)}<div style="font-size: 13px; color: #161614; line-height: 1.6;">${esc(note)}</div></div>`;
+      if (note) h += `<div class="tie-blk">${label("What the record says")}<div class="cd-prose">${esc(note)}</div></div>`;
 
-      h += `<div style="padding: 12px 14px; background: #f7f6f3; border: 1px solid #e2e0d8; border-radius: 6px;">${label(`What it means for ${esc(NO)}`)}` +
-        `<div style="font-size: 13px; color: #161614; line-height: 1.6;">${impact ? esc(impact) : "No read on record for this tie."}</div></div>`;
+      // the client read, in a box coloured by the stance (no stance: neutral grey)
+      h += `<div class="tie-blk tie-mean cd-kssl kssl-${verdict || "none"}">${label(`What it means for ${esc(NO)}`)}` +
+        `<div class="cd-prose">${impact ? esc(impact) : "No read on record for this tie."}</div></div>`;
 
-      // what each side gets (stored value_to_competitor / value_to_partner: "tag: one line")
-      if (real(r.valueComp) || real(r.valuePartner)) {
-        const line = (who, v) => real(v) ? `<div style="font-size: 12.5px; line-height: 1.55;"><b>${esc(who)}</b>: ${esc(v)}</div>` : "";
-        h += `<div>${label("What each side gets")}${line(c.name, r.valueComp)}${line(partnerName, r.valuePartner)}</div>`;
+      /* what each side gets (stored value_to_competitor / value_to_partner: "tag: one line").
+         The tag is printed in plain words ("market_access:" -> "Market access:") and a
+         value that is only "not stated" is left out (functional test G14, 2026-10-25). */
+      const gains = [[c.name, tieValueParts(r.valueComp)], [partnerName, tieValueParts(r.valuePartner)]].filter(([, g]) => g);
+      if (gains.length) {
+        const line = (who, g) => `<div class="cd-prose"><b>${esc(who)}</b>: ${g.tag ? `<span class="tie-gtag">${esc(g.tag)}:</span> ` : ""}${esc(g.text)}</div>`;
+        h += `<div class="tie-blk">${label("What each side gets")}${gains.map(([who, g]) => line(who, g)).join("")}</div>`;
       }
       // overlap with the client's own partners and suppliers (stored by the partnership prompt, matched by name in code)
       if (r.overlap && real(r.overlap.kind) && r.overlap.kind !== "none" && r.overlap.kind !== "unknown") {
@@ -1851,23 +1883,28 @@ const PG_IMG_ONERROR =
         const head = o.kind === "same_component" ? `Same component: ${NO} and ${c.name} both get it from ${partnerName}`
           : o.kind === "same_partner_other_scope" ? `${partnerName} also works with ${NO}, on something else`
           : `This tie is in a ${NO} market`;
-        h += `<div style="padding: 12px 14px; background: #fdf4dc; border: 1px solid #ecd28a; border-radius: 6px;">${label(`Overlap with ${esc(NO)}'s own partners`)}` +
-          `<div style="font-size: 13px; line-height: 1.6;"><b>${esc(head)}</b></div>` +
-          (real(o.component) ? `<div style="font-size: 12.5px; line-height: 1.55; margin-top: 4px;">${esc(o.component)}</div>` : "") +
-          (real(o.effect) && o.effect !== "unknown" ? `<div style="font-size: 12px; color: #6b6a63; margin-top: 4px;">Effect for ${esc(NO)}: ${esc(o.effect)}</div>` : "") + `</div>`;
+        h += `<div class="tie-blk tie-ov">${label(`Overlap with ${esc(NO)}'s own partners`)}<div class="cd-prose"><b>${esc(head)}</b></div>` +
+          (real(o.component) ? `<div class="cd-prose">${esc(o.component)}</div>` : "") +
+          (real(o.effect) && o.effect !== "unknown" ? `<div class="tie-ov-fx">Effect for ${esc(NO)}: ${esc(o.effect)}</div>` : "") + `</div>`;
       }
-      // the tie as a timeline: each evidence card is one dated step
-      if (Array.isArray(r.steps) && r.steps.length > 1) {
-        h += `<div>${label("Timeline of the tie")}<ol style="margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55;">` +
-          r.steps.map((t) => `<li><b>${esc(t.date || "")}</b> ${esc(t.label || "")}${t.step ? ` <span style="color:#6b6a63">(${esc(String(t.step).replace(/_/g, " "))})</span>` : ""}</li>`).join("") + `</ol></div>`;
+      /* the tie as a timeline, drawn like the signal drawer's: dated steps on a rail, the event, the step kind in grey,
+         its source chip; folded shut until clicked. The Relationship / Territory / Since / Status table under it is gone
+         (owner 2026-10-26): the chips at the top and the steps already say it */
+      if (steps.length) {
+        const now = Date.now();
+        h += `<details class="ctx-sec cd-fold"><summary class="eyebrow">Timeline</summary><ol class="pj-time">` +
+          steps.map((t) => {
+            const later = /^\d{4}-\d{2}-\d{2}/.test(String(t.date || "")) && new Date(t.date).getTime() > now;
+            return `<li${later ? ' class="next"' : ""}><span class="pj-d">${esc(t.date ? formatDate(t.date) : "date not stated")}</span>` +
+              `<span class="pj-e">${esc(t.label || "")}${later ? " (expected)" : ""}` +
+              `${t.step ? `<span class="pj-note"> ${esc(String(t.step).replace(/_/g, " "))}</span>` : ""}` +
+              `${t.url ? ` ${srcChips([{ label: "Source", url: t.url }])}` : ""}</span></li>`;
+          }).join("") + `</ol></details>`;
       }
 
-      h += `<div style="display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 12px;">` +
-        facts.map(([k, v]) => `<span style="color: #6b6a63;">${esc(k)}</span><span style="color: #161614; font-weight: 600;">${esc(v)}</span>`).join("") +
-        `</div>`;
 
-      if (srcs.length) h += `<div>${label("Sources")}<div class="pg-src-links">${srcChips(srcs)}</div></div>`;
-      h += `</div>`;
+      if (srcs.length) h += `<div class="tie-blk">${label("Sources")}<div class="pg-src-links">${srcChips(srcs)}</div></div>`;
+      h += `</section>`;
     });
 
     h += `</div>`;

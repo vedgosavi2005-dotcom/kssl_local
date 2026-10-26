@@ -116,13 +116,13 @@ export function createGeo(d) {
         : "";
     };
     let h =
-      `<details class="gc-pair" open><summary><span class="gc-names"><b>${escAll(x.bf)}</b> <i>vs</i> <b>${escAll(stripCo(x.comp))}</b></span>` +
+      `<details class="gc-pair" open><summary><span class="gc-names"><b>${escAll(x.bfName || x.bf)}</b> <i>vs</i> <b>${escAll(x.compName || stripCo(x.comp))}</b></span>` +
       `<span class="gc-chip ${CMP_CLS[who]}">${escAll(cmpWord(who))}</span>` +
       `<span class="gc-score">${rv + kv + lv ? `${escAll(rivalName)} ${rv} · ${escAll(ks)} ${kv} · level ${lv} (of ${rv + kv + lv} decided rows)` : "no decided rows"}</span></summary>`;
     if (x.verdictH) h += `<div class="gc-reason"><b>${escAll(x.verdictH)}</b></div>`;
     if (x.reason) h += `<div class="gc-reason">${escAll(x.reason)}</div>`;
     h += lead("competitor", rivalName, "rv") + lead("client", ks, "kv");
-    h += `<table class="gc-tbl"><tr><th>Spec</th><th>${escAll(ks)}<br>${escAll(x.bf)}</th><th>${escAll(rivalName)}<br>${escAll(stripCo(x.comp))}</th><th>Gap</th></tr>`;
+    h += `<table class="gc-tbl"><tr><th>Spec</th><th>${escAll(ks)}<br>${escAll(x.bfName || x.bf)}</th><th>${escAll(rivalName)}<br>${escAll(x.compName || stripCo(x.comp))}</th><th>Gap</th></tr>`;
     const groups = [];
     specs.forEach((sp) => {
       const g = sp.group || "Other";
@@ -164,9 +164,42 @@ export function createGeo(d) {
           String(a.p.name).localeCompare(String(b.p.name)),
       );
   }
-  function geoProductListHtml(cid, activeId) {
+  /* KSSL's own market, laid out like the frontend team's reference (owner 2026-10-26): the client's products in that
+     country, each with its stored rival counterpart, rivals active in the country first */
+  function geoClientProducts(country) {
+    const rivalsInCountry = new Set(country ? compsInCountry(country).filter((c) => !c.isBf).map((c) => String(c.id)) : []);
+    const byMatch = (p) => matchups.filter((m) => String(m.clientProductId) === String(p.id))
+      .sort((a, b) => (rivalsInCountry.has(String(b.compId)) ? 1 : 0) - (rivalsInCountry.has(String(a.compId)) ? 1 : 0)
+        || (Number(b.decision) || 0) - (Number(a.decision) || 0));
+    const own = (((competitors[CLIENT_KEY] || {}).products) || []);
+    const here = country && country !== "India" ? productsFor(CLIENT_KEY, country) : own;
+    return here
+      .map((p) => { const full = own.find((q) => String(q.id) === String(p.id)) || p; const ms = byMatch(full); return { p: full, ms, x: ms[0] || null }; })
+      .sort((a, b) => (b.x ? 1 : 0) - (a.x ? 1 : 0) || b.ms.length - a.ms.length
+        || String(a.p.category || "").localeCompare(String(b.p.category || "")) || String(a.p.name).localeCompare(String(b.p.name)));
+  }
+  const nameOf = (p) => p.displayName || p.name;
+  function geoProductListHtml(cid, activeId, country) {
     const c = geoComps.find((x) => x.id === cid);
-    if (!c || c.isBf) return "";
+    if (!c) return "";
+    if (c.isBf) {
+      const rows = geoClientProducts(country);
+      if (!rows.length) return "";
+      const paired = rows.filter((r) => r.x).length;
+      let h = `<div class="geo-pl-h"><span class="geo-pl-t">Products ${escAll(c.name)} sells</span><span class="geo-pl-n">${rows.length} model${rows.length === 1 ? "" : "s"} · ${paired} matched to a competitor model</span></div>`;
+      h += `<div class="geo-pl-hint">Pick a model to compare it with its competitor counterpart on the right.</div>`;
+      rows.forEach(({ p, x }) => {
+        const who = x ? verdictOf(x) : null;
+        const chip = x ? `<span class="gc-chip ${CMP_CLS[who]}">${escAll(cmpWord(who))}</span>` : `<span class="gc-chip gc-none">No matched competitor model</span>`;
+        h +=
+          `<div class="geo-rel-item prod${String(p.id) === String(activeId) ? " active" : ""}" data-cmp-prod="${escAll(p.id)}"><span class="ri-act ex"></span><div class="ri-main">` +
+          `<div class="ri-nm">${escAll(nameOf(p))}</div><div class="ri-desc">${escAll(p.category || "")}</div>` +
+          `<div class="ri-counter${x ? "" : " none"}"><span class="rc-lab">Rival counter</span> ` +
+          (x ? `<span class="rc-prod">${escAll(x.compName || stripCo(x.comp))} (${escAll(x.compBy)})</span>` : '<span class="rc-prod muted">no like-for-like product</span>') +
+          ` ${chip}</div></div><span class="ri-chev">›</span></div>`;
+      });
+      return h;
+    }
     const rows = geoRivalProducts(cid);
     if (!rows.length) return "";
     const nm = escAll(c.name);
@@ -183,18 +216,28 @@ export function createGeo(d) {
         `<div class="geo-rel-item prod${String(p.id) === String(activeId) ? " active" : ""}" data-cmp-prod="${escAll(p.id)}"><span class="ri-act ex"></span><div class="ri-main">` +
         `<div class="ri-nm">${escAll(p.name)}</div><div class="ri-desc">${escAll(p.category || "")}</div>` +
         `<div class="ri-counter${x ? "" : " none"}"><span class="rc-lab">${ks} counter</span> ` +
-        (x ? `<span class="rc-prod">${escAll(x.bf)}</span>` : '<span class="rc-prod muted">no like-for-like product</span>') +
+        (x ? `<span class="rc-prod">${escAll(x.bfName || x.bf)}</span>` : '<span class="rc-prod muted">no like-for-like product</span>') +
         ` ${chip}</div></div><span class="ri-chev">›</span></div>`;
     });
     return h;
   }
   // { title, html } for the right-hand pane: one rival model against its stored client counterpart
-  function geoProductCompare(cid, pid) {
+  function geoProductCompare(cid, pid, country) {
+    if ((geoComps.find((z) => z.id === cid) || {}).isBf) {
+      const own = geoClientProducts(country).find((r) => String(r.p.id) === String(pid));
+      if (!own) return null;
+      const { p: op, x: ox } = own;
+      if (ox) return { title: `${nameOf(op)} vs ${ox.compName || stripCo(ox.comp)}`, html: `<div class="gc">${geoPairCard(ox, ox.compBy)}</div>` };
+      let oh = `<div class="gc"><div class="gc-blk"><b>${escAll(nameOf(op))}</b>: no like-for-like comparison. No stored comparison pairs it with a competitor model.</div>`;
+      const ospecs = Object.entries(op.specs || {});
+      if (ospecs.length) oh += `<table class="gc-tbl"><tr><th>Spec</th><th>${escAll(nameOf(op))}</th></tr>${ospecs.map(([k, v]) => `<tr><td>${escAll(k)}</td><td>${escAll(v)}</td></tr>`).join("")}</table>`;
+      return { title: `${nameOf(op)}: no competitor counterpart`, html: oh + "</div>" };
+    }
     const row = geoRivalProducts(cid).find((r) => String(r.p.id) === String(pid));
     if (!row) return null;
     const { p, x } = row;
     const c = geoComps.find((z) => z.id === cid) || { name: "" };
-    if (x) return { title: `${p.name} vs ${x.bf}`, html: `<div class="gc">${geoPairCard(x, c.name)}</div>` };
+    if (x) return { title: `${p.name} vs ${x.bfName || x.bf}`, html: `<div class="gc">${geoPairCard(x, c.name)}</div>` };
     let h = `<div class="gc"><div class="gc-blk"><b>${escAll(p.name)}</b>: no like-for-like comparison. No stored comparison pairs it with a ${escAll(clientShort())} model.</div>`;
     const specs = Object.entries(p.specs || {});
     if (specs.length) {
@@ -353,6 +396,7 @@ export function createGeo(d) {
     geoOwnPanel,
     geoProductListHtml,
     geoProductCompare,
+    geoClientProducts,
     geoPickOverlap,
     actLabel,
     selfCheck,

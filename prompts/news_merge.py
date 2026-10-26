@@ -30,7 +30,7 @@ from datetime import date
 from backend.sources import hard_to_fetch, outlet_rank
 
 CATEGORIES = ["Contract & order", "Partnership / JV", "Product launch & testing", "Delivery & induction", "Export",
-              "Financial results", "Stock & market", "Facility & capacity", "Leadership & corporate",
+              "Financial results", "Stock & market", "Facility & capacity", "Investments", "Leadership & corporate",
               "Non-defence business", "Other"]
 JUDGEMENT = "judgement"                    # same marker prompts/loader.py writes for a _reason
 NOT_ABOUT = "not_about_company"            # fact_source column name of the "this story is not about the company" judgement
@@ -200,13 +200,15 @@ def plan_stories(stories: list[dict], cands: dict, warns: list) -> tuple[list[di
     for s in stories:
         for x in s["ids"][1:]:
             union(s["ids"][0], x)
+    from backend.news import url_key
     by_url: dict = {}
     for c in cands.values():
         if c.pre_group in cands:                     # code-known copies are one story whatever the model said
             union(c.pre_group, c.id)
-        if c.url in by_url:                          # the same article under two owners is one event
-            union(by_url[c.url], c.id)
-        by_url.setdefault(c.url, c.id)
+        k = url_key(c.url)                           # the same article (any spelling of its url) under two owners is one event
+        if k in by_url:
+            union(by_url[k], c.id)
+        by_url.setdefault(k, c.id)
     meta: dict = {}
     for s in stories:
         root = find(s["ids"][0])
@@ -271,6 +273,22 @@ def _exists(cur, table, idcol, rid) -> bool:
     return cur.fetchone() is not None
 
 
+URL_KEY_SQL = (                                                         # SQL twin of backend.news.url_key ({c} = the url column)
+    "rtrim(regexp_replace(regexp_replace(lower(split_part(regexp_replace({c}, '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''), '/', 1)), "
+    "':(80|443)$', ''), '^www[.]', '') || substr(regexp_replace({c}, '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''), "
+    "length(split_part(regexp_replace({c}, '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''), '/', 1)) + 1), '/')")
+
+
+def _same_page_row(cur, table, idcol, owner_id, url) -> str | None:
+    """The stored row of this owner whose url is another spelling of `url` (http/https, www., :80, trailing slash)."""
+    from backend.news import url_key
+    owner_col = "product_id" if table == "competitive_product_news" else "competitor_id"
+    cur.execute(f"SELECT {idcol}::text AS id FROM staging.{table} WHERE {owner_col} = %s AND {URL_KEY_SQL.format(c='article_url')} = %s "
+                f"ORDER BY {idcol} LIMIT 1", (owner_id, url_key(url)))
+    r = cur.fetchone()
+    return (r["id"] if isinstance(r, dict) else r[0]) if r else None
+
+
 def _new_row(cur, owner, comp_id, rid, head, url, day, pub, img_url, cat):
     if owner:
         cur.execute("INSERT INTO staging.competitive_product_news (product_news_id, product_id, headline, article_url, "
@@ -309,6 +327,9 @@ def _write(cur, plan: dict, comp_id: str) -> dict:
     from backend.news import row_id
     members, cat, reasons = plan["members"], plan["category"], plan["reasons"]
     main, img = members[0], image_source(members)
+    if not plan.get("not_about"):     # Investments on top of the model's one category when the code rule is sure (news.yml, 2026-10-26)
+        from prompts.news_category import with_investments
+        cat = with_investments(cat, main.headline)
     pub = (main.publisher or None) and main.publisher[:200]
     stored = {r["product_id"]: r for r in plan["stored"]}
     src = plan["stored"][0] if plan["stored"] else None
@@ -342,6 +363,8 @@ def _write(cur, plan: dict, comp_id: str) -> dict:
                     _judgement(cur, table, rid, "category", reasons.get("category"))
         else:                                                       # a new story: its main article makes the row
             rid, fresh = row_id(main.url, owner or comp_id), True
+            if not _exists(cur, table, idcol, rid):                 # another spelling of the url is stored for this owner: that row (G8)
+                rid = _same_page_row(cur, table, idcol, owner or comp_id, main.url) or rid
             if _exists(cur, table, idcol, rid):                     # already a story row (re-run): only the category
                 cur.execute(f"UPDATE staging.{table} SET category = %s WHERE {idcol} = %s", (cat, rid))
             else:
@@ -464,7 +487,9 @@ def _selftest() -> None:
     assert norm_handle(" CAAAAAAAA ") == "Caaaaaaaa" and canon_category(" contract & ORDER ") == "Contract & order"
     assert canon_category("Orders") is None and canon_category(None) is None
     assert canon_category("stock & market") == "Stock & market" and canon_category("NON-defence business") == "Non-defence business"
-    assert len(CATEGORIES) == 11 and CATEGORIES[-1] == "Other"
+    assert len(CATEGORIES) == 12 and CATEGORIES[-1] == "Other"
+    from prompts.news_category import NEWS_CATEGORIES
+    assert tuple(CATEGORIES) == NEWS_CATEGORIES, "news_merge.CATEGORIES and news_category.NEWS_CATEGORIES drifted apart"
     # main article ranking: primary > earlier date > saved image > earlier found
     assert sorted([mk("p", day=5), mk("q", tier="primary", day=9), mk("r", day=2)], key=rank_key)[0].id.startswith("q")
     assert sorted([mk("p", day=5), mk("r", day=2), mk("s", day=None)], key=rank_key)[0].id.startswith("r")
@@ -510,6 +535,12 @@ def _selftest() -> None:
                            {"ids": [h2.id], "category": "Other", "reasons": {}, "same_as": [stored["Sdddddddd"]]}],
                           {h1.id: h1, h2.id: h2}, [])
     assert len(pl) == 1 and pl[0]["category"] == "Export" and pl[0]["stored"] == [stored["Sdddddddd"]] and not lf
+    # two spellings of one url (trailing slash, www., http) are one story even when the model split them (G8 2026-10-25)
+    u1, u2 = mk("u", url="https://www.navalnews.test/2026/06/f125-iris-t"), mk("v", url="http://navalnews.test/2026/06/f125-iris-t/")
+    pl, lf = plan_stories([{"ids": [u1.id], "category": "Contract & order", "reasons": {}, "same_as": []},
+                           {"ids": [u2.id], "category": "Contract & order", "reasons": {}, "same_as": []}], {u1.id: u1, u2.id: u2}, [])
+    assert len(pl) == 1 and len(pl[0]["members"]) == 2 and not lf, pl
+    assert "regexp_replace" in URL_KEY_SQL.format(c="article_url") and "{c}" not in URL_KEY_SQL.format(c="x")
     # a product-only story: main is ranked over all members, the company table is still a target
     pp = plan_stories([{"ids": [p1.id, p2.id], "category": "Other", "reasons": {}, "same_as": []}],
                       {p1.id: p1, p2.id: p2}, [])[0][0]

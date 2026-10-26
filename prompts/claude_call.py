@@ -63,7 +63,7 @@ def parse_cli_output(stdout: str) -> ModelResult:
 
 # Transient API faults are retried here, not logged as failed runs (owner 2026-10-24: "processing must produce no errors").
 # A usage / credit limit is NOT transient: it is raised at once, so the runner stops cleanly (scripts/flood_run, backend/routine).
-TRANSIENT = re.compile(r"connection closed|connection reset|econnreset|socket hang up|overloaded|5\d\d|internal server error|"
+TRANSIENT = re.compile(r"connection closed|connection reset|econnreset|socket hang up|overloaded|\b5\d\d\b|internal server error|"
                        r"bad gateway|service unavailable|timed out|timeout", re.I)
 RETRY_WAITS = (20, 60)          # seconds before the 2nd and 3rd attempt
 

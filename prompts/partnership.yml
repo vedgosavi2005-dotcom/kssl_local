@@ -12,6 +12,8 @@ web_search: true                 # the competitor's partners are mostly not in t
 #    matches the name (derive.partnership_overlap sets overlap_client_partner_id and removes an overlap the list does not support).
 #    Same component -> overlap_component says what it supplies to whom; overlap_effect says risk or advantage.
 #  - status of the tie, and each evidence card is a dated step (step_type) so the page shows the tie as a timeline
+#  - 2026-10-25 (owner): "Supply / customer" folded into Supplier (it was the same thing under two names); Other only when no source
+#    says what the two do. The 20 stored rows were re-typed in staging (Other 16, Supply / customer 4).
 # Inputs: the best-scored harvested documents of the competitor (deal score of the triage, or routed to partnership) first, then
 # headlines, then web search for gaps. A subject placeholder inside a documents query is bound as a SQL parameter.
 
@@ -100,15 +102,17 @@ task: |
 
   Per partner, one record, table competitive_partnership:
    - partner_name: as above
-   - partner_type: the first of these that applies, written exactly (a Teaming or MoU for a named programme is not "Other"):
+   - partner_type: the first of these that applies, written exactly:
        Joint venture        the two own a joint company
-       Acquisition          one acquired the other or a unit of it
-       Technology / ToT     a licence, transfer of technology, co-development or integration agreement
-       Teaming              they agreed to bid together for a named tender or programme
-       Supplier             the main tie is that one supplies parts, subsystems, materials or services to the other as a supplier or sub-supplier
-       Supply / customer    a deal or contract between the two companies that is not a supplier tie (an export deal, an order, a service contract)
+       Acquisition          one acquired the other or a unit of it, or owns a stake in it (a shareholder is Acquisition)
+       Technology / ToT     a licence, transfer of technology, co-development, research or integration agreement; licence production,
+                            local or final assembly of the other's product, co-production
+       Teaming              they bid together, or hold or deliver one named contract or programme together
+       Supplier             one supplies the other (either direction) with parts, subsystems, materials, products or services under a
+                            supply deal, order, subcontract, service, maintenance or marketing contract
        MoU / strategic      an MoU, letter of intent or strategic pact with no contract yet
-       Other                a tie the source records without a type
+       Other                ONLY when no source says what the two do together. If the description or scope names the work (a
+                            stake, assembly, a joint contract, supply, research, an MoU), use that type, never Other.
    - region: the partner's home country, English short name; for a multinational body the region as written; null if no source states it
    - description: 1-2 plain sentences saying who the partner is and what the tie is, from the sources
    - relationship_scope: what the two do together, as stated (products, programme, work share)
@@ -186,7 +190,7 @@ output:
       overlap_partner: {max: 255}            # read by derive.partnership_overlap, not stored
     columns:
       partner_name: {required: true, max: 250}
-      partner_type: {required: true, enum: [Joint venture, Acquisition, Technology / ToT, Teaming, Supplier, Supply / customer, MoU / strategic, Other]}
+      partner_type: {required: true, enum: [Joint venture, Acquisition, Technology / ToT, Teaming, Supplier, MoU / strategic, Other]}
       region: {max: 100}
       description: {plain: warn}
       relationship_scope: {}

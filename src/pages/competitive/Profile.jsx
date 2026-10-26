@@ -7,7 +7,8 @@ import { useAppState, useHeaderReport } from "../../state/AppState";
 import { useData } from "../../state/DataProvider";
 import { buildProfile, rosterOf, formatSectorName } from "../../lib/profile";
 import { companyNews, FEED_N, collapseThreads,
-         NEWS_MAX, NEWS_WINDOWS, NEWS_WINDOW_DEFAULT, NEWS_LIST_RANGES, windowDays, withinWindow, capNews, newsDate, NEWS_GROUP_ORDER } from "../../lib/news";
+         NEWS_MAX, NEWS_WINDOWS, NEWS_WINDOW_DEFAULT, NEWS_LIST_RANGES, windowDays, withinWindow, capNews, newsDate, NEWS_GROUP_ORDER,
+         newsCategoryOptions, hasNewsCategory } from "../../lib/news";
 import { facetOptionsByName, tidyHq } from "../../lib/countryFacet";
 import { INDEX, INDEX_NOTE } from "../../lib/articleUrl";
 import Thumb from "../../components/thumb/Thumb.jsx";
@@ -20,6 +21,7 @@ import Thumb from "../../components/thumb/Thumb.jsx";
 import { ArticleLink } from "../../components/sourceLink/SourceLink.jsx";
 import { isVisible } from "../../lib/visibility";
 import { competitorFullName } from "../../lib/companyNames";
+import { personInitials } from "../../lib/personInitials";
 /* A SELECTION IS REMEMBERED WHILE YOU STAY IN THIS PILLAR, not for ever. This page
    persisted to localStorage, which survives the tab, the browser and the machine's
    next reboot -- so a company opened once was still the landing selection weeks
@@ -27,6 +29,7 @@ import { competitorFullName } from "../../lib/companyNames";
    memory, cleared on a pillar change. See lib/viewState. */
 import * as viewState from "../../lib/viewState";
 import { REVIEW, Review, TraceField } from "../../components/review/Review.jsx";
+import { SipriArms } from "../../components/sipri/SipriFigures.jsx";
 
 // Helper function to extract clean company short name without full form or legal suffixes
 const cleanCompanyName = (rawName) => {
@@ -36,14 +39,15 @@ const cleanCompanyName = (rawName) => {
   return name || rawName;
 };
 
-// Helper function to extract executive initials for avatar
-const getInitials = (name) => {
-  if (!name) return "EX";
-  const clean = name.replace(/^(Mr\.|Ms\.|Dr\.|Shri|Prof\.|Commodore|Cdre\.|Retd)\s+/i, "").trim();
-  const parts = clean.split(/\s+/);
-  if (parts.length >= 2) return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-  return parts[0].slice(0, 2).toUpperCase();
-};
+// Executive initials for the avatar: titles, brackets and post-nominals stripped first
+// ("Dame Ruth Cairnie DBE" read "DD") -- see lib/personInitials (functional test G11, 2026-10-25)
+const getInitials = personInitials;
+
+/* A career or education line with nothing left to print. The research-note lines ("BDL does
+   not specify which institution...") are being blanked in the data; a row with no text, role,
+   degree or organisation would otherwise render as a bare dot (functional test G11, 2026-10-25). */
+const hasText = (v) => typeof v === "string" && v.trim() !== "";
+const printableLine = (e) => !!e && (hasText(e.text) || hasText(e.role) || hasText(e.degree) || hasText(e.company) || hasText(e.institution));
 
 const fmtNewsDate = (item) => {
   /* a publisher-index row carries the listing page's date, not the story's: it prints the dash */
@@ -379,12 +383,13 @@ export default function Profile() {
      stack now opens NEWS_PAGE at a time and the button says how many remain. */
   const [newsShown, setNewsShown] = useState(NEWS_PAGE);
   const [showAllNews, setShowAllNews] = useState(false);
-  /* The full NEWS list's own filters (not the feed's): a keyword and a date window. */
+  /* The full NEWS list's own filters (not the feed's): a keyword, a date window and a news category. */
   const [listQ, setListQ] = useState("");
   const [listRange, setListRange] = useState("all");   // all | 7d | 30d | 3m | 6m | 12m | custom
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
-  useEffect(() => { setListQ(""); setListRange("all"); setListFrom(""); setListTo(""); }, [cid]);
+  const [listCat, setListCat] = useState("all");       // all | one news category (lib/news newsCategoryOptions)
+  useEffect(() => { setListQ(""); setListRange("all"); setListFrom(""); setListTo(""); setListCat("all"); }, [cid]);
 
   useEffect(() => {
     const pend = takePending("profile");
@@ -401,7 +406,10 @@ export default function Profile() {
       if (revenue !== "all" && r.revenueTier !== revenue) return false;
       if (!tokens.length) return true;
       const fn = competitorFullName(r.cid, r.name, data.competitors);
-      const fullText = `${r.name || ""} ${fn || ""} ${r.sector || ""} ${r.hq || ""} ${r.cid || ""}`.toLowerCase();
+      /* Names only (functional test G4, 2026-10-25): the hidden company id was in this
+         text, so "bab" listed Oshkosh (its id ends ...0eebab); sector and HQ are not
+         printed on these rows either, so a hit on them looked equally unexplained. */
+      const fullText = `${r.name || ""} ${fn || ""}`.toLowerCase();
       return tokens.every((tok) => fullText.includes(tok));
     });
   }, [data, roster, query, searchQuery, country, revenue]);
@@ -451,18 +459,22 @@ export default function Profile() {
    */
   const leadershipList = useMemo(() => {
     if (!p || !p.leadership || !p.leadership.length) return [];
-    return p.leadership.map((r) => ({
-      name: r.value,
-      fullName: r.full_name || r.value,
-      role: r.detail || "—",
-      source: r.url,
-      photo: r.photo || null,
-      photoSource: r.photo_source || null,
-      // Excel leader records carry their own source url per row; the first one stands for the section
-      bioSource: r.bio_source || [...(r.experience || []), ...(r.education || [])].map((x) => x && x.url).find(Boolean) || null,
-      experience: Array.isArray(r.experience) ? r.experience : [],
-      education: Array.isArray(r.education) ? r.education : [],
-    }));
+    return p.leadership.map((r) => {
+      const experience = Array.isArray(r.experience) ? r.experience.filter(printableLine) : [];
+      const education = Array.isArray(r.education) ? r.education.filter(printableLine) : [];
+      return {
+        name: r.value,
+        fullName: r.full_name || r.value,
+        role: r.detail || "—",
+        source: r.url,
+        photo: r.photo || null,
+        photoSource: r.photo_source || null,
+        // Excel leader records carry their own source url per row; the first one stands for the section
+        bioSource: r.bio_source || [...experience, ...education].map((x) => x && x.url).find(Boolean) || null,
+        experience,
+        education,
+      };
+    });
   }, [p]);
   /* Facilities. Same fault: a hand-typed plant list for Bharat Dynamics
      (Kanchanbagh, Bhanur, Visakhapatnam, and an "Armenia (Deployed) / Philippines
@@ -627,7 +639,9 @@ export default function Profile() {
   /* The full NEWS list, narrowed by its own keyword + date filters. A date filter can only
      keep an article whose date is known (listing-page rows carry none). */
   const newsListDated = listRange !== "all";
-  const newsListFiltered = listQ.trim().length > 0 || newsListDated;
+  const newsListFiltered = listQ.trim().length > 0 || newsListDated || listCat !== "all";
+  // the category dropdown: the categories this company's news carries, each with its count (owner 2026-10-26)
+  const listCatOptions = useMemo(() => newsCategoryOptions(companyArticles), [companyArticles]);
   const listRows = useMemo(() => {
     const catOf = (item) =>
       productCategoryOf(`${item.title} ${item.excerpt || ""}`, data.CAT_ALIASES)
@@ -640,13 +654,14 @@ export default function Profile() {
       if (listRange !== "all" && !d) return false;
       if (since && d < since) return false;
       if (listRange === "custom" && ((listFrom && d < listFrom) || (listTo && d > listTo))) return false;
+      if (!hasNewsCategory(item, listCat)) return false;
       if (toks.length) {
         const hay = `${item.title} ${item.excerpt || ""} ${item.category || ""} ${catOf(item) || ""} ${item.source || ""}`.toLowerCase();
         if (!toks.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
-  }, [companyArticles, companyMeta, data.CAT_ALIASES, listQ, listRange, listFrom, listTo]);
+  }, [companyArticles, companyMeta, data.CAT_ALIASES, listQ, listRange, listFrom, listTo, listCat]);
 
   return (
     <div className="pos-view v-profile" style={{ gridTemplateColumns: "300px 1fr" }}>
@@ -670,7 +685,10 @@ export default function Profile() {
             style={{ width: "100%", marginTop: "8px" }}
             value={country}
           >
-            <option value="all">All origins ({roster.length})</option>
+            {/* the count is the number of options, as on every other sidebar dropdown (Products,
+                Partnerships, Movement); it counted companies here, "(49)" over 12 origins
+                (functional test G10, 2026-10-25) */}
+            <option value="all">All origins ({countryOptions.length})</option>
             {countryOptions.map((o) => (
               <option key={o.v} value={o.v}>
                 {o.v} ({o.n})
@@ -685,7 +703,7 @@ export default function Profile() {
             style={{ width: "100%", marginTop: "8px" }}
             value={revenue}
           >
-            <option value="all">All revenue tiers ({roster.length})</option>
+            <option value="all">All revenue tiers ({revenueOpts.length})</option>
             {revenueOpts.length ? (
               revenueOpts.map((o) => (
                 <option key={o.v} value={o.v}>
@@ -829,6 +847,8 @@ export default function Profile() {
                   </div>
                 </div>
               )}
+              {/* SIPRI arms revenue / Top-100 rank (data.sipriArms, owner 2026-10-26); nothing when SIPRI does not list the company */}
+              <SipriArms data={data} cid={p.cid} name={displayName} />
             </Sec>
 
             {/* 2. STRATEGIC POSITIONING / PARALLAX READ / STRENGTHS & WEAKNESSES: each is its own
@@ -1045,6 +1065,12 @@ export default function Profile() {
                     ))}
                     <option value="custom">Custom range…</option>
                   </select>
+                  <select className="cp-news-range" value={listCat} onChange={(e) => setListCat(e.target.value)} aria-label="Filter the news list by category">
+                    <option value="all">All categories</option>
+                    {listCatOptions.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
                   {listRange === "custom" ? (
                     <span className="cp-news-dates">
                       <input type="date" value={listFrom} max={listTo || undefined} onChange={(e) => setListFrom(e.target.value)} aria-label="From date" />
@@ -1058,7 +1084,7 @@ export default function Profile() {
               <div id="all-company-news" style={{ marginTop: "10px" }}>
                 {!listRows.length ? (
                   <div className="cp-thin" style={{ padding: "16px 12px" }}>
-                    No article matches{listQ.trim() ? <> “{listQ.trim()}”</> : null}{newsListDated ? " in this date range" : ""}.
+                    No article matches{listQ.trim() ? <> “{listQ.trim()}”</> : null}{listCat !== "all" ? <> in {listCat}</> : null}{newsListDated ? " in this date range" : ""}.
                   </div>
                 ) : null}
                 {(showAllNews ? listRows : listRows.slice(0, 20)).map((item, idx) => (
@@ -1068,7 +1094,7 @@ export default function Profile() {
                     className="ln-all-row"
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "100px minmax(0, 1fr) 210px 180px",   /* the chip column holds its widest chip; longer ones end in "…" */
+                      gridTemplateColumns: "100px minmax(0, 1fr) 180px",   /* date | title (both left) | source (right); no category chip (owner 2026-10-26: the category is the filter above) */
                       gap: "16px",
                       alignItems: "center",
                       padding: "10px 14px",
@@ -1083,28 +1109,6 @@ export default function Profile() {
                     </span>
                     <span className="ln-row-title" style={{ fontSize: "13px", color: "var(--d-txt)", fontWeight: "500", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {item.title}
-                    </span>
-                    <span className="ln-row-cat" style={{ display: "flex", justifyContent: "center", minWidth: 0 }}>
-                      <span
-                        title={item.category || undefined}
-                        style={{
-                          maxWidth: "100%",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          display: "inline-block",
-                          padding: "3px 12px",
-                          background: "var(--d-bg-2)",
-                          border: "1px solid var(--d-line)",
-                          borderRadius: "4px",
-                          fontFamily: "var(--mono)",
-                          fontSize: "11px",
-                          color: "var(--d-txt-2)",
-                          textAlign: "center",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {item.category || "—"}
-                      </span>
                     </span>
                     <span className="ln-row-url" style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--d-txt-3)", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {formatNewsSource(item)}

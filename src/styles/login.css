@@ -1,0 +1,1110 @@
+/* Login page design taken from the KSSL frontend team's build (owner 2026-10-25). Styles only: its client-side password,
+   OTP and terms logic was NOT taken (hard-coded fallback password, OTP shown in the browser, passwords in localStorage). */
+/* ===================================================================
+   LOGIN PAGE STYLES
+   Black & White Monochromatic Theme with Pronounced Foreground / Background Depth
+   Persistent cube grid background with white ambient shade/shadow (zero red tint)
+   =================================================================== */
+
+.login-viewport {
+  width: 100vw;
+  height: 100vh;
+  min-height: 100dvh;
+  background-color: #09090c;
+  background-image:
+    /* Luminous white ambient spotlight centered behind the box */
+    radial-gradient(ellipse 1050px 700px at 50% 50%, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 55%, transparent 80%),
+    radial-gradient(circle at 50% 100%, rgba(25, 25, 30, 0.9) 0%, transparent 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  position: relative;
+  overflow: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--d-txt, #f5f5f4);
+  box-sizing: border-box;
+}
+
+/* Background cube grid removed on request; white ambient shadow and spotlight preserved */
+.login-viewport::before {
+  display: none;
+}
+
+/* ===================================================================
+   ELEVATED FOREGROUND BOX (White & Black Theme with Depth)
+   Encloses 137Parallax, divider, and login form with layered shadows
+   =================================================================== */
+
+.login-box {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 1040px;
+  min-height: 520px;
+  background: rgba(18, 18, 22, 0.95);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid var(--d-line-2, rgba(255, 255, 255, 0.22));
+  border-radius: 18px;
+  padding: 68px 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  /* Multi-tier depth shadow: prominent white shadow/halo near box + elevation drop shadow */
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 0 30px 2px rgba(255, 255, 255, 0.20),
+    0 0 75px 8px rgba(255, 255, 255, 0.12),
+    0 0 140px 20px rgba(255, 255, 255, 0.08),
+    0 32px 72px -12px rgba(0, 0, 0, 0.95),
+    inset 0 1px 2px rgba(255, 255, 255, 0.25);
+  animation: loginFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes loginFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Two-column container inside the box */
+.login-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+/* Left Column: Brand Logo */
+.login-brand-side {
+  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 58px;
+  box-sizing: border-box;
+}
+
+.login-brand-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.login-wordmark {
+  font-family: 'Inter', var(--sans, 'Archivo'), system-ui, sans-serif;
+  font-size: 44px;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.login-wordmark .wm-number {
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.login-wordmark .wm-name {
+  font-weight: 500;
+  color: var(--d-txt-2, #bdbdbb);
+  letter-spacing: -0.02em;
+}
+
+.login-brand-tagline {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11.5px;
+  color: var(--d-txt-3, #908f8c);
+  letter-spacing: 0.12em;
+  margin-top: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+/* Center vertical divider line */
+.login-divider {
+  width: 1px;
+  height: 290px;
+  background-color: rgba(255, 255, 255, 0.16);
+  flex-shrink: 0;
+}
+
+/* Right Column: Form (balanced spacing matching brand side) */
+.login-form-side {
+  flex: 1;
+  display: flex;
+  justify-content: flex-start;
+  padding-left: 58px;
+  padding-right: 20px;
+  box-sizing: border-box;
+}
+
+.login-form {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* Field & Inputs with increased spacing between username and password */
+.login-field {
+  position: relative;
+}
+
+.login-field-email {
+  margin-bottom: 28px;
+}
+
+.login-field-password {
+  position: relative;
+  margin-bottom: 32px;
+}
+
+.login-input {
+  width: 100%;
+  height: 42px; /* Standard crisp box size, not oversized */
+  box-sizing: border-box;
+  background: #18181c;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.login-input::placeholder {
+  color: #a1a1aa; /* High contrast, easily readable placeholder text */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.login-input:focus {
+  border-color: #ffffff;
+  outline: none;
+  background: #222228;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.login-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-input-password {
+  padding-right: 48px;
+}
+
+/* Fix browser autofill washing out or hiding text */
+.login-input:-webkit-autofill,
+.login-input:-webkit-autofill:hover,
+.login-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #ffffff !important;
+  -webkit-box-shadow: 0 0 0 1000px #18181c inset !important;
+  box-shadow: 0 0 0 1000px #18181c inset !important;
+  caret-color: #ffffff;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Eye toggle button */
+.login-eye-btn {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  background: transparent;
+  border: none;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--d-txt-3, #908f8c);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.login-eye-btn:hover {
+  color: #ffffff;
+}
+
+/* Error message banner (Monochromatic with subtle warning tint) */
+.login-error {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fca5a5;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 10px 14px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  animation: loginFadeIn 0.2s ease-out;
+}
+
+.login-error-icon {
+  font-weight: 700;
+  font-size: 14px;
+  color: #f87171;
+}
+
+/* Submit Button */
+.login-submit-btn {
+  width: 100%;
+  box-sizing: border-box;
+  background: #ffffff;
+  color: #000000;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 14px 22px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  transition: background-color 0.15s, transform 0.08s, box-shadow 0.15s;
+}
+
+.login-submit-btn:hover:not(:disabled) {
+  background: #f1f1f1;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+}
+
+.login-submit-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.login-submit-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.login-btn-arrow-svg {
+  display: block;
+  stroke: #000000;
+  transition: transform 0.12s ease;
+}
+
+.login-submit-btn:hover:not(:disabled) .login-btn-arrow-svg {
+  transform: translateX(2px);
+}
+
+/* Forgot Password link (placed below submit button with spacing) */
+.login-forgot-wrap {
+  text-align: center;
+  margin-top: 20px;
+  margin-bottom: 0;
+}
+
+.login-forgot-btn {
+  background: transparent;
+  border: none;
+  color: var(--d-txt-2, #bdbdbb);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 6px;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.login-forgot-btn:hover {
+  color: #ffffff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Forgot password drawer / modal */
+.login-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: modalFadeIn 0.2s ease-out;
+}
+
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.login-modal-card {
+  background: #151518;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  padding: 28px;
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.8),
+    0 0 50px -10px rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.login-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.login-modal-close {
+  background: none;
+  border: none;
+  color: #908f8c;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  line-height: 1;
+  border-radius: 4px;
+}
+
+.login-modal-close:hover {
+  color: #ffffff;
+}
+
+.login-modal-body {
+  font-size: 13.5px;
+  color: #c4c4c4;
+  line-height: 1.55;
+}
+
+.login-modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.login-modal-btn-primary {
+  flex: 1;
+  background: #ffffff;
+  color: #000000;
+  border: none;
+  border-radius: 6px;
+  padding: 11px;
+  font-family: var(--sans, 'Archivo', sans-serif);
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.login-modal-btn-primary:hover {
+  background: #f1f1f1;
+}
+
+/* Topbar Sign Out button styling (retained for topbar logout) */
+.topbar-signout-btn {
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--d-line, #323237);
+  color: var(--d-txt-3, #908f8c);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0 16px;
+  height: 100%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.topbar-signout-btn:hover {
+  color: #f5f5f4;
+  background-color: var(--d-bg-1, #1c1c1f);
+}
+
+/* Responsive layout adjustments */
+@media (max-width: 860px) {
+  .login-box {
+    padding: 44px 28px;
+    max-width: 480px;
+    min-height: auto;
+  }
+
+  .login-container {
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  .login-brand-side {
+    justify-content: center;
+    padding-right: 0;
+  }
+
+  .login-divider {
+    display: none;
+  }
+
+  .login-form-side {
+    padding-left: 0;
+    justify-content: center;
+  }
+
+  .login-wordmark {
+    font-size: 40px;
+  }
+}
+
+
+/* ===================================================================
+   EXTENDED AUTH FLOW & TERMS AND CONDITIONS STYLES
+   =================================================================== */
+
+.login-box-wide {
+  max-width: 960px;
+  min-height: 560px;
+  padding: 56px 64px;
+}
+
+/* Password Recovery & Reset flows inside the rectangular card (matching login page) */
+.login-box-auth-flow {
+  width: 100%;
+  max-width: 1040px;
+  min-height: 520px;
+  padding: 34px 64px 36px 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  box-sizing: border-box;
+}
+
+/* Success notification message */
+.login-success {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 11px 14px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  animation: loginFadeIn 0.2s ease-out;
+}
+
+.login-success-icon {
+  font-weight: 800;
+  font-size: 14px;
+  color: #34d399;
+}
+
+/* Auth flow container (Forgot Password & Reset screens) */
+.auth-flow-container {
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+/* Top in middle: 137 Parallax (positioned at the top of the card as drawn in white box) */
+.auth-brand-center {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 46px; /* Generous space between 137 Parallax and PASSWORD RECOVERY */
+}
+
+.login-wordmark-recovery {
+  font-family: 'Inter', var(--sans, 'Archivo'), system-ui, sans-serif;
+  font-size: 32px;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.login-wordmark-recovery .wm-number {
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.login-wordmark-recovery .wm-name {
+  font-weight: 500;
+  color: var(--d-txt-2, #bdbdbb);
+  letter-spacing: -0.02em;
+}
+
+/* Password Recovery Title */
+.auth-recovery-title {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffffff;
+  text-align: center;
+  margin: 0 0 16px 0;
+}
+
+/* Subtitle properly aligned */
+.auth-recovery-subtitle {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--d-txt-2, #bdbdbb);
+  text-align: center;
+  margin: 0 0 28px 0;
+  max-width: 440px;
+  padding: 0 4px;
+}
+
+.auth-recovery-subtitle strong {
+  color: #ffffff;
+}
+
+.auth-flow-form {
+  width: 100%;
+  max-width: 380px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-recovery-btn {
+  width: 100%;
+  margin-top: 4px;
+  height: 48px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.auth-back-wrap {
+  text-align: center;
+  margin-top: 26px;
+}
+
+.auth-back-btn {
+  background: transparent;
+  border: none;
+  color: var(--d-txt-2, #bdbdbb);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 6px 14px;
+  transition: color 0.15s;
+}
+
+.auth-back-btn:hover {
+  color: #ffffff;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.auth-flow-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.auth-mini-brand {
+  font-family: var(--sans, 'Archivo', sans-serif);
+  font-size: 26px;
+  margin-bottom: 12px;
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.auth-mini-brand .wm-number {
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.auth-mini-brand .wm-name {
+  font-weight: 500;
+  color: var(--d-txt-2, #bdbdbb);
+  letter-spacing: -0.02em;
+}
+
+.auth-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.01em;
+}
+
+.auth-subtitle {
+  font-size: 13.5px;
+  color: var(--d-txt-2, #bdbdbb);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.auth-subtitle strong {
+  color: #ffffff;
+}
+
+.auth-flow-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-field-label {
+  display: block;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #e4e4e7; /* Clearly visible, bright label text */
+  margin-bottom: 8px; /* Clean space between label text and its rectangle box */
+}
+
+.auth-otp-input {
+  letter-spacing: 0.35em;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+  font-family: var(--mono, monospace);
+  color: #ffffff;
+}
+
+.auth-otp-input::placeholder {
+  letter-spacing: normal;
+  font-size: 13.5px;
+  font-weight: 400;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #a1a1aa;
+}
+
+/* OTP Pill Slot directly below 137 Parallax - collapses completely when hidden so there is no extra void */
+.auth-otp-sent-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: max-height 0.35s ease, opacity 0.3s ease, margin 0.35s ease;
+}
+
+.auth-otp-sent-slot.auth-otp-visible {
+  max-height: 40px;
+  opacity: 1;
+  margin-bottom: 18px;
+}
+
+.auth-otp-sent-slot.auth-otp-hidden {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+  pointer-events: none;
+}
+
+/* OTP Pill Badge */
+.auth-otp-sent-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 16px;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  border-radius: 6px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #ffffff;
+  background: #16a34a; /* Green background */
+  box-shadow: 0 0 14px rgba(22, 163, 74, 0.35);
+  text-transform: uppercase;
+  user-select: none;
+  animation: otpPillFadeIn 0.25s ease-out;
+}
+
+@keyframes otpPillFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Relative container for inputs with checkmarks or buttons */
+.auth-input-relative-wrap {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.auth-input-relative-wrap .login-eye-btn {
+  top: 50%;
+  transform: translateY(-50%);
+  bottom: auto;
+}
+
+/* Green checkmark circle on correct OTP */
+.auth-otp-check-icon {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: checkPopIn 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes checkPopIn {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+}
+
+.login-input.login-input-valid-otp {
+  border-color: rgba(34, 197, 94, 0.65) !important;
+  box-shadow: 0 0 14px rgba(34, 197, 94, 0.20) !important;
+  padding-right: 46px;
+}
+
+.login-eye-btn-labeled {
+  top: calc(50% + 12px);
+}
+
+/* OTP alert notification banner */
+.login-otp-banner {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: #e4e4e7;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  line-height: 1.4;
+}
+
+.login-otp-badge {
+  background: #ffffff;
+  color: #000000;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.otp-code-highlight {
+  color: #ffffff;
+  font-family: var(--mono, monospace);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Back links & action buttons */
+.auth-back-wrap {
+  text-align: center;
+  margin-top: 20px;
+}
+
+.auth-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--d-txt-2, #bdbdbb);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 6px;
+  transition: color 0.15s;
+}
+
+.auth-link-btn:hover:not(:disabled) {
+  color: #ffffff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-link-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-dual-links {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 22px;
+  padding: 0 2px;
+}
+
+.auth-link-separator {
+  color: #52525b;
+  font-size: 12px;
+}
+
+/* ===================================================================
+   TERMS AND CONDITIONS PAGE STYLING
+   =================================================================== */
+
+.terms-page-container {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.terms-header {
+  text-align: center;
+  margin-bottom: 18px;
+}
+
+.terms-main-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 6px 0 6px 0;
+  letter-spacing: -0.02em;
+}
+
+.terms-subtitle {
+  font-size: 13px;
+  color: #a1a1aa;
+  line-height: 1.5;
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.terms-subtitle strong {
+  color: #ffffff;
+}
+
+/* Terms Scroll Box */
+.terms-scroll-box {
+  background: rgba(8, 8, 10, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  height: 250px;
+  max-height: 250px;
+  overflow-y: scroll;
+  padding: 20px 24px;
+  box-sizing: border-box;
+  margin-bottom: 14px;
+  outline: none;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.terms-scroll-box:focus-visible {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* Styled scrollbar for Chrome / Safari / Edge / Firefox */
+.terms-scroll-box::-webkit-scrollbar {
+  width: 7px;
+}
+
+.terms-scroll-box::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.terms-scroll-box::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+}
+
+.terms-scroll-box::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.terms-article {
+  color: #d4d4d8;
+  font-size: 13px;
+  line-height: 1.65;
+  user-select: text;
+}
+
+.terms-article h3 {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 16px 0 6px 0;
+  letter-spacing: -0.01em;
+}
+
+.terms-article h3:first-child {
+  margin-top: 0;
+}
+
+.terms-article p {
+  margin: 0 0 12px 0;
+  color: #c4c4c8;
+}
+
+.terms-article code {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+}
+
+.terms-end-marker {
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: #71717a;
+  padding: 18px 0 6px 0;
+  font-weight: 600;
+}
+
+/* Scroll status indicator */
+.terms-scroll-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  transition: all 0.2s ease;
+}
+
+.terms-scroll-prompt-locked {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.terms-scroll-prompt-unlocked {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+}
+
+.terms-prompt-icon {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.animate-bounce {
+  animation: promptBounce 1.2s infinite ease-in-out;
+}
+
+@keyframes promptBounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(3px);
+  }
+}
+
+/* Checkbox section */
+.terms-checkbox-wrap {
+  margin-bottom: 20px;
+}
+
+.terms-checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.terms-checkbox-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.terms-checkbox-input {
+  width: 18px;
+  height: 18px;
+  accent-color: #ffffff;
+  cursor: pointer;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.terms-checkbox-disabled .terms-checkbox-input {
+  cursor: not-allowed;
+}
+
+.terms-checkbox-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #e4e4e7;
+}
+
+/* Terms Actions */
+.terms-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+.terms-accept-btn {
+  max-width: 380px;
+}
+
+.terms-cancel-btn {
+  font-size: 12.5px;
+}

@@ -37,6 +37,7 @@ test("awards: one total per stored currency, a missing value is not summed, noth
   const w = winners(d);
   assert.equal(w.priced, d.awards.filter((a) => a.winner && a.value && a.currency).length);
   assert.deepEqual(w.totals, valueTotals(d.awards.filter((a) => a.winner), AWARD_FIELDS));
-  w.rows.forEach((r) => assert.ok(Array.isArray(r.totals) && !("usd" in r) && !("share" in r)));
+  // a share of value is counted in rupees at stored rates only (lib/tenderValue inrSum): null when no rate is stored
+  w.rows.forEach((r) => assert.ok(Array.isArray(r.totals) && !("usd" in r) && (r.share == null || (r.share > 0 && r.share <= 1))));
   assert.ok(!/value_usd/.test(fs.readFileSync(new URL("./marketOutlook.js", import.meta.url), "utf8")));
 });

@@ -2,6 +2,7 @@
 
     python -m backend.company_short --selftest
     python -m backend.company_short [--dry-run] [--model gemma4-26b-gpu]
+    python -m backend.company_short --labels [--dry-run]     only the two labels below, no model
 
 For each competitor the local model (Ollama, this PC) reads starting_year_text / employee_count_text / revenue_text / financial_year /
 industry_sector and answers JSON: a year, a headcount, the revenue figure as written (number, scale word, currency), a sector of at
@@ -10,6 +11,9 @@ most 5 words. Code then:
   - converts the revenue to USD with staging.fx_rate (INR per unit, official) and sets revenue_tier;
   - writes starting_year_short / employee_count_short / revenue_short / industry_short / revenue_usd / revenue_tier.
 No cloud model, no cost. Re-runnable (overwrites the short columns only).
+Owner 2026-10-25: the size names its unit ("7,659 employees", not "7,659"), and the sector is what the company MAKES -- its largest
+product categories in competitive_product -- not the workbook's wording ("Global defence technology"); a company with no products
+keeps the model's sector.
 """
 
 from __future__ import annotations
@@ -90,7 +94,41 @@ def short_money(number, scale, currency, year) -> str:
     return f"{out} ({year})" if year else out
 
 
+def employees(emp) -> str | None:
+    """"7,659" -> "7,659 employees"; a value that already names its unit is kept."""
+    e = str(emp or "").strip()
+    return None if not e else e if re.search(r"employ|staff|people|workers|personnel", e, re.I) else f"{e} employees"
+
+
+def portfolio_sector(counts: list[tuple[str, int]], width: int = 80) -> str | None:
+    """the largest product categories (count order, 'Other' left out), as many as fit in `width`: "Artillery; Ammunition"."""
+    out = []
+    for cat, _ in sorted(counts, key=lambda c: -c[1]):
+        if not cat or cat.strip().lower() == "other" or len(out) == 3 or len("; ".join(out + [cat])) > width:
+            continue
+        out.append(cat)
+    return "; ".join(out) or None
+
+
+def labels(cur, dry: bool = False) -> None:
+    """employee_count_short with its unit, industry_short from the product portfolio (no model)."""
+    cur.execute("""SELECT c.competitor_id, c.display_name, c.employee_count_short, c.industry_short,
+                          (SELECT json_agg(json_build_array(category, n)) FROM (SELECT category, count(*) AS n FROM staging.competitive_product p
+                            WHERE p.competitor_id = c.competitor_id GROUP BY category) x) AS cats
+                   FROM staging.competitive_competitor c ORDER BY c.display_name""")
+    for r in cur.fetchall():
+        emp, sec = employees(r["employee_count_short"]), portfolio_sector([tuple(x) for x in r["cats"] or []]) or r["industry_short"]
+        print(f"  {r['display_name'][:30]:30} {emp} | {sec}")
+        if not dry:
+            cur.execute("UPDATE staging.competitive_competitor SET employee_count_short = %s, industry_short = %s WHERE competitor_id = %s",
+                        (emp, sec, r["competitor_id"]))
+
+
 def _selftest() -> None:
+    assert employees("~5,383") == "~5,383 employees" and employees("Over 21,000 staff") == "Over 21,000 staff" and employees("More than 4,000") == "More than 4,000 employees" and employees("") is None
+    assert portfolio_sector([("Other", 9), ("Artillery", 3), ("Ammunition", 5)]) == "Ammunition; Artillery"
+    assert portfolio_sector([("A" * 50, 3), ("B" * 40, 2), ("C", 1)]) == "A" * 50 + "; C"
+    assert portfolio_sector([]) is None
     assert checked("~5,383", "~5,383 employees as of 2026") == "~5,383" and checked("5,400", "~5,383 employees") is None
     assert checked("9.935", "€9.935 billion consolidated sales") == "9.935" and checked("2015", "2015-2017 build-out") == "2015"
     rates = {"USD": 95.0, "EUR": 110.0, "INR": 1.0}
@@ -135,6 +173,8 @@ def run(model: str, dry: bool) -> None:
                                   industry_short = %s, revenue_usd = %s, revenue_tier = %s WHERE competitor_id = %s""",
                         (year, emp, (rev_s or "")[:60] or None, (sector or "")[:80] or None, usd, tier(usd), r["competitor_id"]))
             conn.commit()
+    labels(cur, dry)
+    conn.commit()
 
 
 def main(argv=None) -> int:
@@ -142,9 +182,16 @@ def main(argv=None) -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--model", default="gemma4-26b-gpu")
+    ap.add_argument("--labels", action="store_true", help="only the size unit and the portfolio sector, no model")
     a = ap.parse_args(argv)
     if a.selftest:
         _selftest()
+        return 0
+    if a.labels:
+        from prompts.run import connect
+        conn = connect()
+        labels(conn.cursor(), a.dry_run)
+        conn.commit() if not a.dry_run else conn.rollback()
         return 0
     run(a.model, a.dry_run)
     return 0

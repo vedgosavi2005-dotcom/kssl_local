@@ -2,6 +2,7 @@ import { clientShort } from "../../lib/client.js";
 import { useData } from "../../state/DataProvider";
 import { useAppState } from "../../state/AppState";
 import { cockpitWords } from "../../lib/chrome.js";
+import { whereItStands, revenueShort } from "../../lib/tenderIntel.js";
 import "../../styles/market-overview.css";
 import "../../styles/tender-intel.css";
 import { Review } from "../review/Review";
@@ -14,11 +15,18 @@ import { Review } from "../review/Review";
 
 const show = (v) => (v == null || String(v).trim() === "" ? "—" : v);
 const cls = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-/* column widths: every table keeps the same columns in the same place, long text wraps and stops at three lines */
-const COLS7 = ["5%", "28%", "13%", "8%", "19%", "18%", "9%"];
+/* column widths: every table keeps the same columns in the same place, long text wraps and stops at three lines.
+   In PIXELS, not percentages, with a table min-width (tender-intel.css .ti-cockpit): with the drawer open at 1366 px the
+   table had ~730 px, so 5% / 9% columns were ~40 px and the headers broke letter by letter ("R/A/N/K", "REVEN/UE") and
+   rank 15's revenue was clipped to "Stated". Now each column has room for its one-line header, the table keeps its
+   width and the panel scrolls sideways instead (functional test G16, 2026-10-25). On a wide screen fixed layout spreads
+   the spare width over the columns in these proportions. */
+const COLS7 = ["60px", "260px", "150px", "90px", "180px", "160px", "120px"];
 const COLS3 = ["16%", "54%", "30%"];
 const Cols = ({ w }) => <colgroup>{w.map((x, i) => <col key={i} style={{ width: x }} />)}</colgroup>;
 const clip = (v) => <span className="clamp3" title={v == null ? undefined : String(v)}>{show(v)}</span>;
+/* the revenue in its short house form ("CZK 40.5 m" / "₹ 16.1 Cr"), the stored sentence as the tooltip */
+const revenueCell = (v) => <span className="clamp3" title={v == null ? undefined : String(v)}>{show(revenueShort(v))}</span>;
 const where = (r) => [r.country, r.issuer].filter((v) => v != null && String(v).trim() !== "").join(" · ");
 
 export default function TenderCockpit({ onOpen }) {
@@ -51,7 +59,7 @@ export default function TenderCockpit({ onOpen }) {
         </div>
         {top.length ? (
           <div className="ovt-scroll">
-            <table className="ovt-fixed">
+            <table className="ovt-fixed ti-cockpit">
               <Cols w={COLS7} />
               <thead>
                 <tr>
@@ -71,7 +79,7 @@ export default function TenderCockpit({ onOpen }) {
                     <td>{fitCell(r.ksslFit)}</td>
                     <td>{clip(r.ksslModel)}</td>
                     <td>{clip(r.rivalToBeat)}</td>
-                    <td className="num">{show(r.revenue)}</td>
+                    <td className="num">{revenueCell(r.revenue)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -89,7 +97,7 @@ export default function TenderCockpit({ onOpen }) {
         </div>
         {projects.length ? (
           <div className="ovt-scroll">
-            <table className="ovt-fixed">
+            <table className="ovt-fixed ti-cockpit">
               <Cols w={COLS7} />
               <thead>
                 <tr>
@@ -105,13 +113,21 @@ export default function TenderCockpit({ onOpen }) {
                       <span className="ovt-buyer" title={r.issuer}>{where(r)}</span>
                       <Review src={r._src} />
                     </td>
-                    <td className="ovt-t ti-stage">
-                      <span className="ti-title" title={r.stage}>{show(r.stage)}</span>
-                    </td>
+                    {/* the stored "approved_funded / ... / ..." read as words: the code's ui.code_label label, then the
+                        detail with house-format dates (functional test G16, 2026-10-25) */}
+                    {(() => {
+                      const w = whereItStands(r.stage, data);
+                      return (
+                        <td className="ovt-t ti-stage" title={r.stage || undefined}>
+                          <span className="ti-title">{show(w.label || w.detail)}</span>
+                          {w.label && w.detail ? <span className="ti-stage-sub">{w.detail}</span> : null}
+                        </td>
+                      );
+                    })()}
                     <td>{fitCell(r.ksslFit)}</td>
                     <td>{clip(r.ksslModel)}</td>
                     <td>{clip(r.rivalToBeat)}</td>
-                    <td className="num">{show(r.revenue)}</td>
+                    <td className="num">{revenueCell(r.revenue)}</td>
                   </tr>
                 ))}
               </tbody>
