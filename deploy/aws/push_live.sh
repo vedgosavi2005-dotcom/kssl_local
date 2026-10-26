@@ -16,8 +16,12 @@ exec 9>"$D/push.lock"; flock -n 9 || exit 0        # a slow push (the pictures) 
 SSH=(ssh -i "$D/id_aws" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8
      -o StrictHostKeyChecking=accept-new "$KSSL_AWS_USER@$KSSL_AWS_HOST")
 q()      { docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -At -U kssl_admin -d "$1"; }              # SQL on stdin, VPS1
-aws_q()  { "${SSH[@]}" "docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -At -U kssl_admin -d $1"; }  # same, on AWS
-aws_tx() { gzip | "${SSH[@]}" "gunzip | docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -1 -U kssl_admin -d $1 >/dev/null"; }
+# Every transfer is spooled to a file before it crosses ssh: a docker exec streaming straight into gzip | ssh lost the end
+# of its output when the link was slower than the dump (source_link arrived ~250 rows short, a different row each run).
+aws_q()  { "${SSH[@]}" "f=\$(mktemp) && docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -At -U kssl_admin -d $1 > \$f; rc=\$?; cat \$f; rm -f \$f; exit \$rc"; }  # same, on AWS
+aws_tx() { local f rc; f=$(mktemp); gzip > "$f" || { rm -f "$f"; return 1; }
+           "${SSH[@]}" "gunzip | docker exec -i kssl2-db psql -v ON_ERROR_STOP=1 -q -1 -U kssl_admin -d $1 >/dev/null" < "$f"; rc=$?
+           rm -f "$f"; return $rc; }
 log()    { echo "$(date -u +%FT%TZ) $*"; }
 
 # ---- 1 + 2: live data -----------------------------------------------------------------------------------------------------
