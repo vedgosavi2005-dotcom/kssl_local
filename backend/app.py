@@ -137,6 +137,11 @@ def load_all_tables() -> dict[str, dict[str, list[dict[str, Any]]]]:
                             WHERE table_name = 'competitive_signal' AND source_tier = 'judgement' AND quote IS NOT NULL
                             ORDER BY row_id, column_name""")   # same order on every DB (VPS1 and AWS)
             database["serving"]["signal_reasons"] = [dict(r) for r in cur.fetchall()]
+            # news the news prompt judged NOT about the company (relevant = no: a namesake, a sister company, a stock list);
+            # build_news leaves them out of the company's news (2026-10-26: "Abhay Singh wins squash silver" under Adani)
+            cur.execute(f"""SELECT DISTINCT row_id FROM {SOURCE_SCHEMA['serving']}.fact_source
+                            WHERE table_name = 'competitive_news_article' AND column_name = 'not_about_company' ORDER BY row_id""")
+            database["serving"]["news_not_about"] = [dict(r) for r in cur.fetchall()]
     return database
 
 

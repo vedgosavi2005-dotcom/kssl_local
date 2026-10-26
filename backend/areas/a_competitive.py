@@ -176,9 +176,10 @@ def build_news(database, competitors):
     """competitorNews: cid -> articles newest first. Plain news rows and Competitor Moment rows (ruling R4: a
     moment row carries level / analysis / country / card / lenses; the Moment page keeps only rows with a level)."""
     news = defaultdict(list)
+    not_about = {text(r.get("row_id")) for r in table(database, "serving", "news_not_about")}
     for row in table(database, "serving", "competitive_news_article"):
         cid = text(row.get("competitor_id"))
-        if not cid or not text(row.get("article_id")):
+        if not cid or not text(row.get("article_id")) or text(row.get("article_id")) in not_about:
             continue
         news[cid].append({
             "id": text(row.get("article_id")),

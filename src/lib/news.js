@@ -66,7 +66,11 @@ export const NEWS_GROUPS = {
   Investments: "Finance & markets",
 };
 export const NEWS_GROUP_ORDER = ["Government & contracts", "Products & technology", "Industry & partnerships", "Finance & markets", "Leadership & corporate"];
-const HIDDEN_NEWS = new Set(["Other", "Non-defence business"]);
+/* "Other" is shown since 2026-10-26: the stories the news prompt judged NOT about the company (namesakes, sister companies,
+   stock lists) are left out by the API (backend build_news, fact_source not_about_company), so what stays under Other is the
+   company's own news no category fits -- an award, a show, an accident, a CEO statement. Hiding it emptied the panel: Adani's
+   one October story, its SIDM export award, was Other. */
+const HIDDEN_NEWS = new Set(["Non-defence business"]);
 const catsOf = (c) => String(c || "").split("·").map((x) => x.trim()).filter(Boolean);
 export const newsGroup = (category) => catsOf(category).map((c) => NEWS_GROUPS[c]).find(Boolean) || null;
 // not defence news: every category it carries is a hidden one (an unclassified article is kept)
@@ -493,8 +497,8 @@ export function newsSelfCheck() {
     marketNews(data, "saab", "Peru").length === 0);
   t("newsDate passes through what it cannot parse", newsDate("soon") === "soon");
   t("newsDate on nothing is empty", newsDate(null) === "");
-  t("Other / Non-defence-only news is hidden, a mixed or unclassified one is kept",
-    hiddenNews("Other") && hiddenNews("Other · Non-defence business") && !hiddenNews("Export · Other") && !hiddenNews(null));
+  t("Non-defence-only news is hidden; Other (the company's own news), a mixed or an unclassified one is kept",
+    hiddenNews("Non-defence business") && !hiddenNews("Other") && !hiddenNews("Export · Non-defence business") && !hiddenNews(null));
   t("a mixed article takes the first category that has a group",
     newsGroup("Other · Export") === "Government & contracts" && newsGroup("Stock & market") === "Finance & markets" && newsGroup("Other") === null);
 

@@ -959,9 +959,20 @@ class Subject:
         return [*self.names, *(a for a, _ in self.cond)]
 
     def for_product(self, product: str) -> "Subject":
-        return Subject(search=self.search, names=product_names(product), domains=self.domains, display=self.display,
-                       competitor_id=self.competitor_id, product=product)
+        """A product name that is one plain word ("ABHAY", "Lakshya", "Nag") is also a person's name or a common word:
+        it counts only with the company or a defence word beside it (2026-10-26: "Abhay Singh wins squash silver" was
+        stored as Adani news). Names with a digit, a hyphen or two words stay unconditional."""
+        names = product_names(product)
+        plain = [n for n in names if re.fullmatch(r"[A-Za-z]+", n.strip())]
+        return Subject(search=self.search, names=[n for n in names if n not in plain], cond=[(n, self.company_names() + PRODUCT_CO_TERMS) for n in plain],
+                       domains=self.domains, display=self.display, competitor_id=self.competitor_id, product=product)
 
+
+# the defence words that make a one-word product name count (Subject.for_product)
+PRODUCT_CO_TERMS = ["army", "navy", "naval", "air force", "defence", "defense", "military", "missile", "drone", "uav", "tank",
+                    "rifle", "gun", "howitzer", "artillery", "radar", "armoured", "armored", "combat", "weapon", "drdo",
+                    "ministry of defence", "mod", "torpedo", "submarine", "frigate", "warship", "aircraft", "helicopter",
+                    "ammunition", "rocket", "launcher", "interceptor", "air defence", "air defense", "troops", "soldiers"]
 
 ALIASES_FILE = Path(os.getenv("KSSL_NEWS_ALIASES", Path(__file__).resolve().parent.parent / "db" / "news_aliases.csv"))
 _alias_rows: dict | None = None
@@ -1750,6 +1761,10 @@ def _selftest():
     assert len(qq) == 2 and all('"Veland"' in x for x in qq)
     # --- products: a trailing variant letter / mark is optional ("K9 Vajra-T" ~ "K9 Vajra")
     assert product_names("Zel-9 Falcon-T")[:2] == ["Zel-9 Falcon-T", "zel 9 falcon"]
+    # a one-word product name is also a person's name: it counts only beside the company or a defence word
+    ab = Subject(search="Orrin Dynamics", names=["Orrin Dynamics"]).for_product("ABHAY")
+    assert not ab.matches("Asian Games: Abhay Singh wins silver in squash") and ab.matches("Army trials ABHAY combat vehicle")
+    assert ab.matches("Orrin Dynamics shows ABHAY") and Subject(search="x", names=["x"]).for_product("K9 Vajra-T").matches("K9 Vajra deliveries begin")
     assert "pinaka" in product_names("Pinaka Mk-II") and product_names("AK-203") == ["AK-203"] and product_names("T-90") == ["T-90"]
     pn = product_names("Zel-9 Falcon-T")
     assert mentions("300 more Zel-9 Falcon ordered", pn) and mentions("Zel 9 Falcon-T trial", pn) and mentions("Zel9 Falcon fires", pn)
