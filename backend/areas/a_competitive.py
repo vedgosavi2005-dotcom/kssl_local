@@ -175,11 +175,23 @@ def _date_key(item):
 def build_news(database, competitors):
     """competitorNews: cid -> articles newest first. Plain news rows and Competitor Moment rows (ruling R4: a
     moment row carries level / analysis / country / card / lenses; the Moment page keeps only rows with a level)."""
+    from backend.news import is_defence_text
     news = defaultdict(list)
     not_about = {text(r.get("row_id")) for r in table(database, "serving", "news_not_about")}
+    products = defaultdict(set)                  # a company's product names: "Land 400" news is defence news without a defence word
+    for p in table(database, "serving", "competitive_product"):
+        n = text(p.get("product_name")).split(" (")[0].strip().lower()
+        if len(n) >= 4:
+            products[text(p.get("competitor_id"))].add(n)
     for row in table(database, "serving", "competitive_news_article"):
         cid = text(row.get("competitor_id"))
         if not cid or not text(row.get("article_id")) or text(row.get("article_id")) in not_about:
+            continue
+        # only defence news (owner 2026-10-26): a story no category fits (Other) stays only when its headline is defence or
+        # names one of the company's products -- not the group's power results or a namesake's squash medal
+        head = text(row.get("headline"))
+        if text(row.get("category")).strip() == "Other" and not is_defence_text(head) \
+                and not any(n in head.lower() for n in products.get(cid, ())):
             continue
         news[cid].append({
             "id": text(row.get("article_id")),

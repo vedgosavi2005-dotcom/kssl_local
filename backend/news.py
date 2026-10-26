@@ -973,6 +973,18 @@ PRODUCT_CO_TERMS = ["army", "navy", "naval", "air force", "defence", "defense", 
                     "rifle", "gun", "howitzer", "artillery", "radar", "armoured", "armored", "combat", "weapon", "drdo",
                     "ministry of defence", "mod", "torpedo", "submarine", "frigate", "warship", "aircraft", "helicopter",
                     "ammunition", "rocket", "launcher", "interceptor", "air defence", "air defense", "troops", "soldiers"]
+# ... and, with these, the words that make a text defence news (is_defence_text): shows, programmes, buyers
+DEFENCE_TERMS = PRODUCT_CO_TERMS + ["aerospace", "munitions", "munition", "warhead", "armour", "armor", "infantry", "marines",
+                                    "coast guard", "pentagon", "dod", "nato", "procurement", "defence ministry", "sidm",
+                                    "eurosatory", "dsei", "ausa", "defexpo", "aero india", "idex", "farnborough", "paris air show",
+                                    "adex", "cansec", "ndia", "uas", "ucav", "loitering", "counter-drone", "c-uas", "shipyard",
+                                    "corvette", "destroyer", "fighter", "jet", "satellite", "space force", "security forces"]
+_DEFENCE_RE = re.compile(r"\b(?:%s)s?\b" % "|".join(re.escape(t) for t in sorted(set(DEFENCE_TERMS), key=len, reverse=True)), re.I)
+
+
+def is_defence_text(text: str) -> bool:
+    """Does the text say something defence (a defence word, show or buyer)? Used where a page is not otherwise tied to defence."""
+    return bool(_DEFENCE_RE.search(text or ""))
 
 ALIASES_FILE = Path(os.getenv("KSSL_NEWS_ALIASES", Path(__file__).resolve().parent.parent / "db" / "news_aliases.csv"))
 _alias_rows: dict | None = None
@@ -1081,10 +1093,13 @@ def _process(it: Item, subj: Subject, company_domains, fetch_images):
             ctier, cwhy = classify_reason(canon, company_domains)
             if ctier:
                 it.url, it.tier, own = canon, ctier, cwhy == "company domain"
-    if own:                                       # the company's own site: always about the company
+    page_texts = (it.title, info.title, info.description, url_text(it.url))
+    # the company's own site is about the company -- unless it is a GROUP site and the page is the group's civil business
+    # (adani.com: "Adani Power announces Q2 results"): then the page must name the company or say something defence
+    if own and (subj.matches(*page_texts) or any(is_defence_text(t) for t in page_texts)):
         it.match_via = "own site"
     else:
-        it.match_via = subj.matches(it.title, info.title, info.description, url_text(it.url))
+        it.match_via = subj.matches(*page_texts)
         if not it.match_via:
             it.reason = "not about " + subj.search
             return
@@ -1765,6 +1780,9 @@ def _selftest():
     ab = Subject(search="Orrin Dynamics", names=["Orrin Dynamics"]).for_product("ABHAY")
     assert not ab.matches("Asian Games: Abhay Singh wins silver in squash") and ab.matches("Army trials ABHAY combat vehicle")
     assert ab.matches("Orrin Dynamics shows ABHAY") and Subject(search="x", names=["x"]).for_product("K9 Vajra-T").matches("K9 Vajra deliveries begin")
+    # defence text: a group site's civil page is not company defence news
+    assert not is_defence_text("Adani Power announces Q2 FY27 results") and not is_defence_text("Adani Total Gas Q2 Results")
+    assert is_defence_text("Hanwha shows K9 at Eurosatory 2026") and is_defence_text("Army orders 24 guns") and not is_defence_text("jetty")
     assert "pinaka" in product_names("Pinaka Mk-II") and product_names("AK-203") == ["AK-203"] and product_names("T-90") == ["T-90"]
     pn = product_names("Zel-9 Falcon-T")
     assert mentions("300 more Zel-9 Falcon ordered", pn) and mentions("Zel 9 Falcon-T trial", pn) and mentions("Zel9 Falcon fires", pn)
@@ -1824,7 +1842,8 @@ def _selftest():
         time.sleep = real_sleep
         globals()["http"] = real_http_rss
         _rss_state["streak"] = 0
-    # --- a company's own domain is primary and never "not about"; an outsider page must name the subject
+    # --- a company's own domain is primary; a civil page on it (a group site's power / infrastructure news) is not company
+    #     defence news (owner 2026-10-26); an outsider page must name the subject
     real_http, real_resolve, real_dl = http, resolve, download_image
     page = lambda title: Resp(200, "", {"content-type": "text/html"},
                               f'<html><head><meta property="og:title" content="{title}"></head><body>x</body></html>'.encode())
@@ -1832,8 +1851,12 @@ def _selftest():
         globals()["http"] = lambda url, **k: Resp(200, url, {"content-type": "text/html"}, page("Sustainable Infrastructure Company").body)
         globals()["resolve"] = lambda link: (link, "direct")
         globals()["download_image"] = lambda *a, **k: ("", "image http 404")
-        own = process(Item("Sustainable Infrastructure Company", "https://veland.test/news/a", "Veland", "", d), sv, sv.domains, False)
+        civil = process(Item("Sustainable Infrastructure Company", "https://veland.test/news/a", "Veland", "", d), sv, sv.domains, False)
+        assert civil.status == "dropped" and civil.reason.startswith("not about"), (civil.status, civil.reason)
+        globals()["http"] = lambda url, **k: Resp(200, url, {"content-type": "text/html"}, page("Army orders 24 guns").body)
+        own = process(Item("Army orders 24 guns", "https://veland.test/news/b", "Veland", "", d), sv, sv.domains, False)
         assert own.status == "kept" and own.tier == "primary" and own.match_via == "own site", (own.status, own.reason)
+        globals()["http"] = lambda url, **k: Resp(200, url, {"content-type": "text/html"}, page("Sustainable Infrastructure Company").body)
         out = process(Item("Sustainable Infrastructure Company", "https://www.thehindu.com/a", "The Hindu", "", d), sv, sv.domains, False)
         assert out.status == "dropped" and out.reason.startswith("not about"), out.reason
         globals()["http"] = lambda url, **k: Resp(200, url, {"content-type": "text/html"}, page("Army picks Veland guns").body)
