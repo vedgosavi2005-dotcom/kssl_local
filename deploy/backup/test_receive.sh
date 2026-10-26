@@ -11,6 +11,10 @@ echo again | SSH_ORIGINAL_COMMAND="put $(name 0)" bash "$R" 2>/dev/null && fail 
 SSH_ORIGINAL_COMMAND="prune 0" bash "$R" 2>/dev/null && fail "prune ran over ssh"
 echo x | SSH_ORIGINAL_COMMAND="put ../evil.tar" bash "$R" 2>/dev/null && fail "accepted a bad name"
 [ "$(cat "$D/$(name 0)")" = hello ] || fail "content changed"
+sum(){ printf %s "$1" | sha256sum | cut -d' ' -f1; }
+printf cut | SSH_ORIGINAL_COMMAND="put $(name 2) $(sum whole)" bash "$R" 2>/dev/null && fail "kept a file whose checksum differs"
+[ -z "$(ls -A "$D" | grep "$(name 2)")" ] || fail "a cut transfer left a file behind"
+printf whole | SSH_ORIGINAL_COMMAND="put $(name 2) $(sum whole)" bash "$R" | grep -qx "$(sum whole)" || fail "matching checksum refused"
 
 rm -f "$D"/*; for a in 0 1 13 15 16 30 31 60 120; do touch "$D/$(name $a)"; done
 bash "$R" prune 14 13 >/dev/null

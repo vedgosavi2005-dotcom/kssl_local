@@ -51,7 +51,7 @@ while read -r name target port hours; do
   [ -n "$name" ] && [ "${name:0:1}" != "#" ] || continue
   [ "$hours" = all ] || [ "$hours" = "$HOUR" ] || [ -n "${KSSL_BACKUP_ALL:-}" ] || continue   # ALL=1: every receiver (install's first run)
   t=$SECONDS
-  got=$("${SSH[@]}" -p "$port" "$target" "put $NAME" < "$TAR" 2>&1 | tail -1)
+  got=$("${SSH[@]}" -p "$port" "$target" "put $NAME $SUM" < "$TAR" 2>&1 | tail -1)   # the receiver keeps it only if $SUM matches
   if [ "$got" = "$SUM" ]; then step "copy_$name" ok $((SECONDS - t)) "Stored $NAME ($MB MB) on $name; checksum matches."
   else step "copy_$name" failed $((SECONDS - t)) "Could not store $NAME on $name." "$got"; fi
 done < "$B/receivers"
