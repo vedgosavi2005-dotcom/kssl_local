@@ -6,4 +6,4 @@ CREATE INDEX IF NOT EXISTS event_user_time ON activity.event (user_id, client_ts
 
 ALTER TABLE activity.event DROP CONSTRAINT IF EXISTS event_event_type_check;
 ALTER TABLE activity.event ADD CONSTRAINT event_event_type_check
-    CHECK (event_type IN ('page_view', 'leave', 'click', 'search', 'hover', 'move', 'scroll'));
+    CHECK (event_type IN ('page_view', 'leave', 'click', 'search', 'hover', 'move', 'scroll', 'login', 'logout'));   -- login/logout: 36 adds them; listed here too, or a re-run of 32 fails once a login row exists (2026-10-26)
