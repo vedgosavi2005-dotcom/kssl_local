@@ -8,4 +8,9 @@ COPY index.html vite.config.js ./
 COPY src src
 # static files vite copies into each build (the product-category pictures, public/img/category)
 COPY public public
-RUN npx vite build --outDir dist && npx vite build --mode review --outDir dist-review
+# sign-in page and Ask Parallax on the LIVE build only, when the server's deploy/.env sets them (compose build args);
+# unset (e.g. AWS) = both off. The review build never gets them.
+ARG VITE_LOGIN=
+ARG VITE_ASK_PARALLAX=
+RUN VITE_LOGIN=$VITE_LOGIN VITE_ASK_PARALLAX=$VITE_ASK_PARALLAX npx vite build --outDir dist && \
+    VITE_LOGIN= VITE_ASK_PARALLAX= npx vite build --mode review --outDir dist-review

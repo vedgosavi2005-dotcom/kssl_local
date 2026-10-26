@@ -39,6 +39,24 @@ INJECT = ('<link rel="stylesheet" href="/parallax-agent/widget.css">'
           '<script type="module" src="/parallax-agent/widget.js"></script>')
 
 app = FastAPI(title="Parallax Analyst", docs_url=None, redoc_url=None, openapi_url=None)
+# AGENT_REQUIRE_LOGIN=1 (a product whose live API needs sign-in, backend/auth.py): the chat answers only a browser the
+# product's /api/session accepts (signed in, current terms accepted), or the chat would read the data past the login.
+REQUIRE_LOGIN = os.environ.get("AGENT_REQUIRE_LOGIN", "").strip() == "1"
+
+
+@app.middleware("http")
+async def _login_gate(request: Request, call_next):
+    if REQUIRE_LOGIN and request.url.path.startswith("/api/agent"):
+        try:
+            r = await _client.get(f"{PRODUCT_API}/api/session", headers={"cookie": request.headers.get("cookie", "")})
+            ok = r.status_code == 200 and r.json().get("termsAccepted") is True
+        except (httpx.HTTPError, ValueError):
+            ok = False
+        if not ok:
+            return JSONResponse(status_code=401, content={"error": "sign in first"})
+    return await call_next(request)
+
+
 app.include_router(agent_router)
 app.mount("/parallax-agent", StaticFiles(directory=WIDGET_DIST, check_dir=False), name="widget")
 if (PRODUCT_DIST / "assets").is_dir():

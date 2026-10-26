@@ -98,7 +98,11 @@ export default defineConfig(({ mode }) => {
     port: 5179,
     host: true,
     strictPort: true,
-    proxy: { "/api": { target: apiTarget, changeOrigin: true } },
+    proxy: {
+      "/api/agent": { target: agentTarget, changeOrigin: true },      // Ask Parallax (VPS: KSSL_AGENT_TARGET)
+      "/parallax-agent": { target: agentTarget, changeOrigin: true },
+      "/api": { target: apiTarget, changeOrigin: true },
+    },
   },
   server: {
     port: review ? 5180 : 5178,

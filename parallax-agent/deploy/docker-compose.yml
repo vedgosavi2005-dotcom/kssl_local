@@ -9,6 +9,7 @@ services:
   agent:
     build: { context: ../.., dockerfile: parallax-agent/deploy/Dockerfile }
     image: kssl2-parallax-agent
+    container_name: kssl2-parallax-agent   # the live web server proxies /api/agent + /parallax-agent here
     restart: unless-stopped
     env_file: ../.env           # the model key and budget (LLM_PROVIDER, OPENROUTER_API_KEY, AGENT_BUDGET_USD)
     environment:
@@ -23,7 +24,7 @@ services:
     volumes:
       - ./state:/.local         # the spend baseline: the budget cap survives rebuilds
     ports:
-      - "${PARALLAX_PORT:-8101}:8098"
+      - "127.0.0.1:${PARALLAX_PORT:-8101}:8098"   # host-local only: visitors come through the live site (its sign-in)
 
 networks:
   default:

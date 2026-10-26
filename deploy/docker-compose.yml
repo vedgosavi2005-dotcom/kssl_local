@@ -12,7 +12,11 @@ x-api: &api
   depends_on: [db]
 
 x-web: &web
-  build: {context: .., dockerfile: deploy/Dockerfile.web}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.web
+    # live build only, from deploy/.env (unset = off): the sign-in page and the Ask Parallax button
+    args: {VITE_LOGIN: "${VITE_LOGIN:-}", VITE_ASK_PARALLAX: "${VITE_ASK_PARALLAX:-}"}
   image: kssl2-web
   restart: unless-stopped
 
@@ -33,6 +37,11 @@ services:
     environment:
       KSSL_SERVING_DSN: host=db port=5432 dbname=kssl_serving user=kssl_app password=${APP_PASSWORD}
       KSSL_STAGING_DSN: host=db port=5432 dbname=kssl_staging user=kssl_app password=${APP_PASSWORD}
+      # sign-in lock (backend/auth.py), from deploy/.env; unset = open as before
+      KSSL_LOGIN_REQUIRED: ${KSSL_LOGIN_REQUIRED:-}
+      KSSL_LOGIN_USERS: ${KSSL_LOGIN_USERS:-}
+      KSSL_SESSION_SECRET: ${KSSL_SESSION_SECRET:-}
+      KSSL_SERVICE_TOKEN: ${KSSL_SERVICE_TOKEN:-}
 
   api-review:
     <<: *api
@@ -47,7 +56,8 @@ services:
     <<: *web
     container_name: kssl2-web
     command: ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "5178", "--outDir", "dist"]
-    environment: {KSSL_API_TARGET: "http://api:8600"}
+    # Ask Parallax: parallax-agent/deploy (container kssl2-parallax-agent on this network)
+    environment: {KSSL_API_TARGET: "http://api:8600", KSSL_AGENT_TARGET: "http://kssl2-parallax-agent:8098"}
     labels:
       - traefik.enable=true
       - traefik.docker.network=kssl2_default
