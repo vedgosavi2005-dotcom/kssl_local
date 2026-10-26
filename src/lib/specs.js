@@ -434,13 +434,13 @@ export function specPanelHtml(m) {
   }
   const ce = computeSpecEdge(m);
   const specEdge = ce.edge;
-  /* no AHEAD / NEAR PARITY / BEHIND word on the gauge (owner 2026-10-25): the marker on the scale and the score say it; the
-     stored verdict sentence above the gauge gives the judgement */
+  /* no AHEAD / NEAR PARITY / BEHIND word on the gauge (owner 2026-10-25) and no score badge (owner 2026-10-26): the marker on
+     the scale says it; the stored verdict sentence above the gauge gives the judgement */
   const v = edgeVerdict(m.decision);
   const gPos = specEdge == null ? 50 : specEdge;
   return (
     `<div class="edge-gauge ${v.cls}">` +
-    `<div class="eg-top"><span class="eg-lab">Competitive edge index <span class="eg-sub">from the quantitative specs below</span></span><span class="eg-word">${specEdge != null ? specEdge : ""}</span></div>` +
+    `<div class="eg-top"><span class="eg-lab">Competitive edge index <span class="eg-sub">from the quantitative specs below</span></span></div>` +
     `<div class="eg-track"><div class="eg-mid"></div><div class="eg-marker" style="left:${gPos}%"></div></div>` +
     `<div class="eg-scale"><span>Competitor stronger</span><span>Parity</span><span>${clientShort()} stronger</span></div>` +
     edgeBasis(ce) +
