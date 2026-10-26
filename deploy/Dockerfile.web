@@ -6,4 +6,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY index.html vite.config.js ./
 COPY src src
+# static files vite copies into each build (the product-category pictures, public/img/category)
+COPY public public
 RUN npx vite build --outDir dist && npx vite build --mode review --outDir dist-review
