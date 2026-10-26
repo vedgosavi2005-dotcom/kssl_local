@@ -44,7 +44,7 @@ _PLACEHOLDER = re.compile(r"^\s*(?:n/?a|none|nil|unknown|not applicable|no data|
 _PIPE = re.compile(r"\b(?:excel|xlsx|workbook|spreadsheet|scrap(?:e|ed|ing)|crawl(?:er|ed)|js-rendered|http \d{3}|returned 40[34]|"
                    r"retriev(?:e|able|ed)|could not be (?:read|extracted|fetched|retrieved|accessed|re-read|verified|confirmed)|"
                    r"was not (?:retrievable|accessible|reachable|read)|not (?:extracted|retrievable|obtained|compared)|page text|"
-                   r"todo|pipeline|placeholder|article text|truncated at|(?:see|in) (?:the )?(?:separate )?(?:[\w,/.-]+ (?:and )?){0,5}(?:rows?|cards?)\b|"
+                   r"todo|pipeline|placeholder|article text|truncated at|unverified|(?:see|in) (?:the )?(?:separate )?(?:[\w,/.-]+ (?:and )?){0,5}(?:rows?|cards?)\b|"
                    r"(?:this|product|catalogue|workbook|sheet|variant|program(?:me)?/common-systems) row\b|sheet exists|"
                    r"included with a caveat|no reliable source|source reviewed|wikipedia-derived|figures excluded|omitted\b)", re.I)
 # a word that makes a bracket a citation: "(Army Recognition)", "(Elbit 2025 datasheet)", "(f35.com)", "(KSSL page)"
@@ -142,6 +142,10 @@ def clean_text(value: Any, maker: "Maker | None" = None) -> list[str]:
     out = []
     for part in _ITEM_SPLIT.split(str(value or "")):
         part = re.sub(r"^(?:[\s•·*]+|-\s+)+", "", part).strip()          # a bullet, not the sign of "-3 to +85 deg"
+        sents = re.split(r"(?<=\.)\s+(?=[A-Z])", part)                   # "9.72 kg. The 7.5 kg figures are ... unverified": the note sentence goes
+        kept = [x for x in sents if not (_NOTE.search(x) or _SRC_CLAUSE.search(x) or _PIPE.search(x))]
+        if len(sents) > 1 and len(kept) < len(sents):
+            part = " ".join(kept).rstrip(".")
         if not part or _NOTE.search(part) or _SRC_CLAUSE.search(part):
             continue
         part = strip_sources(_after_note(part), maker)
@@ -1239,6 +1243,7 @@ def _selftest() -> None:
     assert clean_text("800 m; 1000 m (DoO(C&S) product page, archived)") == ["800 m", "1000 m"]
     assert clean_text("39 degrees both sides (NRC Canada)") == ["39 degrees both sides"]
     assert clean_text("maximum about 5 rounds per minute; the 2016 article text is truncated at '4 to... rounds'") == ["maximum about 5 rounds per minute"]
+    assert clean_text("9.72 kg. The 7.5 kg / 1,200 mm figures are NOT on the current manufacturer product page, flyer or DDP: unverified, dropped") == ["9.72 kg"]
     assert clean_text("12.5 t (total)") == ["12.5 t (total)"] and clean_text("> 40 km/h (metalled roads)") == ["> 40 km/h (metalled roads)"]
     assert clean_text("Rotax 916 (Army Recognition); older sources Rotax 914 - disputed") == ["Rotax 916"]
     assert clean_text("24/7 support; Lockheed F-35 sustainment page text could not be extracted (JS-rendered)") == ["24/7 support"]
