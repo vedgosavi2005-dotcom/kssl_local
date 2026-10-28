@@ -148,6 +148,8 @@ export default function DetailPanel({ detail, onClose, badge }) {
             <img
               alt=""
               src={detail.image}
+              /* a picture that fails to load (gone, blocked) hides its section, never a black box (owner 2026-10-28) */
+              onError={(e) => { e.currentTarget.parentElement.style.display = "none"; }}
               style={{ width: "100%", borderRadius: "6px", display: "block",
                        aspectRatio: "16 / 9",
                        background: "var(--d-bg-1)" }}

@@ -466,6 +466,13 @@ def point_cards(conn) -> None:
                         FROM ({sql}) c JOIN media.page_image p ON p.page_url = c.page AND p.status = 'ok'
                         WHERE t.{idcol}::text = c.id AND t.{col} IS DISTINCT FROM '/api/image/' || p.image_id""")
         print(f"  {table}: {cur.rowcount} cards now show a stored image", flush=True)
+        # owner 2026-10-28 (Hanwha/UPI card showed a broken box): an outside link we could not store because it is gone (404),
+        # blocked (403) or an icon (too small) is broken or wrong on the card too -> no picture. Too large / robots / TLS still load.
+        cur.execute(f"""UPDATE staging.{table} t SET {col} = NULL
+                        FROM ({sql}) c JOIN media.page_image p ON p.page_url = c.page
+                        WHERE t.{idcol}::text = c.id AND t.{col} LIKE 'http%%'
+                          AND (p.status = 'too_small' OR (p.status = 'image_failed' AND p.error ~ 'HTTP Error 40[34]'))""")
+        print(f"  {table}: {cur.rowcount} broken outside picture links removed", flush=True)
     conn.commit()
 
 
