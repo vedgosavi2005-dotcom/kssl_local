@@ -21,9 +21,12 @@ def main() -> int:
     subs, why = run.select(conn, spec, A)
     since = os.environ.get("KSSL_SINCE")       # set by backend/routine --since: an article dated before it waits; undated ones run
     if since and subs:
-        d = lambda s: str(s.get("published_date") or s.get("published_at") or "")[:10]
+        # a news batch carries its month: it counts as the month's last day, so the window's own month runs
+        # shortcut: "-31" for every month only works for a >= string compare, use a real month-end date if anything else reads it
+        d = lambda s: str(s.get("published_date") or s.get("published_at") or "")[:10] or (str(s["month"])[:7] + "-31" if s.get("month") else "")
         n = len(subs)
-        subs = [s for s in subs if not d(s) or d(s) >= since]
+        dated_only = os.environ.get("KSSL_DATED_ONLY") == "1"      # owner 2026-10-27 "flood those new dated data": undated backlog waits too
+        subs = [s for s in subs if (not d(s) and not dated_only) or d(s) >= since]
         why = why or f"all {n} pending subjects are dated before {since}"
         print(f"window from {since}: {len(subs)} of {n} pending subjects", flush=True)
     if not subs:

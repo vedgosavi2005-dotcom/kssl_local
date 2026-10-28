@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -76,13 +77,15 @@ def pending(cur, limit):
     """The signal prompt's own pending subjects (its subject query, not yet run at its version), not yet pre-checked, newest first."""
     from prompts import render
     spec = render.load_prompt("signal")
+    since = os.environ.get("KSSL_SINCE")      # backend/routine --since + KSSL_DATED_ONLY=1: only articles dated in the window
+    dated = f" AND s.published_date >= '{since}'::date" if since and os.environ.get("KSSL_DATED_ONLY") == "1" else ""
     cur.execute(f"""WITH s AS ({spec['subject']['query']})
                     SELECT s.article_id::text AS id, s.headline, s.publisher, s.published_date, s.competitor, s.article_url,
                            (SELECT left(d.body_text, 4000) FROM staging.source_document d WHERE d.url = s.article_url LIMIT 1) AS body
                     FROM s
                     WHERE NOT EXISTS (SELECT 1 FROM staging.prompt_run r WHERE r.prompt_id = 'signal' AND r.subject_key = s.article_id::text
                                        AND r.prompt_version = %s AND r.status IN ('loaded', 'skipped', 'rejected'))
-                      AND NOT EXISTS (SELECT 1 FROM staging.prompt_run r WHERE r.prompt_id = 'signal_gate' AND r.subject_key = s.article_id::text)
+                      AND NOT EXISTS (SELECT 1 FROM staging.prompt_run r WHERE r.prompt_id = 'signal_gate' AND r.subject_key = s.article_id::text){dated}
                     ORDER BY s.published_date DESC NULLS LAST {'LIMIT ' + str(int(limit)) if limit else ''}""", (str(spec["version"]),))
     return [dict(r) for r in cur.fetchall()], str(spec["version"])
 

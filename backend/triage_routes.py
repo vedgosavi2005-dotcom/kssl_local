@@ -187,9 +187,11 @@ def pending(cur, limit, since=None):
     """documents with no route; with `since`, also those from that date on that an older triage version routed (re-triage)"""
     again = (f" OR (coalesce(published_at::date, fetched_at::date) >= '{since}'::date"
              f" AND coalesce(triage->>'route_version', '1') <> '{PROMPT_VERSION}')") if since else ""
+    # owner 2026-10-27 "flood those new dated data": only documents published in the window (a harvest also fetches thousands of old pages)
+    dated = f" AND published_at::date >= '{since}'::date" if since and os.environ.get("KSSL_DATED_ONLY") == "1" else ""
     cur.execute(f"""SELECT doc_id::text AS id, url, source_kind, source_name, title, published_at, competitor_ids::text[] AS cids,
                            left(body_text, 6000) AS body
-                    FROM staging.source_document WHERE (NOT (coalesce(triage, '{{}}'::jsonb) ? 'route'){again})
+                    FROM staging.source_document WHERE (NOT (coalesce(triage, '{{}}'::jsonb) ? 'route'){again}){dated}
                     ORDER BY {ORDER_SQL}, published_at DESC NULLS LAST, doc_id
                     {'LIMIT ' + str(int(limit)) if limit else ''}""")
     return cur.fetchall()
