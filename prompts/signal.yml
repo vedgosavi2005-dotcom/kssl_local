@@ -1,6 +1,6 @@
 id: signal
 title: Competitive signal from a news article
-version: 5
+version: 6
 fills: [competitive_signal, competitive_signal_detail, competitive_signal_evidence, competitive_product_news]
 shows_on: Competitive Overview cards (risk matrix) + signal drawer + Products timeline
 cadence: daily                   # routine: run for every new article since the last run
@@ -177,13 +177,23 @@ task: |
      (The impact field of the glance is built by code from your scores. Do not write it.)
    - impact_eyebrow: JUDGEMENT. 2-5 words: the highest-scoring impact dimension and its level (high = 4-5, medium = 3,
      low = 1-2), e.g. "Orders and revenue · high". It must agree with your scores.
-   - what_article_says: 2-4 plain sentences. Only what the article states: who, what, how many, how much, when, where.
-   - why_it_matters: JUDGEMENT. 2-4 plain sentences from {{client.name}}'s point of view. Name what is touched: a
-     {{client.name}} product from CLIENT PORTFOLIO, a market from CLIENT MARKETS, or a partner or supplier from CLIENT PARTNERS,
-     and say how. Say plainly what is unknown ("The article does not say which country buys the shells."). If nothing is touched,
-     write exactly: "No <product> product line is touched; kept because <reason>." where <reason> names an impact dimension
-     (for example "of the market standing it gives the rival with a customer in Europe"). Do not recommend actions. Never write
-     "{{client.name}} should".
+   - what_article_says: a short news report in the INVERTED PYRAMID, one paragraph of 3 to 5 sentences, 60 to 110 words.
+     Sentence 1 (the lead): who did what, where and when, with the main number (value, quantity) if the article gives one. Then
+     the most important detail, then the next: dates, options, conditions, the next step. Only what the article states. No
+     opinion, no "this shows", no background the article does not give.
+   - why_it_matters: JUDGEMENT. The impact on {{client.name}}, BLUF style, one paragraph of 3 to 5 sentences, 50 to 110 words.
+     Sentence 1 (the bottom line): what this means for {{client.name}}, naming the {{client.name}} product (CLIENT PORTFOLIO),
+     market (CLIENT MARKETS) or partner or supplier (CLIENT PARTNERS) it touches, by its everyday name. Then the evidence for that
+     line: how close the rival's product is to the {{client.name}} product, where it lands, how soon. Join the facts with
+     "because", "so", "while", "but". If nothing of {{client.name}}'s is touched, say what it does touch in one natural sentence
+     ("It does not compete with any {{client.name}} product; it matters because it wins Kongsberg a seventh European customer.").
+     At most ONE sentence on what is not known, and only if it changes the picture. Do not write the words "threat" or "watch"
+     (the page adds the verdict line). Do not recommend actions. Never write "{{client.name}} should".
+   - Both paragraphs: write the way a good newspaper writes, sentences of 12 to 25 words, varied, joined into one flowing
+     paragraph; never a list of one-fact sentences, never two sentences in a row starting with the same word. HARD LIMIT: no
+     sentence over 28 words, quotations included. Do not write these internal terms: "country line", "client line", "sub-type",
+     "like-for-like", "anchor", "dimension", "market standing", "the article says", "the article does not say", "is touched",
+     "kept because". (Owner 2026-10-26: same standard as prompts/signal_rewrite.yml, so new cards need no rewrite.)
    - _sources: for what_article_says, the verbatim sentence and the URL. _reason for impact_eyebrow and why_it_matters.
    competitive_signal_evidence (7-10 rows in two groups):
    - key_point, 3 to 6 rows. Each is one fact about THE EVENT in this article: who is involved, what is bought or done, the value,
@@ -220,7 +230,8 @@ task: |
    - _reason for kssl_relevance
 
   PLAIN ENGLISH. This is read by managers who are not weapons specialists.
-   - Sentences of 20 words or fewer, one idea each, active voice. Name the company and the thing.
+   - Sentences of 20 words or fewer, one idea each, active voice. Name the company and the thing. (what_article_says and
+     why_it_matters follow their own paragraph rule above instead.)
    - A technical term only when it is the name of the thing. Explain it in a few words the first time:
      "self-propelled gun (a gun on its own tracked vehicle)". Spell out an acronym the first time unless it is in the article's
      headline. Official names (ATAGS, K9 Vajra-T) stay as names. Titles (title, drawer_title) use the full name, not an acronym:
@@ -268,8 +279,8 @@ task: |
      "competitive_signal_detail": [{"drawer_title": "Veland picks Nordvik's NV-155 over {{client.name}}'s MArG 155/52: 24 guns, deliveries from 2028",
        "glance_who": "Nordvik Defence", "glance_move": "Contract", "glance_where": "Veland", "glance_third_party": "Veland Ministry of Defence",
        "glance_when": "9 Oct 2026", "impact_eyebrow": "Orders and revenue · high",
-       "what_article_says": "Veland's Ministry of Defence signed a contract on 9 October for 24 NV-155 truck-mounted 155 mm guns. The value is EUR 310 million. Deliveries run from 2028 to 2030. Nordvik will assemble the trucks at a local firm, Veland Motor Works.",
-       "why_it_matters": "{{client.name}} offered the MArG 155/52 in this competition in 2025. The buyer chose a gun of the same class. The article gives no reason for the choice. Nordvik now has a reference customer in a market {{client.name}} targets.",
+       "what_article_says": "Veland's Ministry of Defence signed a EUR 310 million contract with Nordvik Defence on 9 October for 24 NV-155 truck-mounted 155 mm guns. The ministry said the guns will be delivered between 2028 and 2030. Nordvik will assemble the trucks with a local firm, Veland Motor Works, which the contract names as its partner for the vehicles.",
+       "why_it_matters": "Nordvik has beaten {{client.name}}'s MArG 155/52 in Veland, a market {{client.name}} competed in during 2025. The buyer chose a truck-mounted gun of the same kind, so Nordvik now has a reference customer that other buyers in the region can point to. No reason for the choice has been published, which leaves open whether price or local assembly decided it.",
        "_sources": {"what_article_says": [{"url": "https://example-defence-news.test/veland-nv155", "quote": "signed a contract on 9 October for 24 NV-155 systems"}]},
        "_reason": {"why_it_matters": "Veland is in CLIENT MARKETS (offered 2025) and the MArG 155/52 has the same sub-type.", "impact_eyebrow": "Orders scored 5."}}],
      "competitive_signal_evidence": [
